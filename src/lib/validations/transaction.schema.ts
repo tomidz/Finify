@@ -84,6 +84,11 @@ export const CreateTransferSchema = z
       .positive("El tipo de cambio debe ser mayor a 0")
       .default(1),
     base_amount: z.number().positive("El monto base debe ser mayor a 0"),
+    fee: z
+      .number()
+      .min(0, "La comisión no puede ser negativa")
+      .optional()
+      .default(0),
     notes: z
       .string()
       .max(500, "Las notas no pueden superar 500 caracteres")
@@ -117,6 +122,7 @@ export const UpdateTransactionSchema = z.object({
   amount: z.number().positive().optional(),
   exchange_rate: z.number().positive().optional(),
   base_amount: z.number().positive().optional(),
+  fee: z.number().min(0).optional(),
   notes: z
     .string()
     .max(500)

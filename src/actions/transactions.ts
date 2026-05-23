@@ -43,6 +43,7 @@ function mapTransactionRows(
     date: String(row.date),
     description: String(row.description ?? ""),
     notes: (row.notes as string | null) ?? null,
+    fee: Number(row.fee ?? 0),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
     category_name: (row.category_name as string | null) ?? null,
@@ -75,6 +76,7 @@ async function buildTransferLines({
   sourceAmount,
   destinationAmount,
   exchangeRate,
+  fee,
 }: {
   date: string;
   sourceAccount: { id: string; currency: string };
@@ -82,19 +84,25 @@ async function buildTransferLines({
   sourceAmount: number;
   destinationAmount: number;
   exchangeRate: number;
+  fee: number;
 }): Promise<ActionResult<TransactionAmountInput[]>> {
   const baseCurrencyResult = await getBaseCurrency();
   if ("error" in baseCurrencyResult) return baseCurrencyResult;
 
   const baseCurrency = baseCurrencyResult.data;
-  const sourceAbsolute = Math.abs(sourceAmount);
+  // Source debit (gross) = transfer amount + fee, in source currency.
+  // Destination credit = converted transfer amount, in dest currency.
+  const transferAbsolute = Math.abs(sourceAmount);
+  const feeAbsolute = Math.max(0, fee);
+  const sourceDebit = transferAbsolute + feeAbsolute;
   const destinationAbsolute = Math.abs(destinationAmount);
 
-  let transferBaseAmount = 0;
+  // base_amount is per-leg in user's base currency.
+  let sourceBase: number;
+  let destBase: number;
+
   if (sourceAccount.currency === baseCurrency) {
-    transferBaseAmount = sourceAbsolute;
-  } else if (destAccount.currency === baseCurrency) {
-    transferBaseAmount = destinationAbsolute;
+    sourceBase = sourceDebit;
   } else {
     const fxResult = await getOrFetchFxRate({
       date,
@@ -102,22 +110,37 @@ async function buildTransferLines({
       to: baseCurrency,
     });
     if ("error" in fxResult) return fxResult;
-    transferBaseAmount = sourceAbsolute * fxResult.data;
+    sourceBase = sourceDebit * fxResult.data;
+  }
+
+  if (destAccount.currency === baseCurrency) {
+    destBase = destinationAbsolute;
+  } else if (destAccount.currency === sourceAccount.currency) {
+    // Same currency on both sides: dest in base = transferAbsolute converted using same rate as source
+    destBase = (sourceBase * transferAbsolute) / sourceDebit;
+  } else {
+    const fxResult = await getOrFetchFxRate({
+      date,
+      from: destAccount.currency,
+      to: baseCurrency,
+    });
+    if ("error" in fxResult) return fxResult;
+    destBase = destinationAbsolute * fxResult.data;
   }
 
   return {
     data: [
       {
         account_id: sourceAccount.id,
-        amount: -sourceAbsolute,
+        amount: -sourceDebit,
         exchange_rate: exchangeRate,
-        base_amount: -Math.abs(transferBaseAmount),
+        base_amount: -Math.abs(sourceBase),
       },
       {
         account_id: destAccount.id,
         amount: destinationAbsolute,
         exchange_rate: exchangeRate,
-        base_amount: Math.abs(transferBaseAmount),
+        base_amount: Math.abs(destBase),
       },
     ],
   };
@@ -306,6 +329,7 @@ export async function getTransactions(
         date: row.date,
         description: row.description,
         notes: row.notes,
+        fee: Number(row.fee ?? 0),
         created_at: row.created_at,
         updated_at: row.updated_at,
         category_name: row.budget_categories?.name ?? null,
@@ -467,6 +491,7 @@ export async function getTransactionsForRange(
         date: row.date,
         description: row.description,
         notes: row.notes,
+        fee: Number(row.fee ?? 0),
         created_at: row.created_at,
         updated_at: row.updated_at,
         category_name: category?.name ?? null,
@@ -642,6 +667,7 @@ export async function createTransfer(
         date: parsed.data.date,
         description: parsed.data.description,
         notes: parsed.data.notes,
+        fee: parsed.data.fee ?? 0,
       })
       .select()
       .single();
@@ -655,6 +681,7 @@ export async function createTransfer(
       sourceAmount: parsed.data.amount,
       destinationAmount: parsed.data.base_amount,
       exchangeRate: parsed.data.exchange_rate,
+      fee: parsed.data.fee ?? 0,
     });
     if ("error" in transferLinesResult) return transferLinesResult;
 
@@ -794,7 +821,7 @@ export async function updateTransaction(
 
     const { data: existing } = await supabase
       .from("transactions")
-      .select("id, transaction_type, month_id, date")
+      .select("id, transaction_type, month_id, date, fee")
       .eq("id", id)
       .eq("user_id", user.id)
       .single();
@@ -869,15 +896,23 @@ export async function updateTransaction(
         return { error: "Cuenta no encontrada" };
       }
 
+      const nextFee = updates.fee ?? Number(existing.fee ?? 0);
+      // sourceLine.amount already includes existing fee; subtract it to recover the net transfer amount
+      const existingFee = Number(existing.fee ?? 0);
+      const inferredSourceNet = Math.max(
+        0,
+        Math.abs(sourceLine?.amount ?? 0) - existingFee,
+      );
       const transferLinesResult = await buildTransferLines({
         date: updates.date ?? existing.date,
         sourceAccount,
         destAccount,
-        sourceAmount: amount ?? Math.abs(sourceLine?.amount ?? 0),
+        sourceAmount: amount ?? inferredSourceNet,
         destinationAmount:
           base_amount ?? Math.abs(destinationLine?.amount ?? 0),
         exchangeRate:
           exchange_rate ?? sourceLine?.exchange_rate ?? destinationLine?.exchange_rate ?? 1,
+        fee: nextFee,
       });
       if ("error" in transferLinesResult) return transferLinesResult;
       amountLines = transferLinesResult.data;

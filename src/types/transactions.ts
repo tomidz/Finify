@@ -25,6 +25,7 @@ export interface Transaction {
   date: string;
   description: string;
   notes: string | null;
+  fee: number;
   created_at: string;
   updated_at: string;
 }

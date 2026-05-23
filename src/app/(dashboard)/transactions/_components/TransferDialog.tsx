@@ -53,6 +53,7 @@ type TransferFormValues = {
   amount: string;
   exchange_rate: string;
   destination_amount: string;
+  fee: string;
   notes: string;
 };
 
@@ -76,6 +77,7 @@ export function TransferDialog({
       amount: "",
       exchange_rate: "1",
       destination_amount: "",
+      fee: "",
       notes: "",
     },
   });
@@ -218,20 +220,24 @@ export function TransferDialog({
       const destinationLine =
         transfer.amounts.find((line) => line.amount > 0) ?? transfer.amounts[1];
 
+      const existingFee = Number(transfer.fee ?? 0);
+      const sourceAbs = Math.abs(sourceLine?.amount ?? 0);
+      const netAmount = Math.max(0, sourceAbs - existingFee);
       form.reset({
         date: transfer.date,
         source_account_id: sourceLine?.account_id ?? "",
         destination_account_id: destinationLine?.account_id ?? "",
         description: transfer.description,
-        amount: formatNumberInput(
-          String(Math.abs(sourceLine?.amount ?? 0)).replace(".", ",")
-        ),
+        amount: formatNumberInput(String(netAmount).replace(".", ",")),
         exchange_rate: formatNumberInput(
           String(sourceLine?.exchange_rate ?? 1).replace(".", ",")
         ),
         destination_amount: formatNumberInput(
           String(Math.abs(destinationLine?.amount ?? 0)).replace(".", ",")
         ),
+        fee: existingFee > 0
+          ? formatNumberInput(String(existingFee).replace(".", ","))
+          : "",
         notes: transfer.notes ?? "",
       });
     } else {
@@ -243,6 +249,7 @@ export function TransferDialog({
         amount: "",
         exchange_rate: "1",
         destination_amount: "",
+        fee: "",
         notes: "",
       });
     }
@@ -310,6 +317,8 @@ export function TransferDialog({
     const amountNum = parseNumberInput(values.amount);
     const rateNum = parseNumberInput(values.exchange_rate);
     const destinationNum = parseNumberInput(values.destination_amount);
+    const feeRaw = parseNumberInput(values.fee);
+    const feeNum = isNaN(feeRaw) ? 0 : Math.max(0, feeRaw);
 
     if (isEditing) {
       try {
@@ -317,20 +326,12 @@ export function TransferDialog({
           id: transfer.id,
           date: values.date,
           description: values.description,
-          amounts: [
-            {
-              account_id: values.source_account_id,
-              amount: -Math.abs(isNaN(amountNum) ? 0 : amountNum),
-              exchange_rate: isNaN(rateNum) ? 1 : rateNum,
-              base_amount: -Math.abs(isNaN(destinationNum) ? 0 : destinationNum),
-            },
-            {
-              account_id: values.destination_account_id,
-              amount: Math.abs(isNaN(destinationNum) ? 0 : destinationNum),
-              exchange_rate: isNaN(rateNum) ? 1 : rateNum,
-              base_amount: Math.abs(isNaN(destinationNum) ? 0 : destinationNum),
-            },
-          ],
+          amount: isNaN(amountNum) ? 0 : amountNum,
+          exchange_rate: isNaN(rateNum) ? 1 : rateNum,
+          base_amount: isNaN(destinationNum) ? 0 : destinationNum,
+          source_account_id: values.source_account_id,
+          destination_account_id: values.destination_account_id,
+          fee: feeNum,
           category_id: null,
           notes: values.notes || null,
         });
@@ -349,6 +350,7 @@ export function TransferDialog({
       amount: isNaN(amountNum) ? 0 : amountNum,
       exchange_rate: isNaN(rateNum) ? 1 : rateNum,
       base_amount: isNaN(destinationNum) ? 0 : destinationNum,
+      fee: feeNum,
       notes: values.notes,
     };
 
@@ -553,6 +555,35 @@ export function TransferDialog({
                 )}
               />
             </div>
+
+            <FormField
+              control={form.control}
+              name="fee"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    Comisión (opcional)
+                    {sourceAccount ? ` (${sourceAccount.currency})` : ""}
+                  </FormLabel>
+                  <FormControl>
+                    <Input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="0,00"
+                      disabled={isPending}
+                      value={field.value}
+                      onChange={(e) =>
+                        form.setValue("fee", formatNumberInput(e.target.value))
+                      }
+                    />
+                  </FormControl>
+                  <p className="text-muted-foreground text-xs">
+                    Costo adicional cobrado al origen (red, banco). Se descuenta del origen además del monto.
+                  </p>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
 
             <FormField
               control={form.control}
