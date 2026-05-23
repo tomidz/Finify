@@ -162,7 +162,8 @@ export async function createInvestment(
         parsed.data.total_cost,
         parsed.data.currency,
         parsed.data.purchase_date,
-        parsed.data.asset_name
+        parsed.data.asset_name,
+        data.id,
       );
       if (deductionError) {
         console.warn("Auto-deduction failed:", deductionError);
@@ -191,7 +192,8 @@ async function autoDeductFromAccount(
   totalCost: number,
   investmentCurrency: string,
   date: string,
-  assetName: string
+  assetName: string,
+  investmentId: string,
 ): Promise<string | null> {
   try {
     // Resolver month_id para la fecha
@@ -243,6 +245,7 @@ async function autoDeductFromAccount(
         date,
         description: `Compra: ${assetName}`,
         notes: null,
+        source_investment_id: investmentId,
       })
       .select()
       .single();
@@ -305,6 +308,80 @@ export async function updateInvestment(
       .single();
 
     if (error) return { error: error.message };
+
+    // If total_cost or purchase_date changed, sync the linked auto-deduction
+    // correction transaction to keep cash accounting honest.
+    if (updates.total_cost !== undefined || updates.purchase_date !== undefined) {
+      const { data: linkedTxs } = await supabase
+        .from("transactions")
+        .select("id, month_id, date")
+        .eq("user_id", userId)
+        .eq("source_investment_id", id);
+
+      const newTotalCost = Number(data.total_cost);
+      const accountCurrency = data.currency as string;
+
+      const { data: prefsRow } = await supabase
+        .from("user_preferences")
+        .select("base_currency")
+        .eq("user_id", userId)
+        .maybeSingle();
+      const baseCurrency = prefsRow?.base_currency ?? "USD";
+
+      const monthsToRecalc = new Set<string>();
+      for (const tx of linkedTxs ?? []) {
+        const txDate = (updates.purchase_date ?? tx.date) as string;
+        let exchangeRate = 1;
+        let baseAmount = -Math.abs(newTotalCost);
+        if (accountCurrency !== baseCurrency) {
+          const fx = await getOrFetchFxRate({
+            date: txDate,
+            from: accountCurrency,
+            to: baseCurrency,
+          });
+          if (!("error" in fx)) {
+            exchangeRate = fx.data;
+            baseAmount = Number((-Math.abs(newTotalCost) * fx.data).toFixed(4));
+          }
+        }
+
+        await supabase
+          .from("transaction_amounts")
+          .update({
+            amount: -Math.abs(newTotalCost),
+            exchange_rate: exchangeRate,
+            base_amount: baseAmount,
+          })
+          .eq("transaction_id", tx.id);
+
+        if (updates.purchase_date && updates.purchase_date !== tx.date) {
+          // Move the correction transaction to the new month if the purchase
+          // date changed across month boundaries.
+          const newMonthId = await resolveMonthForDate(supabase, userId, txDate);
+          if (newMonthId && newMonthId !== tx.month_id) {
+            await supabase
+              .from("transactions")
+              .update({ date: txDate, month_id: newMonthId })
+              .eq("id", tx.id);
+            monthsToRecalc.add(tx.month_id as string);
+            monthsToRecalc.add(newMonthId);
+          } else {
+            await supabase
+              .from("transactions")
+              .update({ date: txDate })
+              .eq("id", tx.id);
+            monthsToRecalc.add(tx.month_id as string);
+          }
+        } else {
+          monthsToRecalc.add(tx.month_id as string);
+        }
+      }
+
+      for (const monthId of monthsToRecalc) {
+        recalculateOpeningBalances(monthId).catch(console.error);
+      }
+    }
+
     return {
       data: {
         ...data,
@@ -318,6 +395,25 @@ export async function updateInvestment(
   }
 }
 
+async function resolveMonthForDate(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  userId: string,
+  date: string,
+): Promise<string | null> {
+  const parsedDate = new Date(`${date}T00:00:00`);
+  const year = parsedDate.getFullYear();
+  const month = parsedDate.getMonth() + 1;
+  const { data: row } = await supabase
+    .from("months")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("year", year)
+    .eq("month", month)
+    .maybeSingle();
+  return row?.id ?? null;
+}
+
 export async function deleteInvestment(
   id: string
 ): Promise<ActionResult<null>> {
@@ -326,6 +422,22 @@ export async function deleteInvestment(
     if (!userId) return { error: "No autenticado" };
 
     const supabase = await createClient();
+
+    // Find and reverse the linked auto-deduction correction transaction (if any).
+    // ON DELETE SET NULL on source_investment_id will null the FK *after* the
+    // investment row is deleted, but we want to delete the correction outright.
+    const { data: linkedTxs } = await supabase
+      .from("transactions")
+      .select("id, month_id")
+      .eq("user_id", userId)
+      .eq("source_investment_id", id);
+
+    const monthsToRecalc = new Set<string>();
+    for (const tx of linkedTxs ?? []) {
+      monthsToRecalc.add(tx.month_id as string);
+      await supabase.from("transactions").delete().eq("id", tx.id).eq("user_id", userId);
+    }
+
     const { error } = await supabase
       .from("investments")
       .delete()
@@ -333,6 +445,11 @@ export async function deleteInvestment(
       .eq("user_id", userId);
 
     if (error) return { error: error.message };
+
+    for (const monthId of monthsToRecalc) {
+      recalculateOpeningBalances(monthId).catch(console.error);
+    }
+
     return { data: null };
   } catch {
     return { error: "Error al eliminar inversión" };
@@ -870,6 +987,7 @@ export async function sellInvestment(
         netProceeds,
         parsed.data.sale_date,
         parsed.data.asset_name,
+        saleRow.id,
       );
       if (creditError) {
         console.warn("Auto-credit failed:", creditError);
@@ -902,6 +1020,7 @@ async function autoCreditToAccount(
   netProceeds: number,
   date: string,
   assetName: string,
+  saleId: string,
 ): Promise<string | null> {
   try {
     const parsedDate = new Date(`${date}T00:00:00`);
@@ -949,6 +1068,7 @@ async function autoCreditToAccount(
         date,
         description: `Venta: ${assetName}`,
         notes: null,
+        source_investment_sale_id: saleId,
       })
       .select()
       .single();
@@ -1040,6 +1160,85 @@ export async function getInvestmentSales(): Promise<
     return { data: mapped };
   } catch {
     return { error: "Error al obtener ventas" };
+  }
+}
+
+/**
+ * Deletes an investment_sale, reverses its auto-credit correction, and
+ * restores the lots that were proportionally reduced when the sale was
+ * recorded. This is a best-effort restoration: we re-insert a single lot
+ * with the cost_basis stored on the sale, dated at the original purchase
+ * date. If the sale was a partial exit, this collapses the remaining
+ * partial lots into a single lot — accounting-wise correct but loses lot
+ * detail.
+ */
+export async function deleteInvestmentSale(
+  saleId: string,
+): Promise<ActionResult<null>> {
+  try {
+    const userId = await getUserId();
+    if (!userId) return { error: "No autenticado" };
+    const supabase = await createClient();
+
+    const { data: sale, error: saleError } = await supabase
+      .from("investment_sales")
+      .select("*")
+      .eq("id", saleId)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (saleError) return { error: saleError.message };
+    if (!sale) return { error: "Venta no encontrada" };
+
+    // Delete any auto-credit correction linked to this sale.
+    const { data: linkedTxs } = await supabase
+      .from("transactions")
+      .select("id, month_id")
+      .eq("user_id", userId)
+      .eq("source_investment_sale_id", saleId);
+
+    const monthsToRecalc = new Set<string>();
+    for (const tx of linkedTxs ?? []) {
+      monthsToRecalc.add(tx.month_id as string);
+      await supabase.from("transactions").delete().eq("id", tx.id).eq("user_id", userId);
+    }
+
+    // Restore a lot with the same cost_basis so cost-basis accounting stays
+    // honest. Pricing per unit is recomputed.
+    const restoreQty = Number(sale.quantity_sold);
+    const restoreCost = Number(sale.cost_basis);
+    if (restoreQty > QTY_EPSILON && restoreCost > 0) {
+      const pricePerUnit = restoreCost / restoreQty;
+      const { error: insertError } = await supabase.from("investments").insert({
+        user_id: userId,
+        account_id: sale.account_id,
+        asset_name: sale.asset_name,
+        ticker: sale.ticker,
+        isin: sale.isin,
+        asset_type: sale.asset_type,
+        quantity: restoreQty,
+        price_per_unit: pricePerUnit,
+        total_cost: restoreCost,
+        currency: sale.currency,
+        purchase_date: sale.sale_date, // best we can do without original lot data
+        notes: `Restaurado al revertir venta del ${sale.sale_date}`,
+      });
+      if (insertError) return { error: insertError.message };
+    }
+
+    const { error: deleteError } = await supabase
+      .from("investment_sales")
+      .delete()
+      .eq("id", saleId)
+      .eq("user_id", userId);
+    if (deleteError) return { error: deleteError.message };
+
+    for (const monthId of monthsToRecalc) {
+      recalculateOpeningBalances(monthId).catch(console.error);
+    }
+
+    return { data: null };
+  } catch {
+    return { error: "Error al eliminar la venta" };
   }
 }
 
