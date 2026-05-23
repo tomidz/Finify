@@ -122,6 +122,14 @@ export function InvestmentDialog({
   );
 
   const isBroker = selectedAccount?.account_type === "investment_broker";
+  const isCryptoAccount =
+    selectedAccount?.account_type === "crypto_exchange" ||
+    selectedAccount?.account_type === "crypto_wallet";
+  const watchCurrency = useWatch({ control: form.control, name: "currency" });
+  const willAutoDeduct =
+    !!selectedAccount &&
+    (isBroker ||
+      (isCryptoAccount && selectedAccount.currency === watchCurrency));
   const isCrypto = watchAssetType === "crypto";
   const maxDec = 7;
 
@@ -160,15 +168,10 @@ export function InvestmentDialog({
     }
   }, [investment, open, form, investmentAccounts]);
 
-  // Auto-set currency when account changes (skip for crypto accounts)
+  // Auto-set currency when account changes
   useEffect(() => {
     if (selectedAccount && !isEditing) {
-      const isCryptoAccount = ["crypto_exchange", "crypto_wallet"].includes(
-        selectedAccount.account_type
-      );
-      if (!isCryptoAccount) {
-        form.setValue("currency", selectedAccount.currency);
-      }
+      form.setValue("currency", selectedAccount.currency);
     }
   }, [selectedAccount, form, isEditing]);
 
@@ -513,7 +516,7 @@ export function InvestmentDialog({
               />
             </div>
 
-            {isBroker && !isEditing && (
+            {willAutoDeduct && !isEditing && (
               <div className="space-y-3">
                 <FormField
                   control={form.control}
@@ -537,8 +540,8 @@ export function InvestmentDialog({
                   <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
                     <AlertCircle className="mt-0.5 size-4 shrink-0" />
                     <span>
-                      Se descontará el costo total del saldo de la cuenta del
-                      broker automáticamente.
+                      Se descontará el costo total del saldo de la cuenta
+                      automáticamente.
                     </span>
                   </div>
                 )}

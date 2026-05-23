@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { getOrFetchFxRate } from "@/actions/fx";
+import { recalculateOpeningBalances } from "@/actions/months";
 import {
   CreateInvestmentSchema,
   SellInvestmentSchema,
@@ -144,8 +145,15 @@ export async function createInvestment(
 
     if (error) return { error: error.message };
 
-    // Auto-descuento para brokers (no para crypto exchanges/wallets, ni inversiones existentes)
-    if (account.account_type === "investment_broker" && !parsed.data.skip_deduction) {
+    // Auto-descuento para brokers y para exchanges/wallets cuando se paga
+    // con cash en la misma moneda que la cuenta (compra real, no transferencia entrante)
+    const eligibleForDeduction =
+      account.account_type === "investment_broker" ||
+      ((account.account_type === "crypto_exchange" ||
+        account.account_type === "crypto_wallet") &&
+        account.currency === parsed.data.currency);
+
+    if (eligibleForDeduction && !parsed.data.skip_deduction) {
       const deductionError = await autoDeductFromAccount(
         supabase,
         userId,
@@ -201,10 +209,28 @@ async function autoDeductFromAccount(
 
     if (!monthRow) return null; // No month exists yet, skip deduction
 
-    // El monto se registra en la moneda de la cuenta
+    // Moneda base del usuario para FX correcto en base_amount
+    const { data: prefsRow } = await supabase
+      .from("user_preferences")
+      .select("base_currency")
+      .eq("user_id", userId)
+      .maybeSingle();
+    const baseCurrency = prefsRow?.base_currency ?? "USD";
+
+    // El amount se registra en la moneda de la cuenta. base_amount va en moneda base.
     const amount = -Math.abs(totalCost);
-    const exchangeRate = 1;
-    const baseAmount = amount; // Simplificado: asumimos misma moneda
+    let exchangeRate = 1;
+    let baseAmount = amount;
+    if (accountCurrency !== baseCurrency) {
+      const fxResult = await getOrFetchFxRate({
+        date,
+        from: accountCurrency,
+        to: baseCurrency,
+      });
+      if ("error" in fxResult) return fxResult.error;
+      exchangeRate = fxResult.data;
+      baseAmount = Number((amount * fxResult.data).toFixed(4));
+    }
 
     // Crear transacción tipo correction
     const { data: tx, error: txError } = await supabase
@@ -238,6 +264,8 @@ async function autoDeductFromAccount(
       await supabase.from("transactions").delete().eq("id", tx.id);
       return amountError.message;
     }
+
+    recalculateOpeningBalances(monthRow.id).catch(console.error);
 
     return null;
   } catch (e) {
@@ -827,11 +855,13 @@ export async function sellInvestment(
       }
     }
 
-    if (
-      account.account_type === "investment_broker" &&
-      !parsed.data.skip_credit &&
-      netProceeds > 0
-    ) {
+    const eligibleForCredit =
+      account.account_type === "investment_broker" ||
+      ((account.account_type === "crypto_exchange" ||
+        account.account_type === "crypto_wallet") &&
+        account.currency === parsed.data.currency);
+
+    if (eligibleForCredit && !parsed.data.skip_credit && netProceeds > 0) {
       const creditError = await autoCreditToAccount(
         supabase,
         userId,
@@ -888,7 +918,26 @@ async function autoCreditToAccount(
 
     if (!monthRow) return null;
 
+    const { data: prefsRow } = await supabase
+      .from("user_preferences")
+      .select("base_currency")
+      .eq("user_id", userId)
+      .maybeSingle();
+    const baseCurrency = prefsRow?.base_currency ?? "USD";
+
     const amount = Math.abs(netProceeds);
+    let exchangeRate = 1;
+    let baseAmount = amount;
+    if (accountCurrency !== baseCurrency) {
+      const fxResult = await getOrFetchFxRate({
+        date,
+        from: accountCurrency,
+        to: baseCurrency,
+      });
+      if ("error" in fxResult) return fxResult.error;
+      exchangeRate = fxResult.data;
+      baseAmount = Number((amount * fxResult.data).toFixed(4));
+    }
 
     const { data: tx, error: txError } = await supabase
       .from("transactions")
@@ -914,14 +963,16 @@ async function autoCreditToAccount(
         account_id: accountId,
         amount,
         original_currency: accountCurrency,
-        exchange_rate: 1,
-        base_amount: amount,
+        exchange_rate: exchangeRate,
+        base_amount: baseAmount,
       });
 
     if (amountError) {
       await supabase.from("transactions").delete().eq("id", tx.id);
       return amountError.message;
     }
+
+    recalculateOpeningBalances(monthRow.id).catch(console.error);
 
     return null;
   } catch (e) {
