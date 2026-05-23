@@ -42,6 +42,14 @@ import {
 } from "@/hooks/useInvestments";
 import { useBaseCurrency } from "@/hooks/useTransactions";
 import { useCurrencies } from "@/hooks/useAccounts";
+import { useAccountNetWorth } from "@/hooks/useNetWorth";
+import { ACCOUNT_TYPE_LABELS } from "@/types/accounts";
+
+const INVESTMENT_ACCOUNT_TYPES = new Set([
+  "investment_broker",
+  "crypto_exchange",
+  "crypto_wallet",
+]);
 import { formatAmount, amountTone } from "@/lib/format";
 import { ASSET_TYPE_LABELS } from "@/types/investments";
 import type { InvestmentWithAccount, HoldingPosition } from "@/types/investments";
@@ -54,6 +62,23 @@ export function InvestmentsTable() {
   const deleteMutation = useDeleteInvestment();
   const { data: baseCurrency } = useBaseCurrency();
   const { data: currencies } = useCurrencies();
+  const { data: accountNetWorth } = useAccountNetWorth(new Date().getFullYear());
+
+  const investmentAccounts = useMemo(() => {
+    if (!accountNetWorth?.accounts) return [];
+    return accountNetWorth.accounts.filter((account) =>
+      INVESTMENT_ACCOUNT_TYPES.has(account.account_type),
+    );
+  }, [accountNetWorth]);
+
+  const totalCashUninvested = useMemo(
+    () =>
+      investmentAccounts.reduce(
+        (sum, account) => sum + (account.balance_base ?? 0),
+        0,
+      ),
+    [investmentAccounts],
+  );
 
   const currencySymbol = useMemo(() => {
     if (!baseCurrency) return "$";
@@ -326,6 +351,7 @@ export function InvestmentsTable() {
       <InvestmentsSummaryCards
         holdingsCount={filteredHoldings.length}
         currencySymbol={currencySymbol}
+        totalCashUninvested={totalCashUninvested}
         totalInvested={filteredHoldings.reduce((sum, holding) => sum + holding.total_cost, 0)}
         totalCurrentValue={
           filteredHoldings.every((holding) => holding.current_value !== null)
@@ -351,6 +377,11 @@ export function InvestmentsTable() {
               100
             : null
         }
+      />
+
+      <InvestmentAccountsBreakdown
+        accounts={investmentAccounts}
+        currencySymbol={currencySymbol}
       />
 
       {/* Holdings Table */}
@@ -487,6 +518,7 @@ export function InvestmentsTable() {
 const InvestmentsSummaryCards = React.memo(function InvestmentsSummaryCards({
   holdingsCount,
   currencySymbol,
+  totalCashUninvested,
   totalInvested,
   totalCurrentValue,
   totalGainLoss,
@@ -494,15 +526,27 @@ const InvestmentsSummaryCards = React.memo(function InvestmentsSummaryCards({
 }: {
   holdingsCount: number;
   currencySymbol: string;
+  totalCashUninvested: number;
   totalInvested: number;
   totalCurrentValue: number | null;
   totalGainLoss: number | null;
   totalGainLossPct: number | null;
 }) {
-  if (holdingsCount === 0) return null;
+  if (holdingsCount === 0 && totalCashUninvested === 0) return null;
 
   return (
-    <div className="grid gap-4 md:grid-cols-3">
+    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <Card className="gap-0 py-0">
+        <CardHeader className="px-4 pt-4 pb-2">
+          <CardDescription>Cash sin invertir</CardDescription>
+        </CardHeader>
+        <CardContent className="px-4 pb-4">
+          <p className="text-2xl font-bold">
+            {currencySymbol} {formatAmount(totalCashUninvested)}
+          </p>
+        </CardContent>
+      </Card>
+
       <Card className="gap-0 py-0">
         <CardHeader className="px-4 pt-4 pb-2">
           <CardDescription>Total Invertido</CardDescription>
@@ -547,6 +591,72 @@ const InvestmentsSummaryCards = React.memo(function InvestmentsSummaryCards({
         </CardContent>
       </Card>
     </div>
+  );
+});
+
+type InvestmentAccountBreakdownRow = {
+  id: string;
+  name: string;
+  account_type: string;
+  balance_base: number;
+  investment_value_base: number;
+};
+
+const InvestmentAccountsBreakdown = React.memo(function InvestmentAccountsBreakdown({
+  accounts,
+  currencySymbol,
+}: {
+  accounts: InvestmentAccountBreakdownRow[];
+  currencySymbol: string;
+}) {
+  if (accounts.length === 0) return null;
+
+  return (
+    <Card className="gap-0 py-0">
+      <CardHeader className="px-4 pt-4 pb-2">
+        <CardDescription>Cash e inversiones por cuenta</CardDescription>
+      </CardHeader>
+      <CardContent className="px-0 pb-0">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Cuenta</TableHead>
+              <TableHead>Tipo</TableHead>
+              <TableHead className="text-right">Cash sin invertir</TableHead>
+              <TableHead className="text-right">Invertido (costo)</TableHead>
+              <TableHead className="text-right">Total</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {accounts.map((account) => {
+              const cash = account.balance_base;
+              const invested = account.investment_value_base;
+              const label =
+                ACCOUNT_TYPE_LABELS[
+                  account.account_type as keyof typeof ACCOUNT_TYPE_LABELS
+                ] ?? account.account_type;
+              return (
+                <TableRow key={account.id}>
+                  <TableCell className="font-medium">{account.name}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {label}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {currencySymbol} {formatAmount(cash)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {currencySymbol} {formatAmount(invested)}
+                  </TableCell>
+                  <TableCell className="text-right font-medium">
+                    {currencySymbol} {formatAmount(cash + invested)}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
   );
 });
 
