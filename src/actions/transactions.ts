@@ -170,6 +170,23 @@ async function resolveMonthIdFromDate(
   return { data: monthResult.data.id };
 }
 
+async function pickEarliestMonthId(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  monthIds: string[],
+): Promise<string | null> {
+  if (monthIds.length === 0) return null;
+  if (monthIds.length === 1) return monthIds[0];
+  const { data } = await supabase
+    .from("months")
+    .select("id, year, month")
+    .in("id", monthIds);
+  if (!data || data.length === 0) return null;
+  const sorted = [...data].sort(
+    (a, b) => a.year * 100 + a.month - (b.year * 100 + b.month),
+  );
+  return sorted[0].id;
+}
+
 // --- GET BASE CURRENCY ---
 export async function getBaseCurrency(): Promise<ActionResult<string>> {
   try {
@@ -609,7 +626,7 @@ export async function createTransaction(
     }
 
     // Recalculate opening balances for subsequent months
-    recalculateOpeningBalances(resolvedMonth.data).catch(console.error);
+    await recalculateOpeningBalances(resolvedMonth.data);
 
     return { data: transaction as Transaction };
   } catch (e) {
@@ -713,7 +730,7 @@ export async function createTransfer(
     }
 
     // Recalculate opening balances for subsequent months
-    recalculateOpeningBalances(resolvedMonth.data).catch(console.error);
+    await recalculateOpeningBalances(resolvedMonth.data);
 
     return { data: transaction as Transaction };
   } catch (e) {
@@ -973,14 +990,15 @@ export async function updateTransaction(
       if (insertLinesError) return { error: insertLinesError.message };
     }
 
-    // Recalculate opening balances for subsequent months
-    const affectedMonthId = nextMonthId ?? existing.month_id;
-    if (affectedMonthId) {
-      recalculateOpeningBalances(affectedMonthId).catch(console.error);
-      // If transaction moved between months, also recalculate from the old month
-      if (nextMonthId && nextMonthId !== existing.month_id && existing.month_id) {
-        recalculateOpeningBalances(existing.month_id).catch(console.error);
-      }
+    // Recalculate opening balances starting from the earlier of (old month, new month).
+    // The recalc cascades to all later months, so we only need to anchor at the earliest
+    // affected month — otherwise we'd compute the new month from stale state and clobber it.
+    const earliestAffectedMonthId = await pickEarliestMonthId(
+      supabase,
+      [existing.month_id, nextMonthId].filter(Boolean) as string[],
+    );
+    if (earliestAffectedMonthId) {
+      await recalculateOpeningBalances(earliestAffectedMonthId);
     }
 
     return { data: updatedTransaction as Transaction };
@@ -1021,7 +1039,7 @@ export async function deleteTransaction(
 
     // Recalculate opening balances for subsequent months
     if (tx.month_id) {
-      recalculateOpeningBalances(tx.month_id).catch(console.error);
+      await recalculateOpeningBalances(tx.month_id);
     }
 
     return { data: null };
@@ -1063,7 +1081,7 @@ export async function restoreTransaction(
 
     // Recalculate opening balances for subsequent months
     if (tx.month_id) {
-      recalculateOpeningBalances(tx.month_id).catch(console.error);
+      await recalculateOpeningBalances(tx.month_id);
     }
 
     return { data: null };

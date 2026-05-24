@@ -268,7 +268,7 @@ async function autoDeductFromAccount(
       return amountError.message;
     }
 
-    recalculateOpeningBalances(monthRow.id).catch(console.error);
+    await recalculateOpeningBalances(monthRow.id);
 
     return null;
   } catch (e) {
@@ -377,8 +377,9 @@ export async function updateInvestment(
         }
       }
 
-      for (const monthId of monthsToRecalc) {
-        recalculateOpeningBalances(monthId).catch(console.error);
+      const earliest = await pickEarliestMonth(supabase, [...monthsToRecalc]);
+      if (earliest) {
+        await recalculateOpeningBalances(earliest);
       }
     }
 
@@ -396,8 +397,7 @@ export async function updateInvestment(
 }
 
 async function resolveMonthForDate(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  supabase: any,
+  supabase: Awaited<ReturnType<typeof createClient>>,
   userId: string,
   date: string,
 ): Promise<string | null> {
@@ -412,6 +412,23 @@ async function resolveMonthForDate(
     .eq("month", month)
     .maybeSingle();
   return row?.id ?? null;
+}
+
+async function pickEarliestMonth(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  monthIds: string[],
+): Promise<string | null> {
+  if (monthIds.length === 0) return null;
+  if (monthIds.length === 1) return monthIds[0];
+  const { data } = await supabase
+    .from("months")
+    .select("id, year, month")
+    .in("id", monthIds);
+  if (!data || data.length === 0) return null;
+  const sorted = [...data].sort(
+    (a, b) => a.year * 100 + a.month - (b.year * 100 + b.month),
+  );
+  return sorted[0].id;
 }
 
 export async function deleteInvestment(
@@ -446,8 +463,9 @@ export async function deleteInvestment(
 
     if (error) return { error: error.message };
 
-    for (const monthId of monthsToRecalc) {
-      recalculateOpeningBalances(monthId).catch(console.error);
+    const earliest = await pickEarliestMonth(supabase, [...monthsToRecalc]);
+    if (earliest) {
+      await recalculateOpeningBalances(earliest);
     }
 
     return { data: null };
@@ -1092,7 +1110,7 @@ async function autoCreditToAccount(
       return amountError.message;
     }
 
-    recalculateOpeningBalances(monthRow.id).catch(console.error);
+    await recalculateOpeningBalances(monthRow.id);
 
     return null;
   } catch (e) {
@@ -1232,8 +1250,9 @@ export async function deleteInvestmentSale(
       .eq("user_id", userId);
     if (deleteError) return { error: deleteError.message };
 
-    for (const monthId of monthsToRecalc) {
-      recalculateOpeningBalances(monthId).catch(console.error);
+    const earliest = await pickEarliestMonth(supabase, [...monthsToRecalc]);
+    if (earliest) {
+      await recalculateOpeningBalances(earliest);
     }
 
     return { data: null };
