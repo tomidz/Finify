@@ -201,6 +201,7 @@ export function useUpdateInvestment() {
       queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
       queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
       queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
     },
   });
 }
@@ -238,6 +239,7 @@ export function useDeleteInvestment() {
       queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
       queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
       queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
     },
   });
 }
@@ -320,6 +322,7 @@ export function useTransferInvestmentPosition() {
       queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
       queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
       queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
     },
   });
 }
