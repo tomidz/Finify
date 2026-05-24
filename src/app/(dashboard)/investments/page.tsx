@@ -1,6 +1,8 @@
 import { Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { InvestmentsTable } from "./_components/InvestmentsTable";
+import { SalesHistoryTable } from "./_components/SalesHistoryTable";
 
 export default function InvestmentsPage() {
   return (
@@ -8,12 +10,25 @@ export default function InvestmentsPage() {
       <div className="space-y-1">
         <h1 className="text-2xl font-semibold tracking-tight">Inversiones</h1>
         <p className="text-muted-foreground text-sm">
-          Registrá y seguí tus inversiones en acciones, ETFs, crypto y más.
+          Registrá tus compras, mirá el portfolio actual y revisá el historial de ventas.
         </p>
       </div>
-      <Suspense fallback={<InvestmentsPageFallback />}>
-        <InvestmentsTable />
-      </Suspense>
+      <Tabs defaultValue="holdings" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="holdings">Cartera</TabsTrigger>
+          <TabsTrigger value="sales">Historial de ventas</TabsTrigger>
+        </TabsList>
+        <TabsContent value="holdings" className="space-y-4">
+          <Suspense fallback={<InvestmentsPageFallback />}>
+            <InvestmentsTable />
+          </Suspense>
+        </TabsContent>
+        <TabsContent value="sales" className="space-y-4">
+          <Suspense fallback={<InvestmentsPageFallback />}>
+            <SalesHistoryTable />
+          </Suspense>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

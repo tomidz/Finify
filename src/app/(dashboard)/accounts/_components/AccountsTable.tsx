@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -125,7 +126,12 @@ export function AccountsTable() {
               accounts.map((account) => (
                 <TableRow key={account.id}>
                   <TableCell className="font-medium">
-                    {account.name}
+                    <Link
+                      href={`/accounts/${account.id}`}
+                      className="hover:underline"
+                    >
+                      {account.name}
+                    </Link>
                   </TableCell>
                   <TableCell>
                     {ACCOUNT_TYPE_LABELS[account.account_type]}

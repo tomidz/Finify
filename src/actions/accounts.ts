@@ -71,6 +71,124 @@ export async function getCurrencies(): Promise<ActionResult<Currency[]>> {
   }
 }
 
+// --- GET ACCOUNT WITH DETAIL ---
+export async function getAccountById(
+  accountId: string,
+): Promise<ActionResult<Account>> {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return { error: "No autenticado" };
+
+    const { data, error } = await supabase
+      .from("accounts")
+      .select("*")
+      .eq("id", accountId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (error) return { error: error.message };
+    if (!data) return { error: "Cuenta no encontrada" };
+    return { data: data as Account };
+  } catch {
+    return { error: "Error al obtener la cuenta" };
+  }
+}
+
+// --- GET ACCOUNT BALANCE HISTORY (per month, latest first) ---
+export interface AccountMonthBalance {
+  year: number;
+  month: number;
+  opening_amount: number;
+  opening_base_amount: number;
+  month_movements: number;
+  month_base_movements: number;
+  closing_amount: number;
+  closing_base_amount: number;
+}
+
+export async function getAccountBalanceHistory(
+  accountId: string,
+): Promise<ActionResult<AccountMonthBalance[]>> {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return { error: "No autenticado" };
+
+    const { data: months } = await supabase
+      .from("months")
+      .select("id, year, month")
+      .eq("user_id", user.id)
+      .order("year", { ascending: true })
+      .order("month", { ascending: true });
+    if (!months || months.length === 0) return { data: [] };
+
+    const monthIds = months.map((m) => m.id);
+
+    const { data: openings } = await supabase
+      .from("opening_balances")
+      .select("month_id, opening_amount, opening_base_amount")
+      .eq("account_id", accountId)
+      .in("month_id", monthIds);
+
+    const openingByMonth = new Map<
+      string,
+      { amount: number; base: number }
+    >();
+    for (const o of openings ?? []) {
+      openingByMonth.set(o.month_id as string, {
+        amount: Number(o.opening_amount),
+        base: Number(o.opening_base_amount),
+      });
+    }
+
+    const { data: movements } = await supabase
+      .from("transaction_amounts")
+      .select(
+        "amount, base_amount, transactions!inner(month_id, user_id, deleted_at)",
+      )
+      .eq("account_id", accountId)
+      .eq("transactions.user_id", user.id)
+      .is("transactions.deleted_at", null);
+
+    const movementsByMonth = new Map<string, { amount: number; base: number }>();
+    for (const m of movements ?? []) {
+      const t = Array.isArray(m.transactions) ? m.transactions[0] : m.transactions;
+      const monthId = (t as { month_id: string })?.month_id;
+      if (!monthId) continue;
+      const current = movementsByMonth.get(monthId) ?? { amount: 0, base: 0 };
+      current.amount += Number(m.amount);
+      current.base += Number(m.base_amount);
+      movementsByMonth.set(monthId, current);
+    }
+
+    return {
+      data: months
+        .map((m) => {
+          const opening = openingByMonth.get(m.id) ?? { amount: 0, base: 0 };
+          const movement = movementsByMonth.get(m.id) ?? { amount: 0, base: 0 };
+          return {
+            year: m.year,
+            month: m.month,
+            opening_amount: opening.amount,
+            opening_base_amount: opening.base,
+            month_movements: movement.amount,
+            month_base_movements: movement.base,
+            closing_amount: opening.amount + movement.amount,
+            closing_base_amount: opening.base + movement.base,
+          };
+        })
+        .reverse(),
+    };
+  } catch {
+    return { error: "Error al obtener el historial" };
+  }
+}
+
 // --- GET ACCOUNT INITIAL BALANCE ---
 export async function getAccountInitialBalance(
   accountId: string,

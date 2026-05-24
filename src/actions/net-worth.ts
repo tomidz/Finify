@@ -268,7 +268,7 @@ export async function getNwSnapshotsForMonth(
       .select("base_currency")
       .eq("user_id", userId)
       .maybeSingle();
-    const baseCurrency = (userPref as { base_currency?: string })?.base_currency ?? "EUR";
+    const baseCurrency = (userPref as { base_currency?: string })?.base_currency ?? "USD";
 
     const itemCurrencies = [...new Set((items ?? []).map((i) => i.currency as string))];
     const fxMap = await buildFxMap(supabase, itemCurrencies, baseCurrency);
@@ -390,7 +390,7 @@ export async function getNwSnapshotsForYear(
       .select("base_currency")
       .eq("user_id", userId)
       .maybeSingle();
-    const baseCurrencyYear = (userPrefYear as { base_currency?: string })?.base_currency ?? "EUR";
+    const baseCurrencyYear = (userPrefYear as { base_currency?: string })?.base_currency ?? "USD";
 
     const itemCurrenciesYear = [...new Set((items ?? []).map((i) => i.currency as string))];
     const fxMapYear = await buildFxMap(supabase, itemCurrenciesYear, baseCurrencyYear);
@@ -693,7 +693,7 @@ export async function getLiabilitiesForMonth(
       .eq("user_id", userId)
       .maybeSingle();
     const baseCurrency =
-      (userPref as { base_currency?: string })?.base_currency ?? "EUR";
+      (userPref as { base_currency?: string })?.base_currency ?? "USD";
 
     const itemCurrencies = [
       ...new Set((items ?? []).map((i) => i.currency as string)),

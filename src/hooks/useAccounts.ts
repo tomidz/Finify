@@ -13,6 +13,8 @@ import {
   updateAccount,
   deleteAccount,
   getAccountInitialBalance,
+  getAccountById,
+  getAccountBalanceHistory,
 } from "@/actions/accounts";
 import type { CreateAccountInput, UpdateAccountInput } from "@/lib/validations/account.schema";
 import type { Account } from "@/types/accounts";
@@ -157,6 +159,34 @@ export function useAccountInitialBalance(accountId: string | undefined) {
       return result.data;
     },
     staleTime: 10 * 60_000,
+  });
+}
+
+export function useAccountById(accountId: string | undefined) {
+  return useQuery({
+    queryKey: ["account", accountId],
+    enabled: !!accountId,
+    queryFn: async () => {
+      if (!accountId) return null;
+      const result = await getAccountById(accountId);
+      if ("error" in result) throw new Error(result.error);
+      return result.data;
+    },
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useAccountBalanceHistory(accountId: string | undefined) {
+  return useQuery({
+    queryKey: ["account", accountId, "balance-history"],
+    enabled: !!accountId,
+    queryFn: async () => {
+      if (!accountId) return [];
+      const result = await getAccountBalanceHistory(accountId);
+      if ("error" in result) throw new Error(result.error);
+      return result.data;
+    },
+    staleTime: 2 * 60_000,
   });
 }
 

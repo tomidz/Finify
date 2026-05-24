@@ -188,8 +188,11 @@ export async function recalculateGoalProgress(
 
     if (txError) return { error: txError.message };
 
+    // Only positive legs count toward progress: for a transfer (move into
+    // savings), the +leg represents the contribution and the -leg cancels.
+    // For income tagged to the goal, the single +leg counts. Expense legs
+    // (negative) and outgoing transfers don't add to progress.
     let total = 0;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     for (const tx of txRows ?? []) {
       const lines = Array.isArray(tx.transaction_amounts)
         ? tx.transaction_amounts
@@ -197,7 +200,8 @@ export async function recalculateGoalProgress(
           ? [tx.transaction_amounts]
           : [];
       for (const line of lines) {
-        total += Math.abs(Number(line.base_amount ?? 0));
+        const base = Number(line.base_amount ?? 0);
+        if (base > 0) total += base;
       }
     }
 

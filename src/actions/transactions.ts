@@ -43,6 +43,7 @@ function mapTransactionRows(
     date: String(row.date),
     description: String(row.description ?? ""),
     notes: (row.notes as string | null) ?? null,
+    fee: Number(row.fee ?? 0),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
     category_name: (row.category_name as string | null) ?? null,
@@ -75,6 +76,7 @@ async function buildTransferLines({
   sourceAmount,
   destinationAmount,
   exchangeRate,
+  fee,
 }: {
   date: string;
   sourceAccount: { id: string; currency: string };
@@ -82,19 +84,25 @@ async function buildTransferLines({
   sourceAmount: number;
   destinationAmount: number;
   exchangeRate: number;
+  fee: number;
 }): Promise<ActionResult<TransactionAmountInput[]>> {
   const baseCurrencyResult = await getBaseCurrency();
   if ("error" in baseCurrencyResult) return baseCurrencyResult;
 
   const baseCurrency = baseCurrencyResult.data;
-  const sourceAbsolute = Math.abs(sourceAmount);
+  // Source debit (gross) = transfer amount + fee, in source currency.
+  // Destination credit = converted transfer amount, in dest currency.
+  const transferAbsolute = Math.abs(sourceAmount);
+  const feeAbsolute = Math.max(0, fee);
+  const sourceDebit = transferAbsolute + feeAbsolute;
   const destinationAbsolute = Math.abs(destinationAmount);
 
-  let transferBaseAmount = 0;
+  // base_amount is per-leg in user's base currency.
+  let sourceBase: number;
+  let destBase: number;
+
   if (sourceAccount.currency === baseCurrency) {
-    transferBaseAmount = sourceAbsolute;
-  } else if (destAccount.currency === baseCurrency) {
-    transferBaseAmount = destinationAbsolute;
+    sourceBase = sourceDebit;
   } else {
     const fxResult = await getOrFetchFxRate({
       date,
@@ -102,22 +110,37 @@ async function buildTransferLines({
       to: baseCurrency,
     });
     if ("error" in fxResult) return fxResult;
-    transferBaseAmount = sourceAbsolute * fxResult.data;
+    sourceBase = sourceDebit * fxResult.data;
+  }
+
+  if (destAccount.currency === baseCurrency) {
+    destBase = destinationAbsolute;
+  } else if (destAccount.currency === sourceAccount.currency) {
+    // Same currency on both sides: dest in base = transferAbsolute converted using same rate as source
+    destBase = (sourceBase * transferAbsolute) / sourceDebit;
+  } else {
+    const fxResult = await getOrFetchFxRate({
+      date,
+      from: destAccount.currency,
+      to: baseCurrency,
+    });
+    if ("error" in fxResult) return fxResult;
+    destBase = destinationAbsolute * fxResult.data;
   }
 
   return {
     data: [
       {
         account_id: sourceAccount.id,
-        amount: -sourceAbsolute,
+        amount: -sourceDebit,
         exchange_rate: exchangeRate,
-        base_amount: -Math.abs(transferBaseAmount),
+        base_amount: -Math.abs(sourceBase),
       },
       {
         account_id: destAccount.id,
         amount: destinationAbsolute,
         exchange_rate: exchangeRate,
-        base_amount: Math.abs(transferBaseAmount),
+        base_amount: Math.abs(destBase),
       },
     ],
   };
@@ -145,6 +168,23 @@ async function resolveMonthIdFromDate(
   const monthResult = await createMonth(year, month);
   if ("error" in monthResult) return { error: monthResult.error };
   return { data: monthResult.data.id };
+}
+
+async function pickEarliestMonthId(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  monthIds: string[],
+): Promise<string | null> {
+  if (monthIds.length === 0) return null;
+  if (monthIds.length === 1) return monthIds[0];
+  const { data } = await supabase
+    .from("months")
+    .select("id, year, month")
+    .in("id", monthIds);
+  if (!data || data.length === 0) return null;
+  const sorted = [...data].sort(
+    (a, b) => a.year * 100 + a.month - (b.year * 100 + b.month),
+  );
+  return sorted[0].id;
 }
 
 // --- GET BASE CURRENCY ---
@@ -306,6 +346,7 @@ export async function getTransactions(
         date: row.date,
         description: row.description,
         notes: row.notes,
+        fee: Number(row.fee ?? 0),
         created_at: row.created_at,
         updated_at: row.updated_at,
         category_name: row.budget_categories?.name ?? null,
@@ -467,6 +508,7 @@ export async function getTransactionsForRange(
         date: row.date,
         description: row.description,
         notes: row.notes,
+        fee: Number(row.fee ?? 0),
         created_at: row.created_at,
         updated_at: row.updated_at,
         category_name: category?.name ?? null,
@@ -584,7 +626,7 @@ export async function createTransaction(
     }
 
     // Recalculate opening balances for subsequent months
-    recalculateOpeningBalances(resolvedMonth.data).catch(console.error);
+    await recalculateOpeningBalances(resolvedMonth.data);
 
     return { data: transaction as Transaction };
   } catch (e) {
@@ -642,6 +684,7 @@ export async function createTransfer(
         date: parsed.data.date,
         description: parsed.data.description,
         notes: parsed.data.notes,
+        fee: parsed.data.fee ?? 0,
       })
       .select()
       .single();
@@ -655,6 +698,7 @@ export async function createTransfer(
       sourceAmount: parsed.data.amount,
       destinationAmount: parsed.data.base_amount,
       exchangeRate: parsed.data.exchange_rate,
+      fee: parsed.data.fee ?? 0,
     });
     if ("error" in transferLinesResult) return transferLinesResult;
 
@@ -686,7 +730,7 @@ export async function createTransfer(
     }
 
     // Recalculate opening balances for subsequent months
-    recalculateOpeningBalances(resolvedMonth.data).catch(console.error);
+    await recalculateOpeningBalances(resolvedMonth.data);
 
     return { data: transaction as Transaction };
   } catch (e) {
@@ -794,7 +838,9 @@ export async function updateTransaction(
 
     const { data: existing } = await supabase
       .from("transactions")
-      .select("id, transaction_type, month_id, date")
+      .select(
+        "id, transaction_type, month_id, date, fee, source_investment_id, source_investment_sale_id",
+      )
       .eq("id", id)
       .eq("user_id", user.id)
       .single();
@@ -802,6 +848,12 @@ export async function updateTransaction(
     if (!existing) return { error: "Transacción no encontrada" };
     if (transaction_type && transaction_type !== existing.transaction_type) {
       return { error: "No se puede cambiar el tipo de transacción" };
+    }
+    if (existing.source_investment_id || existing.source_investment_sale_id) {
+      return {
+        error:
+          "Esta corrección está vinculada a una inversión y solo puede editarse modificando la inversión asociada.",
+      };
     }
 
     let nextMonthId: string | undefined;
@@ -869,15 +921,23 @@ export async function updateTransaction(
         return { error: "Cuenta no encontrada" };
       }
 
+      const nextFee = updates.fee ?? Number(existing.fee ?? 0);
+      // sourceLine.amount already includes existing fee; subtract it to recover the net transfer amount
+      const existingFee = Number(existing.fee ?? 0);
+      const inferredSourceNet = Math.max(
+        0,
+        Math.abs(sourceLine?.amount ?? 0) - existingFee,
+      );
       const transferLinesResult = await buildTransferLines({
         date: updates.date ?? existing.date,
         sourceAccount,
         destAccount,
-        sourceAmount: amount ?? Math.abs(sourceLine?.amount ?? 0),
+        sourceAmount: amount ?? inferredSourceNet,
         destinationAmount:
           base_amount ?? Math.abs(destinationLine?.amount ?? 0),
         exchangeRate:
           exchange_rate ?? sourceLine?.exchange_rate ?? destinationLine?.exchange_rate ?? 1,
+        fee: nextFee,
       });
       if ("error" in transferLinesResult) return transferLinesResult;
       amountLines = transferLinesResult.data;
@@ -938,14 +998,15 @@ export async function updateTransaction(
       if (insertLinesError) return { error: insertLinesError.message };
     }
 
-    // Recalculate opening balances for subsequent months
-    const affectedMonthId = nextMonthId ?? existing.month_id;
-    if (affectedMonthId) {
-      recalculateOpeningBalances(affectedMonthId).catch(console.error);
-      // If transaction moved between months, also recalculate from the old month
-      if (nextMonthId && nextMonthId !== existing.month_id && existing.month_id) {
-        recalculateOpeningBalances(existing.month_id).catch(console.error);
-      }
+    // Recalculate opening balances starting from the earlier of (old month, new month).
+    // The recalc cascades to all later months, so we only need to anchor at the earliest
+    // affected month — otherwise we'd compute the new month from stale state and clobber it.
+    const earliestAffectedMonthId = await pickEarliestMonthId(
+      supabase,
+      [existing.month_id, nextMonthId].filter(Boolean) as string[],
+    );
+    if (earliestAffectedMonthId) {
+      await recalculateOpeningBalances(earliestAffectedMonthId);
     }
 
     return { data: updatedTransaction as Transaction };
@@ -968,13 +1029,26 @@ export async function deleteTransaction(
 
     const { data: tx } = await supabase
       .from("transactions")
-      .select("month_id")
+      .select("month_id, source_investment_id, source_investment_sale_id")
       .eq("id", id)
       .eq("user_id", user.id)
       .is("deleted_at", null)
       .maybeSingle();
 
     if (!tx) return { error: "Transacción no encontrada" };
+
+    if (tx.source_investment_id) {
+      return {
+        error:
+          "Esta corrección fue generada por una compra de inversión. Eliminá la inversión para revertirla.",
+      };
+    }
+    if (tx.source_investment_sale_id) {
+      return {
+        error:
+          "Esta corrección fue generada por una venta de inversión. Eliminá la venta para revertirla.",
+      };
+    }
 
     const { error } = await supabase
       .from("transactions")
@@ -986,7 +1060,7 @@ export async function deleteTransaction(
 
     // Recalculate opening balances for subsequent months
     if (tx.month_id) {
-      recalculateOpeningBalances(tx.month_id).catch(console.error);
+      await recalculateOpeningBalances(tx.month_id);
     }
 
     return { data: null };
@@ -1028,7 +1102,7 @@ export async function restoreTransaction(
 
     // Recalculate opening balances for subsequent months
     if (tx.month_id) {
-      recalculateOpeningBalances(tx.month_id).catch(console.error);
+      await recalculateOpeningBalances(tx.month_id);
     }
 
     return { data: null };

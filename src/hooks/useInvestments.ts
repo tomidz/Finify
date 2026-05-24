@@ -12,6 +12,7 @@ import {
   createInvestment,
   updateInvestment,
   deleteInvestment,
+  deleteInvestmentSale,
   fetchCurrentPrices,
   getCurrentInvestmentValuesByAccount,
   getCurrentInvestmentValuesByMonth,
@@ -200,6 +201,7 @@ export function useUpdateInvestment() {
       queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
       queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
       queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
     },
   });
 }
@@ -237,6 +239,7 @@ export function useDeleteInvestment() {
       queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
       queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
       queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
     },
   });
 }
@@ -251,6 +254,27 @@ export function useInvestmentSales() {
     },
     staleTime: 5 * 60_000,
     gcTime: 15 * 60_000,
+  });
+}
+
+export function useDeleteInvestmentSale() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (saleId: string) => {
+      const result = await deleteInvestmentSale(saleId);
+      if ("error" in result) throw new Error(result.error);
+      return result.data;
+    },
+    onError: (err: Error) => toast.error(err.message),
+    onSuccess: () => toast.success("Venta eliminada"),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.sales });
+      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
+      queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+    },
   });
 }
 
@@ -298,6 +322,7 @@ export function useTransferInvestmentPosition() {
       queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
       queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
       queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
     },
   });
 }

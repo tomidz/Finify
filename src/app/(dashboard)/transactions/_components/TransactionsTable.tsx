@@ -310,6 +310,8 @@ export function TransactionsTable() {
         enableSorting: false,
         cell: ({ row }) => {
           const tx = row.original;
+          const fee = Number(tx.fee ?? 0);
+          const sourceLine = tx.amounts?.find((line) => line.amount < 0);
           return (
             <div className="flex items-center gap-1.5">
               <span>{tx.description}</span>
@@ -322,6 +324,12 @@ export function TransactionsTable() {
                     <p className="text-xs whitespace-pre-wrap">{tx.notes}</p>
                   </TooltipContent>
                 </Tooltip>
+              )}
+              {tx.transaction_type === "transfer" && fee > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  · fee {sourceLine?.account_currency_symbol ?? ""}{" "}
+                  {formatAmount(fee)}
+                </span>
               )}
             </div>
           );
