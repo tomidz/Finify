@@ -1141,6 +1141,32 @@ export async function getInvestmentSales(): Promise<
 
     if (error) return { error: error.message };
 
+    const { data: prefsRow } = await supabase
+      .from("user_preferences")
+      .select("base_currency")
+      .eq("user_id", userId)
+      .maybeSingle();
+    const baseCurrency = prefsRow?.base_currency ?? "USD";
+
+    // Resolve FX per unique (currency, sale_date) pair. Sales are usually few
+    // and FX rates are cached in fx_rates, so this is cheap.
+    const fxKey = (currency: string, date: string) => `${currency}|${date}`;
+    const fxCache = new Map<string, number>();
+    for (const row of data ?? []) {
+      const key = fxKey(row.currency as string, row.sale_date as string);
+      if (fxCache.has(key)) continue;
+      if (row.currency === baseCurrency) {
+        fxCache.set(key, 1);
+        continue;
+      }
+      const fx = await getOrFetchFxRate({
+        date: row.sale_date as string,
+        from: row.currency as string,
+        to: baseCurrency,
+      });
+      fxCache.set(key, "error" in fx ? 1 : fx.data);
+    }
+
     const mapped = (data ?? []).map((row) => {
       const accountRaw = row.accounts;
       const account = Array.isArray(accountRaw) ? accountRaw[0] : accountRaw;
@@ -1148,6 +1174,9 @@ export async function getInvestmentSales(): Promise<
       const currency = Array.isArray(currencyRaw)
         ? currencyRaw[0]
         : currencyRaw;
+
+      const rate = fxCache.get(fxKey(row.currency as string, row.sale_date as string)) ?? 1;
+      const toBase = (n: number) => Number((n * rate).toFixed(4));
 
       return {
         id: row.id,
@@ -1164,6 +1193,12 @@ export async function getInvestmentSales(): Promise<
         tax: Number(row.tax),
         cost_basis: Number(row.cost_basis),
         realized_pnl: Number(row.realized_pnl),
+        total_proceeds_base: toBase(Number(row.total_proceeds)),
+        fees_base: toBase(Number(row.fees)),
+        tax_base: toBase(Number(row.tax)),
+        cost_basis_base: toBase(Number(row.cost_basis)),
+        realized_pnl_base: toBase(Number(row.realized_pnl)),
+        base_currency: baseCurrency,
         currency: row.currency,
         sale_date: row.sale_date,
         notes: row.notes,

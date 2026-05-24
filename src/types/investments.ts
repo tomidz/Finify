@@ -95,4 +95,10 @@ export interface InvestmentSale {
 export interface InvestmentSaleWithAccount extends InvestmentSale {
   account_name: string;
   currency_symbol: string;
+  total_proceeds_base: number;
+  fees_base: number;
+  tax_base: number;
+  cost_basis_base: number;
+  realized_pnl_base: number;
+  base_currency: string;
 }

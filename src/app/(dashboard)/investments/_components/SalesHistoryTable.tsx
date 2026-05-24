@@ -85,16 +85,24 @@ export function SalesHistoryTable() {
   const totals = useMemo(() => {
     return filtered.reduce(
       (acc, s) => {
-        acc.proceeds += s.total_proceeds;
-        acc.fees += s.fees;
-        acc.tax += s.tax;
-        acc.cost += s.cost_basis;
-        acc.pnl += s.realized_pnl;
+        acc.proceeds += s.total_proceeds_base;
+        acc.fees += s.fees_base;
+        acc.tax += s.tax_base;
+        acc.cost += s.cost_basis_base;
+        acc.pnl += s.realized_pnl_base;
         return acc;
       },
       { proceeds: 0, fees: 0, tax: 0, cost: 0, pnl: 0 },
     );
   }, [filtered]);
+
+  const baseCurrencySymbol = filtered[0]?.base_currency
+    ? (filtered[0].base_currency === "USD"
+        ? "$"
+        : filtered[0].base_currency === "EUR"
+          ? "€"
+          : filtered[0].base_currency)
+    : "$";
 
   if (isLoading) {
     return (
@@ -135,7 +143,9 @@ export function SalesHistoryTable() {
             <CardDescription>Proceeds bruto</CardDescription>
           </CardHeader>
           <CardContent className="px-4 pb-4">
-            <p className="text-2xl font-bold">{formatAmount(totals.proceeds)}</p>
+            <p className="text-2xl font-bold">
+              {baseCurrencySymbol} {formatAmount(totals.proceeds)}
+            </p>
           </CardContent>
         </Card>
         <Card className="gap-0 py-0">
@@ -144,7 +154,7 @@ export function SalesHistoryTable() {
           </CardHeader>
           <CardContent className="px-4 pb-4">
             <p className="text-2xl font-bold">
-              {formatAmount(totals.fees + totals.tax)}
+              {baseCurrencySymbol} {formatAmount(totals.fees + totals.tax)}
             </p>
           </CardContent>
         </Card>
@@ -154,7 +164,7 @@ export function SalesHistoryTable() {
           </CardHeader>
           <CardContent className="px-4 pb-4">
             <p className={`text-2xl font-bold ${amountTone(totals.pnl)}`}>
-              {formatAmount(totals.pnl)}
+              {baseCurrencySymbol} {formatAmount(totals.pnl)}
             </p>
           </CardContent>
         </Card>
