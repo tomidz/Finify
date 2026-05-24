@@ -838,7 +838,9 @@ export async function updateTransaction(
 
     const { data: existing } = await supabase
       .from("transactions")
-      .select("id, transaction_type, month_id, date, fee")
+      .select(
+        "id, transaction_type, month_id, date, fee, source_investment_id, source_investment_sale_id",
+      )
       .eq("id", id)
       .eq("user_id", user.id)
       .single();
@@ -846,6 +848,12 @@ export async function updateTransaction(
     if (!existing) return { error: "Transacción no encontrada" };
     if (transaction_type && transaction_type !== existing.transaction_type) {
       return { error: "No se puede cambiar el tipo de transacción" };
+    }
+    if (existing.source_investment_id || existing.source_investment_sale_id) {
+      return {
+        error:
+          "Esta corrección está vinculada a una inversión y solo puede editarse modificando la inversión asociada.",
+      };
     }
 
     let nextMonthId: string | undefined;
@@ -1021,13 +1029,26 @@ export async function deleteTransaction(
 
     const { data: tx } = await supabase
       .from("transactions")
-      .select("month_id")
+      .select("month_id, source_investment_id, source_investment_sale_id")
       .eq("id", id)
       .eq("user_id", user.id)
       .is("deleted_at", null)
       .maybeSingle();
 
     if (!tx) return { error: "Transacción no encontrada" };
+
+    if (tx.source_investment_id) {
+      return {
+        error:
+          "Esta corrección fue generada por una compra de inversión. Eliminá la inversión para revertirla.",
+      };
+    }
+    if (tx.source_investment_sale_id) {
+      return {
+        error:
+          "Esta corrección fue generada por una venta de inversión. Eliminá la venta para revertirla.",
+      };
+    }
 
     const { error } = await supabase
       .from("transactions")
