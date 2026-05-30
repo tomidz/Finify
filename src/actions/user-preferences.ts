@@ -74,7 +74,10 @@ export async function updateUserPreferences(
 
     const { data, error } = await supabase
       .from("user_preferences")
-      .update(payload)
+      .upsert(
+        { user_id: user.id, ...payload },
+        { onConflict: "user_id" },
+      )
       .eq("user_id", user.id)
       .select("base_currency, fx_source")
       .single();

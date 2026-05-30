@@ -1005,7 +1005,6 @@ export type Database = {
           id: string
           month_id: string | null
           notes: string | null
-          savings_goal_id: string | null
           source_investment_id: string | null
           source_investment_sale_id: string | null
           transaction_type: Database["public"]["Enums"]["transaction_type"]
@@ -1023,7 +1022,6 @@ export type Database = {
           id?: string
           month_id?: string | null
           notes?: string | null
-          savings_goal_id?: string | null
           source_investment_id?: string | null
           source_investment_sale_id?: string | null
           transaction_type: Database["public"]["Enums"]["transaction_type"]
@@ -1041,7 +1039,6 @@ export type Database = {
           id?: string
           month_id?: string | null
           notes?: string | null
-          savings_goal_id?: string | null
           source_investment_id?: string | null
           source_investment_sale_id?: string | null
           transaction_type?: Database["public"]["Enums"]["transaction_type"]
@@ -1068,13 +1065,6 @@ export type Database = {
             columns: ["month_id"]
             isOneToOne: false
             referencedRelation: "months"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "transactions_savings_goal_id_fkey"
-            columns: ["savings_goal_id"]
-            isOneToOne: false
-            referencedRelation: "savings_goals"
             referencedColumns: ["id"]
           },
           {
