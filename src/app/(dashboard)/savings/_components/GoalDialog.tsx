@@ -47,6 +47,7 @@ interface GoalDialogProps {
 type GoalFormValues = {
   name: string;
   target_amount: string;
+  current_amount: string;
   currency: string;
   deadline: string;
   account_id: string;
@@ -69,6 +70,7 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
     defaultValues: {
       name: "",
       target_amount: "",
+      current_amount: "",
       currency: "EUR",
       deadline: "",
       account_id: "",
@@ -84,6 +86,12 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
 
   const isPending = createMutation.isPending || updateMutation.isPending;
 
+  const selectedAccountId = form.watch("account_id");
+  const linkedAccount = useMemo(
+    () => (accounts ?? []).find((a) => a.id === selectedAccountId) ?? null,
+    [accounts, selectedAccountId]
+  );
+
   useEffect(() => {
     if (!open) return;
     if (goal) {
@@ -92,6 +100,9 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
         target_amount: formatMoneyDisplay(
           String(goal.target_amount).replace(".", ",")
         ),
+        current_amount: goal.account_id
+          ? ""
+          : formatMoneyDisplay(String(goal.current_amount).replace(".", ",")),
         currency: goal.currency,
         deadline: goal.deadline?.slice(0, 10) ?? "",
         account_id: goal.account_id ?? "",
@@ -101,6 +112,7 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
       form.reset({
         name: "",
         target_amount: "",
+        current_amount: "",
         currency: baseCurrency ?? "EUR",
         deadline: "",
         account_id: "",
@@ -124,12 +136,19 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
     }
     if (hasError) return;
 
+    // Account-linked goals derive progress from the account balance, so any
+    // manually-typed current amount is ignored.
+    const currentAmount = values.account_id
+      ? 0
+      : parseMoneyInput(values.current_amount) ?? 0;
+
     try {
       if (isEditing) {
         await updateMutation.mutateAsync({
           id: goal.id,
           name: values.name.trim(),
           target_amount: targetAmount,
+          current_amount: currentAmount,
           currency: values.currency,
           deadline: values.deadline || null,
           account_id: values.account_id || null,
@@ -139,6 +158,7 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
         await createMutation.mutateAsync({
           name: values.name.trim(),
           target_amount: targetAmount,
+          current_amount: currentAmount,
           currency: values.currency,
           deadline: values.deadline || null,
           account_id: values.account_id || null,
@@ -235,7 +255,7 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
                       <Select
                         value={field.value}
                         onValueChange={field.onChange}
-                        disabled={isPending}
+                        disabled={isPending || !!linkedAccount}
                       >
                         <SelectTrigger className="w-full">
                           <SelectValue />
@@ -270,6 +290,34 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
               />
             </div>
 
+            {!linkedAccount && (
+              <FormField
+                control={form.control}
+                name="current_amount"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Monto actual ahorrado (opcional)</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="0,00"
+                        disabled={isPending}
+                        value={field.value}
+                        onChange={(e) =>
+                          form.setValue(
+                            "current_amount",
+                            formatMoneyInput(e.target.value)
+                          )
+                        }
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
+
             <FormField
               control={form.control}
               name="deadline"
@@ -293,7 +341,16 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
                   <FormControl>
                     <Select
                       value={field.value || "none"}
-                      onValueChange={(val) => field.onChange(val === "none" ? "" : val)}
+                      onValueChange={(val) => {
+                        const accountId = val === "none" ? "" : val;
+                        field.onChange(accountId);
+                        const account = (accounts ?? []).find(
+                          (a) => a.id === accountId
+                        );
+                        if (account) {
+                          form.setValue("currency", account.currency);
+                        }
+                      }}
                       disabled={isPending}
                     >
                       <SelectTrigger className="w-full">
@@ -309,6 +366,11 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
                       </SelectContent>
                     </Select>
                   </FormControl>
+                  <p className="text-muted-foreground text-xs">
+                    {linkedAccount
+                      ? "El progreso se calcula automáticamente desde el saldo de esta cuenta."
+                      : "Asociá una cuenta para trackear el progreso automáticamente desde su saldo."}
+                  </p>
                   <FormMessage />
                 </FormItem>
               )}

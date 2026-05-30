@@ -7,6 +7,7 @@ export const CreateSavingsGoalSchema = z.object({
     .max(120, "Máximo 120 caracteres")
     .trim(),
   target_amount: z.number().positive("El monto objetivo debe ser mayor a 0"),
+  current_amount: z.number().min(0).optional().default(0),
   currency: z.string().min(1, "La moneda es obligatoria"),
   deadline: z
     .string()

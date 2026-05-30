@@ -9,20 +9,77 @@ import type { SavingsGoalWithRelations } from "@/types/savings-goals";
 
 type ActionResult<T> = { data: T } | { error: string };
 
+type GoalOverride = {
+  current_amount: number;
+  currency: string;
+  currency_symbol: string;
+};
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapGoal(row: any): SavingsGoalWithRelations {
+function mapGoal(row: any, override?: GoalOverride): SavingsGoalWithRelations {
   const target = Number(row.target_amount);
-  const current = Number(row.current_amount);
+  const current = override
+    ? override.current_amount
+    : Number(row.current_amount);
   return {
     ...row,
     target_amount: target,
     current_amount: current,
+    currency: override?.currency ?? row.currency,
+    is_completed: target > 0 ? current >= target : Boolean(row.is_completed),
     account_name: row.accounts?.name ?? null,
-    currency_symbol: row.currencies?.symbol ?? row.currency,
+    currency_symbol:
+      override?.currency_symbol ?? row.currencies?.symbol ?? row.currency,
     progress_pct: target > 0 ? Math.min(100, (current / target) * 100) : 0,
     accounts: undefined,
     currencies: undefined,
   };
+}
+
+// Current balance of an account in its own currency:
+// initial opening (earliest month) + sum of all non-deleted movement legs.
+async function getLinkedAccountBalances(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  accountIds: string[],
+): Promise<Map<string, number>> {
+  const balances = new Map<string, number>();
+  if (accountIds.length === 0) return balances;
+  for (const id of accountIds) balances.set(id, 0);
+
+  const { data: earliestMonth } = await supabase
+    .from("months")
+    .select("id")
+    .eq("user_id", userId)
+    .order("year", { ascending: true })
+    .order("month", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (earliestMonth) {
+    const { data: openings } = await supabase
+      .from("opening_balances")
+      .select("account_id, opening_amount")
+      .eq("month_id", earliestMonth.id)
+      .in("account_id", accountIds);
+    for (const o of openings ?? []) {
+      balances.set(o.account_id as string, Number(o.opening_amount));
+    }
+  }
+
+  const { data: movements } = await supabase
+    .from("transaction_amounts")
+    .select("account_id, amount, transactions!inner(user_id, deleted_at)")
+    .in("account_id", accountIds)
+    .eq("transactions.user_id", userId)
+    .is("transactions.deleted_at", null);
+
+  for (const m of movements ?? []) {
+    const id = m.account_id as string;
+    balances.set(id, (balances.get(id) ?? 0) + Number(m.amount));
+  }
+
+  return balances;
 }
 
 // --- GET ALL GOALS ---
@@ -41,7 +98,7 @@ export async function getSavingsGoals(): Promise<
       .select(
         `
         *,
-        accounts ( name ),
+        accounts ( name, currency ),
         currencies!currency ( symbol )
       `
       )
@@ -52,7 +109,48 @@ export async function getSavingsGoals(): Promise<
 
     if (error) return { error: error.message };
 
-    return { data: (data ?? []).map(mapGoal) };
+    const rows = data ?? [];
+
+    // For account-linked goals, derive progress live from the account balance
+    // so it can never drift from the real money moved into the account.
+    const accountIds = [
+      ...new Set(
+        rows
+          .filter((r) => r.account_id)
+          .map((r) => r.account_id as string),
+      ),
+    ];
+
+    const balances = await getLinkedAccountBalances(
+      supabase,
+      user.id,
+      accountIds,
+    );
+
+    const symbolByCode = new Map<string, string>();
+    if (accountIds.length > 0) {
+      const { data: currencyRows } = await supabase
+        .from("currencies")
+        .select("code, symbol");
+      for (const c of currencyRows ?? []) {
+        symbolByCode.set(c.code as string, c.symbol as string);
+      }
+    }
+
+    return {
+      data: rows.map((row) => {
+        if (!row.account_id || !balances.has(row.account_id)) {
+          return mapGoal(row);
+        }
+        const accountCurrency =
+          (row.accounts?.currency as string | undefined) ?? row.currency;
+        return mapGoal(row, {
+          current_amount: balances.get(row.account_id) ?? 0,
+          currency: accountCurrency,
+          currency_symbol: symbolByCode.get(accountCurrency) ?? accountCurrency,
+        });
+      }),
+    };
   } catch (e) {
     console.error("getSavingsGoals:", e);
     return { error: "Error al obtener las metas de ahorro" };
@@ -163,84 +261,5 @@ export async function deleteSavingsGoal(
   } catch (e) {
     console.error("deleteSavingsGoal:", e);
     return { error: "Error al eliminar la meta de ahorro" };
-  }
-}
-
-// --- RECALCULATE GOAL PROGRESS ---
-// Sums all transactions linked to this goal
-export async function recalculateGoalProgress(
-  goalId: string
-): Promise<ActionResult<SavingsGoalWithRelations>> {
-  try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return { error: "No autenticado" };
-
-    // Sum base_amount of all transactions linked to this goal
-    const { data: txRows, error: txError } = await supabase
-      .from("transactions")
-      .select("transaction_amounts ( base_amount )")
-      .eq("user_id", user.id)
-      .eq("savings_goal_id", goalId)
-      .is("deleted_at", null);
-
-    if (txError) return { error: txError.message };
-
-    // Only positive legs count toward progress: for a transfer (move into
-    // savings), the +leg represents the contribution and the -leg cancels.
-    // For income tagged to the goal, the single +leg counts. Expense legs
-    // (negative) and outgoing transfers don't add to progress.
-    let total = 0;
-    for (const tx of txRows ?? []) {
-      const lines = Array.isArray(tx.transaction_amounts)
-        ? tx.transaction_amounts
-        : tx.transaction_amounts
-          ? [tx.transaction_amounts]
-          : [];
-      for (const line of lines) {
-        const base = Number(line.base_amount ?? 0);
-        if (base > 0) total += base;
-      }
-    }
-
-    // Fetch target_amount to determine completion in a single update
-    const { data: goalRow } = await supabase
-      .from("savings_goals")
-      .select("target_amount")
-      .eq("id", goalId)
-      .eq("user_id", user.id)
-      .single();
-
-    if (!goalRow) return { error: "Meta no encontrada" };
-
-    const isCompleted = total >= Number(goalRow.target_amount);
-
-    // Single atomic update with both current_amount and is_completed
-    const { data: updated, error: updateError } = await supabase
-      .from("savings_goals")
-      .update({
-        current_amount: total,
-        is_completed: isCompleted,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", goalId)
-      .eq("user_id", user.id)
-      .select(
-        `
-        *,
-        accounts ( name ),
-        currencies!currency ( symbol )
-      `
-      )
-      .single();
-
-    if (updateError) return { error: updateError.message };
-
-    return { data: mapGoal(updated) };
-  } catch (e) {
-    console.error("recalculateGoalProgress:", e);
-    return { error: "Error al recalcular el progreso" };
   }
 }
