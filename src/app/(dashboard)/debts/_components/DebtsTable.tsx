@@ -42,7 +42,6 @@ import {
   useDeleteNwItem,
   useLiabilitiesForMonth,
 } from "@/hooks/useNetWorth";
-import { useMonths } from "@/hooks/useMonths";
 import { formatAmount, MONTH_NAMES } from "@/lib/format";
 import type { NwItemWithRelations } from "@/types/net-worth";
 import { DebtDialog } from "./DebtDialog";
@@ -53,7 +52,6 @@ import { DebtHistoryDialog } from "./DebtHistoryDialog";
 export function DebtsTable() {
   const { data: debts, isLoading, isError, error, refetch } = useDebts();
   const deleteMutation = useDeleteNwItem();
-  const { data: months } = useMonths();
 
   // Month/year navigation
   const now = new Date();

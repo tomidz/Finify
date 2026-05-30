@@ -287,10 +287,13 @@ function BudgetMonthContent({
   const { data: categories, isLoading: categoriesLoading } = useBudgetCategories();
   const { data: lines, isLoading: linesLoading } = useBudgetLines(selectedMonthId);
   const { data: summary, isLoading: summaryLoading } = useBudgetSummary(selectedMonthId);
-  const safeCategories = categories ?? [];
-  const safeLines = lines ?? [];
-  const safeSummary =
-    summary ?? { totals: { planned: 0, actual: 0, variance: 0 }, categories: [] };
+  const safeCategories = useMemo(() => categories ?? [], [categories]);
+  const safeLines = useMemo(() => lines ?? [], [lines]);
+  const safeSummary = useMemo(
+    () =>
+      summary ?? { totals: { planned: 0, actual: 0, variance: 0 }, categories: [] },
+    [summary]
+  );
 
   const lineByCategoryId = useMemo(() => {
     const map = new Map<string, BudgetLineWithPlan>();

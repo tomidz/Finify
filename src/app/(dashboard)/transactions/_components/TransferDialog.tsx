@@ -59,7 +59,6 @@ type TransferFormValues = {
 
 export function TransferDialog({
   transfer,
-  monthId,
   open,
   onOpenChange,
   allowedAccountTypes,
@@ -126,11 +125,6 @@ export function TransferDialog({
   const sourceAccount = activeAccounts.find((a) => a.id === watchSourceId);
   const destAccount = activeAccounts.find((a) => a.id === watchDestId);
   const destinationCurrency = destAccount?.currency ?? "";
-
-  const filteredDestAccounts = useMemo(
-    () => sortedAccounts.filter((a) => a.id !== watchSourceId),
-    [sortedAccounts, watchSourceId],
-  );
 
   const destinationManuallyEdited = useRef(false);
   const amountRef = useRef(form.getValues("amount"));
@@ -254,6 +248,9 @@ export function TransferDialog({
       });
     }
     destinationManuallyEdited.current = false;
+    // Intentionally keyed on activeAccounts.length (not the array ref) so the
+    // form only resets when accounts load, not on every memo recompute.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transfer, open, activeAccounts.length, form]);
 
   const handleAmountChange = useCallback((val: string) => {

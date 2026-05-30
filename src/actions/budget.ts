@@ -37,10 +37,6 @@ async function getUserId() {
   return user.id;
 }
 
-function monthCode(year: number, month: number): number {
-  return year * 100 + month;
-}
-
 function addMonths(
   year: number,
   month: number,
@@ -51,10 +47,6 @@ function addMonths(
     year: Math.floor(total / 12),
     month: (total % 12) + 1,
   };
-}
-
-function monthDiff(start: MonthLite, end: MonthLite): number {
-  return (end.year - start.year) * 12 + (end.month - start.month);
 }
 
 async function getMonthForUser(

@@ -16,6 +16,15 @@ const eslintConfig = defineConfig([
       "react-hooks/incompatible-library": "off",
       // Hard ban on implicit `any`.
       "@typescript-eslint/no-explicit-any": "error",
+      // Allow intentional throwaways (e.g. destructured discards) named `_`.
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
     },
   },
   globalIgnores([

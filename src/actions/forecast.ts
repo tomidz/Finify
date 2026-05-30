@@ -26,19 +26,6 @@ export async function getForecast(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth() + 1; // 1-based
-
-    // 1. Get current total balance across all accounts (base currency)
-    const { data: prefs } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", user.id)
-      .single();
-
-    const baseCurrency = prefs?.base_currency ?? "EUR";
-
     // Get the latest month
     const { data: latestMonth } = await supabase
       .from("months")

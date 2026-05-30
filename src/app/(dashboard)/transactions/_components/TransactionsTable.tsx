@@ -135,7 +135,7 @@ export function TransactionsTable() {
   const ensureCurrentMonth = useEnsureCurrentMonth();
   const createNextMonth = useCreateNextMonth();
   const previewNextMonth = usePreviewNextMonth();
-  const sortedMonths = months ?? [];
+  const sortedMonths = useMemo(() => months ?? [], [months]);
   useEffect(() => {
     if (!months || months.length > 0 || ensureCurrentMonth.isPending) return;
     ensureCurrentMonth.mutate();
@@ -425,6 +425,9 @@ export function TransactionsTable() {
         },
       },
     ],
+    // handleEdit is a stable useCallback([]) declared below; referencing it here
+    // would hit the temporal dead zone, so it is intentionally omitted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [baseCurrencySymbol],
   );
 
@@ -530,7 +533,6 @@ export function TransactionsTable() {
         selectedMonthId={selectedMonthId}
         selectedMonth={selectedMonth}
         sortedMonths={sortedMonths}
-        isBusy={ensureCurrentMonth.isPending}
         isCreatingMonth={createNextMonth.isPending || previewNextMonth.isPending}
         onMonthChange={setSelectedMonthId}
         onCreateNextMonth={handleCreateNextMonth}
@@ -873,7 +875,6 @@ const TransactionsToolbar = memo(function TransactionsToolbar({
   selectedMonthId,
   selectedMonth,
   sortedMonths,
-  isBusy,
   isCreatingMonth,
   onMonthChange,
   onCreateNextMonth,
@@ -883,7 +884,6 @@ const TransactionsToolbar = memo(function TransactionsToolbar({
   selectedMonthId: string | null;
   selectedMonth: Month | null;
   sortedMonths: Month[];
-  isBusy: boolean;
   isCreatingMonth: boolean;
   onMonthChange: (value: string) => void;
   onCreateNextMonth: () => void;

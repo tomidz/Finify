@@ -32,7 +32,7 @@ export default function NetWorthPage() {
 
   const { data: months } = useMonths();
   const ensureCurrentMonth = useEnsureCurrentMonth();
-  const sortedMonths = months ?? [];
+  const sortedMonths = useMemo(() => months ?? [], [months]);
 
   useEffect(() => {
     if (!months || months.length > 0 || ensureCurrentMonth.isPending) return;
@@ -51,8 +51,6 @@ export default function NetWorthPage() {
       setSelectedYear(availableYears[0]);
     }
   }, [selectedYear, availableYears]);
-
-  const year = selectedYear ?? 0;
 
   const { data: baseCurrency } = useBaseCurrency();
   const { data: currencies } = useCurrencies();
@@ -156,8 +154,11 @@ function NetWorthContent({
 
   const safeAssetsSummary = assetsSummary ?? { total: 0, accounts: [], month: 0, year };
   const safeLiabilities = liabilities ?? { total: 0, items: [], year };
-  const safeEvolution = evolution ?? [];
-  const safeCurrentInvestmentValues = currentInvestmentValues ?? {};
+  const safeEvolution = useMemo(() => evolution ?? [], [evolution]);
+  const safeCurrentInvestmentValues = useMemo(
+    () => currentInvestmentValues ?? {},
+    [currentInvestmentValues]
+  );
 
   const accountsWithCurrentValues = useMemo(
     () =>

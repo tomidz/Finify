@@ -27,12 +27,10 @@ import type {
   BudgetCategory,
   BudgetLineWithPlan,
   BudgetSummaryVsActual,
-  BudgetYear,
 } from "@/types/budget";
 import type {
   CreateBudgetNextMonthFromSourceInput,
   CreateBudgetLineInput,
-  CreateBudgetYearInput,
   CreateCategoryInput,
   UpsertBudgetMonthPlanInput,
   UpdateBudgetLineInput,

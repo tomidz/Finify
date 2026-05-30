@@ -79,7 +79,6 @@ type TransactionFormValues = {
 
 export function TransactionDialog({
   transaction,
-  monthId,
   open,
   onOpenChange,
 }: TransactionDialogProps) {
@@ -119,7 +118,10 @@ export function TransactionDialog({
   const fetchingRateRef = useRef(false);
 
   const { data: usageCounts } = useUsageCounts();
-  const activeAccounts = accounts?.filter((a) => a.is_active) ?? [];
+  const activeAccounts = useMemo(
+    () => accounts?.filter((a) => a.is_active) ?? [],
+    [accounts]
+  );
   const sortedAccounts = useMemo(
     () =>
       [...activeAccounts].sort(

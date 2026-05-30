@@ -44,7 +44,7 @@ export function useMonthSummary(
   transactions: TransactionWithRelations[] | undefined,
   openingBalances: OpeningBalance[] | undefined,
 ): { monthSummary: MonthSummary; accountMonthlyBalances: AccountBalance[] } {
-  const txs = transactions ?? [];
+  const txs = useMemo(() => transactions ?? [], [transactions]);
 
   const summaryAndBalances = useMemo(() => {
     const byAccount = new Map<string, AccountBalance>();

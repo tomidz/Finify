@@ -27,7 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useAccounts, useCurrencies } from "@/hooks/useAccounts";
+import { useAccounts } from "@/hooks/useAccounts";
 import {
   useCreateInvestment,
   useLookupInvestmentInstrument,
@@ -89,7 +89,6 @@ export function InvestmentDialog({
   });
 
   const { data: accounts } = useAccounts();
-  const { data: currencies } = useCurrencies();
   const createMutation = useCreateInvestment();
   const updateMutation = useUpdateInvestment();
   const lookupInstrumentMutation = useLookupInvestmentInstrument();
