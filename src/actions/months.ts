@@ -150,8 +150,11 @@ export async function previewNextMonthFromLatest(): Promise<
 
         const { data: prevMovements, error: prevMovementsError } = await supabase
           .from("transaction_amounts")
-          .select("account_id, amount, base_amount, transactions!inner(month_id)")
-          .eq("transactions.month_id", previousMonthRow.id);
+          .select(
+            "account_id, amount, base_amount, transactions!inner(month_id, deleted_at)",
+          )
+          .eq("transactions.month_id", previousMonthRow.id)
+          .is("transactions.deleted_at", null);
         if (prevMovementsError) return { error: prevMovementsError.message };
 
         for (const row of prevMovements ?? []) {
