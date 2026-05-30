@@ -61,7 +61,7 @@ export async function recordDebtPayment(
     if (!userId) return { error: "No autenticado" };
 
     const supabase = await createClient();
-    const { nw_item_id, date, amount, amount_base, account_id, category_id, description } =
+    const { nw_item_id, date, amount, account_id, category_id, description } =
       parsed.data;
 
     // Verify the nw_item belongs to this user and is a liability
@@ -88,9 +88,15 @@ export async function recordDebtPayment(
     const accountCurrency = account.currency as string;
     const liabilityCurrency = nwItem.currency as string;
 
-    // Compute base_amount of payment via real FX, not the caller-provided ratio
-    const computedAmountBase =
-      amount_base ?? (await convertAmount(amount, accountCurrency, baseCurrency, date));
+    // Compute base_amount server-side from the account currency (the money
+    // actually leaving the account). The caller-provided amount_base is ignored
+    // because the client may convert from the wrong currency.
+    const computedAmountBase = await convertAmount(
+      amount,
+      accountCurrency,
+      baseCurrency,
+      date,
+    );
     if (computedAmountBase == null) {
       return { error: "No se pudo obtener el tipo de cambio para la cuenta" };
     }

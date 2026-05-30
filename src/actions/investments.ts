@@ -658,6 +658,7 @@ export async function getCurrentInvestmentValuesByMonth(
       const price = prices[priceKey];
 
       let currentValue = price != null ? investment.quantity * price : investment.total_cost;
+      let costBasis = investment.total_cost;
 
       if (investment.asset_type !== "crypto" && investment.currency !== baseCurrency) {
         const fxKey = `${today}:${investment.currency}:${baseCurrency}`;
@@ -672,14 +673,16 @@ export async function getCurrentInvestmentValuesByMonth(
           fxRate = fxResult.data;
           fxCache.set(fxKey, fxRate);
         }
+        // Both legs must be in base currency or the delta (gain/loss) is wrong.
         currentValue *= fxRate;
+        costBasis *= fxRate;
       }
 
       const startMonth = purchaseYear < year ? 1 : purchaseMonth;
       for (let month = startMonth; month <= 12; month += 1) {
         totalsByMonth[month] = {
           currentValue: (totalsByMonth[month]?.currentValue ?? 0) + currentValue,
-          costBasis: (totalsByMonth[month]?.costBasis ?? 0) + investment.total_cost,
+          costBasis: (totalsByMonth[month]?.costBasis ?? 0) + costBasis,
         };
       }
     }

@@ -6,6 +6,7 @@ import {
   UpdateAccountSchema,
 } from "@/lib/validations/account.schema";
 import { getOrFetchFxRate } from "@/actions/fx";
+import { recalculateOpeningBalances } from "@/actions/months";
 import type { Account, Currency } from "@/types/accounts";
 
 /** Devuelve el opening_base_amount correcto usando FX si es necesario. */
@@ -383,22 +384,30 @@ export async function updateAccount(
         exchange_rate,
       );
 
-      const { data: months } = await supabase
+      // Opening balances cascade: only the earliest month holds the real
+      // initial amount; later months are derived (prev opening + prev
+      // movements). Set the earliest month and recalc forward, matching the
+      // transaction mutation paths — never force every month to the same value.
+      const { data: earliestMonth } = await supabase
         .from("months")
         .select("id")
-        .eq("user_id", user.id);
+        .eq("user_id", user.id)
+        .order("year", { ascending: true })
+        .order("month", { ascending: true })
+        .limit(1)
+        .maybeSingle();
 
-      const openingRows = (months ?? []).map((m) => ({
-        month_id: m.id,
-        account_id: id,
-        opening_amount: initial_amount,
-        opening_base_amount: openingBase,
-      }));
-
-      if (openingRows.length > 0) {
-        await supabase
-          .from("opening_balances")
-          .upsert(openingRows, { onConflict: "month_id,account_id" });
+      if (earliestMonth) {
+        await supabase.from("opening_balances").upsert(
+          {
+            month_id: earliestMonth.id,
+            account_id: id,
+            opening_amount: initial_amount,
+            opening_base_amount: openingBase,
+          },
+          { onConflict: "month_id,account_id" },
+        );
+        await recalculateOpeningBalances(earliestMonth.id);
       }
     }
 

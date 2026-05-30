@@ -263,13 +263,20 @@ export async function getPendingRecurring(
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     for (const rec of recurrings as any[]) {
-      const startDate = new Date(rec.start_date);
-      const endDate = rec.end_date ? new Date(rec.end_date) : null;
+      // Parse as local midnight so getDate()/getDay()/getMonth() are correct
+      // regardless of timezone offset.
+      const startStr = String(rec.start_date).slice(0, 10);
+      const endStr = rec.end_date ? String(rec.end_date).slice(0, 10) : null;
+      const startDate = new Date(`${startStr}T00:00:00`);
+      const endDate = endStr ? new Date(`${endStr}T00:00:00`) : null;
 
       // Skip if not yet started or already ended
       if (startDate > monthEnd) continue;
       if (endDate && endDate < monthStart) continue;
 
+      // Clamp generated dates to the active [start, end] window. Per-recurrence
+      // generators work on the calendar month, so dates before the start or
+      // after the end must be dropped here.
       const expectedDates = getExpectedDatesInMonth(
         rec.recurrence,
         rec.day_of_month,
@@ -277,7 +284,7 @@ export async function getPendingRecurring(
         year,
         month,
         startDate
-      );
+      ).filter((d) => d >= startStr && (!endStr || d <= endStr));
 
       const mapped: RecurringWithRelations = {
         ...rec,
@@ -356,17 +363,20 @@ function getExpectedDatesInMonth(
       break;
     }
     case "biweekly": {
-      const dow = dayOfWeek ?? startDate.getDay();
-      const matching: number[] = [];
-      for (let d = 1; d <= lastDay; d++) {
-        const date = new Date(year, month - 1, d);
-        if (date.getDay() === dow) matching.push(d);
+      // True 14-day cycle anchored on start_date (not "every other weekday in
+      // the calendar month", which drifts across month boundaries).
+      const monthStart = new Date(year, month - 1, 1);
+      const cursor = new Date(startDate);
+      while (cursor < monthStart) {
+        cursor.setDate(cursor.getDate() + 14);
       }
-      // Every other occurrence (1st and 3rd, or 2nd and 4th)
-      for (let i = 0; i < matching.length; i += 2) {
+      while (cursor.getFullYear() === year && cursor.getMonth() === month - 1) {
         dates.push(
-          `${year}-${String(month).padStart(2, "0")}-${String(matching[i]).padStart(2, "0")}`
+          `${year}-${String(month).padStart(2, "0")}-${String(
+            cursor.getDate()
+          ).padStart(2, "0")}`
         );
+        cursor.setDate(cursor.getDate() + 14);
       }
       break;
     }

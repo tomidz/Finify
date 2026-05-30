@@ -63,6 +63,7 @@ export function useCreateRecurring() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: RECURRING_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: ["forecast"] });
     },
   });
 }
@@ -102,6 +103,7 @@ export function useUpdateRecurring() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: RECURRING_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: ["forecast"] });
     },
   });
 }
@@ -136,6 +138,7 @@ export function useDeleteRecurring() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: RECURRING_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: ["forecast"] });
     },
   });
 }

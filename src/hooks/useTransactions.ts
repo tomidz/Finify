@@ -43,6 +43,7 @@ async function invalidateFinancialQueries(queryClient: ReturnType<typeof useQuer
     queryClient.invalidateQueries({ queryKey: ["budget", "summary-range"] }),
     queryClient.invalidateQueries({ queryKey: ["net-worth"] }),
     queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+    queryClient.invalidateQueries({ queryKey: ["forecast"] }),
   ]);
 }
 
