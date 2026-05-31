@@ -74,7 +74,7 @@ export function AccountBalances({
 
             return (
               <div
-                key={account.name}
+                key={account.accountId}
                 className="bg-muted/20 space-y-2 rounded-md border px-3 py-2.5"
               >
                 <p className="text-foreground truncate text-sm font-semibold">

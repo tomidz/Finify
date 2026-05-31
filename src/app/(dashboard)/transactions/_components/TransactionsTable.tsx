@@ -1008,7 +1008,7 @@ const TransactionsAccountBalances = memo(function TransactionsAccountBalances({
     | undefined;
   baseCurrencySymbol: string;
 }) {
-  const [hideZero, setHideZero] = useState(false);
+  const [hideZero, setHideZero] = useState(true);
 
   if (!selectedMonth) return null;
 
@@ -1063,7 +1063,7 @@ const TransactionsAccountBalances = memo(function TransactionsAccountBalances({
             const up = gain >= 0;
             const gainTone = up ? "text-green-600" : "text-red-600";
             return (
-              <div key={account.name} className="bg-muted/20 space-y-2 rounded-md border px-3 py-2.5">
+              <div key={account.accountId} className="bg-muted/20 space-y-2 rounded-md border px-3 py-2.5">
                 <p className="text-foreground truncate text-sm font-semibold">
                   {account.name} ({account.currencyCode})
                 </p>
