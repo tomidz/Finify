@@ -14,6 +14,12 @@ describe("formatAmount", () => {
     expect(formatAmount(-1234.56)).toBe("-1.234,56");
     expect(formatAmount(1000000)).toBe("1.000.000,00");
   });
+
+  it("never renders negative zero", () => {
+    expect(formatAmount(-0)).toBe("0,00");
+    expect(formatAmount(-0.004)).toBe("0,00");
+    expect(formatAmount(-0.000001)).toBe("0,00");
+  });
 });
 
 describe("amountTone", () => {

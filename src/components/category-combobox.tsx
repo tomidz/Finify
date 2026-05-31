@@ -93,7 +93,7 @@ export function CategoryCombobox({
             <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start" portal={false}>
           <Command>
             <CommandInput placeholder="Buscar categoría..." />
             <CommandList>

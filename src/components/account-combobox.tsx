@@ -58,6 +58,7 @@ export function AccountCombobox({
       <PopoverContent
         className="w-[var(--radix-popover-trigger-width)] p-0"
         align="start"
+        portal={false}
       >
         <Command>
           <CommandInput placeholder="Buscar cuenta..." />

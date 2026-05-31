@@ -26,7 +26,10 @@ const amountFormatter = new Intl.NumberFormat("es-AR", {
 
 /** Format a number as es-AR currency (dot thousands, comma decimals, 2 places). */
 export function formatAmount(value: number): string {
-  return amountFormatter.format(value);
+  // Anything that rounds to 0 at 2 decimals (incl. -0 and tiny float drift)
+  // is shown as "0,00", never "-0,00".
+  const normalized = Math.round(value * 100) === 0 ? 0 : value;
+  return amountFormatter.format(normalized);
 }
 
 /** Return a Tailwind text color class based on the sign of a number. */
