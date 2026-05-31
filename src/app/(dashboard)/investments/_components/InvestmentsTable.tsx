@@ -176,6 +176,7 @@ export function InvestmentsTable() {
   const [searchTerm, setSearchTerm] = useState("");
   const [assetTypeFilter, setAssetTypeFilter] = useState("all");
   const [accountFilter, setAccountFilter] = useState("all");
+  const [viewMode, setViewMode] = useState<"flat" | "account" | "asset">("flat");
 
   const toggleExpanded = useCallback((key: string) => {
     setExpandedHoldings((prev) => {
@@ -233,6 +234,40 @@ export function InvestmentsTable() {
     });
   }, [accountFilter, assetTypeFilter, holdings, searchTerm]);
 
+  // Grouped views: by account or by asset (combining the same asset across
+  // accounts). Each group carries its own cost/current/gain subtotals.
+  const groupedHoldings = useMemo(() => {
+    if (viewMode === "flat") return null;
+
+    const groups = new Map<
+      string,
+      { key: string; label: string; items: HoldingPosition[] }
+    >();
+    for (const holding of filteredHoldings) {
+      const key =
+        viewMode === "account"
+          ? holding.account_id
+          : holding.ticker ?? holding.asset_name;
+      const label =
+        viewMode === "account" ? holding.account_name : holding.asset_name;
+      if (!groups.has(key)) groups.set(key, { key, label, items: [] });
+      groups.get(key)!.items.push(holding);
+    }
+
+    return Array.from(groups.values())
+      .map((group) => {
+        const cost = group.items.reduce((s, h) => s + h.total_cost, 0);
+        const allValued = group.items.every((h) => h.current_value !== null);
+        const current = allValued
+          ? group.items.reduce((s, h) => s + (h.current_value ?? 0), 0)
+          : null;
+        const gain = current !== null ? current - cost : null;
+        const gainPct = gain !== null && cost > 0 ? (gain / cost) * 100 : null;
+        return { ...group, cost, current, gain, gainPct };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [viewMode, filteredHoldings]);
+
   const hasActiveFilters =
     searchTerm.trim().length > 0 ||
     assetTypeFilter !== "all" ||
@@ -273,6 +308,28 @@ export function InvestmentsTable() {
       </div>
     );
   }
+
+  const renderHolding = (holding: HoldingPosition) => {
+    const key = `${holding.ticker}::${holding.account_id}`;
+    return (
+      <HoldingRows
+        key={key}
+        holding={holding}
+        isExpanded={expandedHoldings.has(key)}
+        onToggleExpanded={toggleExpanded}
+        onTransfer={(selectedHolding) => {
+          setTransferHolding(selectedHolding);
+          setTransferDialogOpen(true);
+        }}
+        onSell={(selectedHolding) => {
+          setSellHolding(selectedHolding);
+          setSellDialogOpen(true);
+        }}
+        onEdit={handleEdit}
+        onDelete={setDeletingInvestment}
+      />
+    );
+  };
 
   return (
     <>
@@ -340,6 +397,21 @@ export function InvestmentsTable() {
                   {name}
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={viewMode}
+            onValueChange={(value) =>
+              setViewMode(value as "flat" | "account" | "asset")
+            }
+          >
+            <SelectTrigger className="w-full sm:w-52">
+              <SelectValue placeholder="Vista" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="flat">Por activo y cuenta</SelectItem>
+              <SelectItem value="account">Agrupar por cuenta</SelectItem>
+              <SelectItem value="asset">Agrupar por activo</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -425,25 +497,47 @@ export function InvestmentsTable() {
                   </div>
                 </TableCell>
               </TableRow>
-            ) : (
-              filteredHoldings.map((holding) => (
-                <HoldingRows
-                  key={`${holding.ticker}::${holding.account_id}`}
-                  holding={holding}
-                  isExpanded={expandedHoldings.has(`${holding.ticker}::${holding.account_id}`)}
-                  onToggleExpanded={toggleExpanded}
-                  onTransfer={(selectedHolding) => {
-                    setTransferHolding(selectedHolding);
-                    setTransferDialogOpen(true);
-                  }}
-                  onSell={(selectedHolding) => {
-                    setSellHolding(selectedHolding);
-                    setSellDialogOpen(true);
-                  }}
-                  onEdit={handleEdit}
-                  onDelete={setDeletingInvestment}
-                />
+            ) : groupedHoldings ? (
+              groupedHoldings.map((group) => (
+                <React.Fragment key={group.key}>
+                  <TableRow className="bg-muted/40 hover:bg-muted/40">
+                    <TableCell colSpan={6} className="font-semibold">
+                      {group.label}
+                      <span className="text-muted-foreground ml-2 text-xs font-normal">
+                        ({group.items.length})
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-right font-semibold">
+                      {currencySymbol} {formatAmount(group.cost)}
+                    </TableCell>
+                    <TableCell />
+                    <TableCell className="text-right font-semibold">
+                      {group.current !== null
+                        ? `${currencySymbol} ${formatAmount(group.current)}`
+                        : "—"}
+                    </TableCell>
+                    <TableCell
+                      className={`text-right font-semibold ${
+                        group.gain === null
+                          ? ""
+                          : group.gain >= 0
+                            ? "text-green-600"
+                            : "text-red-600"
+                      }`}
+                    >
+                      {group.gain !== null
+                        ? `${group.gain >= 0 ? "▲" : "▼"} ${currencySymbol} ${formatAmount(
+                            Math.abs(group.gain),
+                          )}${group.gainPct !== null ? ` (${formatAmount(Math.abs(group.gainPct))}%)` : ""}`
+                        : "—"}
+                    </TableCell>
+                    <TableCell />
+                  </TableRow>
+                  {group.items.map((holding) => renderHolding(holding))}
+                </React.Fragment>
               ))
+            ) : (
+              filteredHoldings.map((holding) => renderHolding(holding))
             )}
           </TableBody>
         </Table>
