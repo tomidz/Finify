@@ -45,6 +45,8 @@ type FormValues = {
   holding_key: string;
   destination_account_id: string;
   quantity: string;
+  fee_quantity: string;
+  fee_cash: string;
   transfer_date: string;
   notes: string;
 };
@@ -65,6 +67,8 @@ export function TransferPositionDialog({
       holding_key: "",
       destination_account_id: "",
       quantity: "",
+      fee_quantity: "",
+      fee_cash: "",
       transfer_date: format(new Date(), "yyyy-MM-dd"),
       notes: "",
     },
@@ -93,6 +97,24 @@ export function TransferPositionDialog({
     [accounts, resolvedHolding?.account_id],
   );
 
+  const sourceCurrency = useMemo(
+    () =>
+      (accounts ?? []).find(
+        (account) => account.id === resolvedHolding?.account_id,
+      )?.currency ?? "",
+    [accounts, resolvedHolding?.account_id],
+  );
+
+  const watchQuantity = form.watch("quantity");
+  const watchFeeQuantity = form.watch("fee_quantity");
+  const receivedQuantity = useMemo(() => {
+    const qty = parseNumberInput(watchQuantity);
+    const fee = parseNumberInput(watchFeeQuantity);
+    const safeQty = Number.isNaN(qty) ? 0 : qty;
+    const safeFee = Number.isNaN(fee) ? 0 : fee;
+    return Math.max(0, safeQty - safeFee);
+  }, [watchQuantity, watchFeeQuantity]);
+
   useEffect(() => {
     if (!open) return;
     const targetHolding = holding ?? holdings[0] ?? null;
@@ -104,6 +126,8 @@ export function TransferPositionDialog({
       quantity: targetHolding
         ? formatNumberInput(String(targetHolding.total_quantity).replace(".", ","))
         : "",
+      fee_quantity: "",
+      fee_cash: "",
       transfer_date: format(new Date(), "yyyy-MM-dd"),
       notes: "",
     });
@@ -132,6 +156,26 @@ export function TransferPositionDialog({
       return;
     }
 
+    const feeQuantityRaw = parseNumberInput(values.fee_quantity);
+    const feeQuantity = Number.isNaN(feeQuantityRaw) ? 0 : feeQuantityRaw;
+    if (feeQuantity < 0) {
+      form.setError("fee_quantity", { message: "Comisión inválida" });
+      return;
+    }
+    if (feeQuantity >= quantity) {
+      form.setError("fee_quantity", {
+        message: "Debe ser menor a la cantidad",
+      });
+      return;
+    }
+
+    const feeCashRaw = parseNumberInput(values.fee_cash);
+    const feeCash = Number.isNaN(feeCashRaw) ? 0 : feeCashRaw;
+    if (feeCash < 0) {
+      form.setError("fee_cash", { message: "Comisión inválida" });
+      return;
+    }
+
     try {
       await transferMutation.mutateAsync({
         source_account_id: resolvedHolding.account_id,
@@ -142,6 +186,8 @@ export function TransferPositionDialog({
         asset_type: resolvedHolding.asset_type,
         currency: resolvedHolding.currency,
         quantity,
+        fee_quantity: feeQuantity,
+        fee_cash: feeCash,
         transfer_date: values.transfer_date,
         notes: values.notes || null,
       });
@@ -264,6 +310,63 @@ export function TransferPositionDialog({
                     <FormControl>
                       <Input type="date" {...field} disabled={transferMutation.isPending} />
                     </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="fee_quantity"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Comisión (cantidad)</FormLabel>
+                    <FormControl>
+                      <Input
+                        value={field.value}
+                        onChange={(event) =>
+                          field.onChange(formatNumberInput(event.target.value))
+                        }
+                        inputMode="decimal"
+                        placeholder="0"
+                        disabled={transferMutation.isPending}
+                      />
+                    </FormControl>
+                    <p className="text-muted-foreground text-xs">
+                      Llega al destino:{" "}
+                      {formatNumberInput(
+                        String(receivedQuantity).replace(".", ","),
+                      )}
+                    </p>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="fee_cash"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>
+                      Comisión en efectivo{sourceCurrency ? ` (${sourceCurrency})` : ""}
+                    </FormLabel>
+                    <FormControl>
+                      <Input
+                        value={field.value}
+                        onChange={(event) =>
+                          field.onChange(formatNumberInput(event.target.value))
+                        }
+                        inputMode="decimal"
+                        placeholder="0,00"
+                        disabled={transferMutation.isPending}
+                      />
+                    </FormControl>
+                    <p className="text-muted-foreground text-xs">
+                      Se descuenta del cash de la cuenta origen.
+                    </p>
                     <FormMessage />
                   </FormItem>
                 )}

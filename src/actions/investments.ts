@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { getOrFetchFxRate } from "@/actions/fx";
-import { recalculateOpeningBalances } from "@/actions/months";
+import { createMonth, recalculateOpeningBalances } from "@/actions/months";
 import {
   CreateInvestmentSchema,
   SellInvestmentSchema,
@@ -753,7 +753,7 @@ export async function transferInvestmentPosition(
 
     const { data: accounts, error: accountsError } = await supabase
       .from("accounts")
-      .select("id, account_type")
+      .select("id, account_type, currency")
       .in("id", [
         parsed.data.source_account_id,
         parsed.data.destination_account_id,
@@ -802,6 +802,14 @@ export async function transferInvestmentPosition(
       return { error: "No hay cantidad suficiente para transferir" };
     }
 
+    // Network fee in asset units: the source loses the full quantity, the
+    // destination receives quantity - fee_quantity, and the cost basis is
+    // preserved on what arrives (per-unit cost rises, no realized loss).
+    const feeFraction =
+      parsed.data.quantity > 0
+        ? parsed.data.fee_quantity / parsed.data.quantity
+        : 0;
+
     let remainingQuantity = parsed.data.quantity;
 
     for (const lot of matchingLots) {
@@ -811,25 +819,30 @@ export async function transferInvestmentPosition(
       const movedQuantity = Math.min(lotQuantity, remainingQuantity);
       const unitCost = lotQuantity > 0 ? Number(lot.total_cost) / lotQuantity : 0;
       const movedCost = Number((movedQuantity * unitCost).toFixed(8));
+      const receivedQuantity = Number(
+        (movedQuantity * (1 - feeFraction)).toFixed(8),
+      );
       const remainingLotQuantity = Number((lotQuantity - movedQuantity).toFixed(8));
       const remainingLotCost = Number((Number(lot.total_cost) - movedCost).toFixed(8));
 
-      const { error: insertError } = await supabase.from("investments").insert({
-        user_id: userId,
-        account_id: parsed.data.destination_account_id,
-        asset_name: lot.asset_name,
-        ticker: lot.ticker,
-        isin: lot.isin,
-        asset_type: lot.asset_type,
-        quantity: movedQuantity,
-        price_per_unit: lot.price_per_unit,
-        total_cost: movedCost,
-        currency: lot.currency,
-        purchase_date: parsed.data.transfer_date,
-        notes: parsed.data.notes ?? `Transferido desde otra cuenta`,
-      });
+      if (receivedQuantity > 0.00000001) {
+        const { error: insertError } = await supabase.from("investments").insert({
+          user_id: userId,
+          account_id: parsed.data.destination_account_id,
+          asset_name: lot.asset_name,
+          ticker: lot.ticker,
+          isin: lot.isin,
+          asset_type: lot.asset_type,
+          quantity: receivedQuantity,
+          price_per_unit: lot.price_per_unit,
+          total_cost: movedCost,
+          currency: lot.currency,
+          purchase_date: parsed.data.transfer_date,
+          notes: parsed.data.notes ?? `Transferido desde otra cuenta`,
+        });
 
-      if (insertError) return { error: insertError.message };
+        if (insertError) return { error: insertError.message };
+      }
 
       if (remainingLotQuantity <= 0.00000001) {
         const { error: deleteError } = await supabase
@@ -852,6 +865,76 @@ export async function transferInvestmentPosition(
       }
 
       remainingQuantity = Number((remainingQuantity - movedQuantity).toFixed(8));
+    }
+
+    // Cash fee: deduct from the source account's cash as a `correction`
+    // (a cost, not a budget expense), mirroring the investment-buy deduction.
+    if (parsed.data.fee_cash > 0) {
+      const sourceAccount = accounts.find(
+        (account) => account.id === parsed.data.source_account_id,
+      );
+      const sourceCurrency = (sourceAccount?.currency as string) ?? "USD";
+
+      const parsedDate = new Date(`${parsed.data.transfer_date}T00:00:00`);
+      const monthResult = await createMonth(
+        parsedDate.getFullYear(),
+        parsedDate.getMonth() + 1,
+      );
+      if ("error" in monthResult) return { error: monthResult.error };
+      const monthId = monthResult.data.id;
+
+      const { data: prefs } = await supabase
+        .from("user_preferences")
+        .select("base_currency")
+        .eq("user_id", userId)
+        .maybeSingle();
+      const baseCurrency = prefs?.base_currency ?? "USD";
+
+      const amount = -Math.abs(parsed.data.fee_cash);
+      let exchangeRate = 1;
+      let baseAmount = amount;
+      if (sourceCurrency !== baseCurrency) {
+        const fxResult = await getOrFetchFxRate({
+          date: parsed.data.transfer_date,
+          from: sourceCurrency,
+          to: baseCurrency,
+        });
+        if ("error" in fxResult) return fxResult;
+        exchangeRate = fxResult.data;
+        baseAmount = Number((amount * fxResult.data).toFixed(4));
+      }
+
+      const { data: feeTx, error: feeTxError } = await supabase
+        .from("transactions")
+        .insert({
+          user_id: userId,
+          month_id: monthId,
+          category_id: null,
+          transaction_type: "correction",
+          date: parsed.data.transfer_date,
+          description: `Comisión transferencia ${parsed.data.asset_name}`,
+          notes: null,
+        })
+        .select()
+        .single();
+      if (feeTxError) return { error: feeTxError.message };
+
+      const { error: feeAmountError } = await supabase
+        .from("transaction_amounts")
+        .insert({
+          transaction_id: feeTx.id,
+          account_id: parsed.data.source_account_id,
+          amount,
+          original_currency: sourceCurrency,
+          exchange_rate: exchangeRate,
+          base_amount: baseAmount,
+        });
+      if (feeAmountError) {
+        await supabase.from("transactions").delete().eq("id", feeTx.id);
+        return { error: feeAmountError.message };
+      }
+
+      await recalculateOpeningBalances(monthId);
     }
 
     return { data: null };

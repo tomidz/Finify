@@ -29,15 +29,30 @@ export const TransferInvestmentPositionSchema = z.object({
   asset_type: z.enum(ASSET_TYPES),
   currency: z.string().min(1, "La moneda es obligatoria"),
   quantity: z.number().positive("La cantidad debe ser mayor a 0"),
+  // Network/withdrawal fee charged in units of the asset: the destination
+  // receives quantity - fee_quantity (cost is preserved on what arrives).
+  fee_quantity: z
+    .number()
+    .min(0, "La comisión no puede ser negativa")
+    .optional()
+    .default(0),
+  // Cash fee charged to the source account (in its own currency).
+  fee_cash: z
+    .number()
+    .min(0, "La comisión no puede ser negativa")
+    .optional()
+    .default(0),
   transfer_date: z.string().min(1, "La fecha es obligatoria"),
   notes: z.string().max(500).nullable().optional(),
-}).refine(
-  (data) => data.source_account_id !== data.destination_account_id,
-  {
+})
+  .refine((data) => data.source_account_id !== data.destination_account_id, {
     message: "La cuenta origen y destino deben ser diferentes",
     path: ["destination_account_id"],
-  },
-);
+  })
+  .refine((data) => data.fee_quantity < data.quantity, {
+    message: "La comisión debe ser menor a la cantidad transferida",
+    path: ["fee_quantity"],
+  });
 
 export const SellInvestmentSchema = z.object({
   account_id: z.string().uuid("Cuenta inválida"),

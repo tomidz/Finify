@@ -323,6 +323,8 @@ export function useTransferInvestmentPosition() {
       queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
       queryClient.invalidateQueries({ queryKey: ["net-worth"] });
       queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      queryClient.invalidateQueries({ queryKey: ["opening-balances"] });
+      queryClient.invalidateQueries({ queryKey: ["months"] });
     },
   });
 }
