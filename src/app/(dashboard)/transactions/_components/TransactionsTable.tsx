@@ -1009,14 +1009,14 @@ const TransactionsAccountBalances = memo(function TransactionsAccountBalances({
 
   if (!selectedMonth) return null;
 
-  // Treat anything that rounds to 0,00 (incl. tiny float drift like -0,004)
-  // as zero, matching what the user actually sees on screen.
+  // "En cero" = the account currently holds nothing: its closing (final)
+  // balance rounds to 0,00 and it has no investments. The opening balance is
+  // irrelevant (an account that started with money and ended at 0 is empty).
   const roundsToZero = (n: number) => Math.round(n * 100) === 0;
   const isZeroAccount = (
     account: (typeof accountMonthlyBalances)[number],
   ) => {
-    if (!roundsToZero(account.opening) || !roundsToZero(account.closing))
-      return false;
+    if (!roundsToZero(account.closing)) return false;
     const live = currentInvestmentByAccount?.[account.accountId];
     if (live && (!roundsToZero(live.current) || !roundsToZero(live.cost)))
       return false;
