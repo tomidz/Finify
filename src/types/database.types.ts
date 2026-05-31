@@ -1254,6 +1254,7 @@ export type Database = {
         | "crypto_wallet"
         | "cash"
         | "other"
+        | "credit_card"
       budget_category_type:
         | "income"
         | "essential_expenses"
@@ -1405,6 +1406,7 @@ export const Constants = {
         "crypto_wallet",
         "cash",
         "other",
+        "credit_card",
       ],
       budget_category_type: [
         "income",

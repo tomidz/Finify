@@ -3,6 +3,7 @@ export const ACCOUNT_TYPES = [
   "investment_broker",
   "crypto_exchange",
   "crypto_wallet",
+  "credit_card",
   "cash",
   "other",
 ] as const;
@@ -14,6 +15,7 @@ export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
   investment_broker: "Broker de inversiones",
   crypto_exchange: "Exchange de crypto",
   crypto_wallet: "Wallet de crypto",
+  credit_card: "Tarjeta de crédito",
   cash: "Efectivo",
   other: "Otro",
 };
