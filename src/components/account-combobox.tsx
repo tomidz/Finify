@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Check, ChevronsUpDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatAmount } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -25,6 +26,8 @@ interface AccountComboboxProps {
   onValueChange: (value: string) => void;
   placeholder?: string;
   disabled?: boolean;
+  /** Optional balance per account id (in the account's own currency). */
+  balanceByAccount?: Record<string, number>;
 }
 
 export function AccountCombobox({
@@ -33,12 +36,19 @@ export function AccountCombobox({
   onValueChange,
   placeholder = "Seleccionar cuenta",
   disabled = false,
+  balanceByAccount,
 }: AccountComboboxProps) {
   const [open, setOpen] = useState(false);
 
   const selectedAccount = accounts.find((a) => a.id === value);
+  const selectedBalance =
+    selectedAccount && balanceByAccount
+      ? balanceByAccount[selectedAccount.id]
+      : undefined;
   const displayLabel = selectedAccount
-    ? `${selectedAccount.name} (${selectedAccount.currency})`
+    ? `${selectedAccount.name} (${selectedAccount.currency})${
+        selectedBalance != null ? ` · ${formatAmount(selectedBalance)}` : ""
+      }`
     : placeholder;
 
   return (
@@ -65,24 +75,34 @@ export function AccountCombobox({
           <CommandList>
             <CommandEmpty>No se encontraron cuentas.</CommandEmpty>
             <CommandGroup>
-              {accounts.map((account) => (
-                <CommandItem
-                  key={account.id}
-                  value={`${account.name} (${account.currency})`}
-                  onSelect={() => {
-                    onValueChange(account.id);
-                    setOpen(false);
-                  }}
-                >
-                  <Check
-                    className={cn(
-                      "mr-2 size-4",
-                      value === account.id ? "opacity-100" : "opacity-0"
+              {accounts.map((account) => {
+                const balance = balanceByAccount?.[account.id];
+                return (
+                  <CommandItem
+                    key={account.id}
+                    value={`${account.name} (${account.currency})`}
+                    onSelect={() => {
+                      onValueChange(account.id);
+                      setOpen(false);
+                    }}
+                  >
+                    <Check
+                      className={cn(
+                        "mr-2 size-4",
+                        value === account.id ? "opacity-100" : "opacity-0"
+                      )}
+                    />
+                    <span className="flex-1 truncate">
+                      {account.name} ({account.currency})
+                    </span>
+                    {balance != null && (
+                      <span className="text-muted-foreground ml-2 whitespace-nowrap text-xs tabular-nums">
+                        {formatAmount(balance)}
+                      </span>
                     )}
-                  />
-                  {account.name} ({account.currency})
-                </CommandItem>
-              ))}
+                  </CommandItem>
+                );
+              })}
             </CommandGroup>
           </CommandList>
         </Command>
