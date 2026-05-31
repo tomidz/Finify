@@ -28,6 +28,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAccounts } from "@/hooks/useAccounts";
+import { useAccountNetWorth } from "@/hooks/useNetWorth";
 import {
   useCreateInvestment,
   useLookupInvestmentInstrument,
@@ -89,6 +90,7 @@ export function InvestmentDialog({
   });
 
   const { data: accounts } = useAccounts();
+  const { data: accountNetWorth } = useAccountNetWorth(new Date().getFullYear());
   const createMutation = useCreateInvestment();
   const updateMutation = useUpdateInvestment();
   const lookupInstrumentMutation = useLookupInvestmentInstrument();
@@ -107,6 +109,15 @@ export function InvestmentDialog({
       ),
     [accounts]
   );
+
+  // Cash balance per account (in the account's own currency) for the selector.
+  const balanceByAccount = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const account of accountNetWorth?.accounts ?? []) {
+      map[account.id] = account.balance;
+    }
+    return map;
+  }, [accountNetWorth]);
 
   const watchAccountId = useWatch({ control: form.control, name: "account_id" });
   const watchAssetType = useWatch({ control: form.control, name: "asset_type" });
@@ -315,6 +326,7 @@ export function InvestmentDialog({
                       value={field.value}
                       onValueChange={field.onChange}
                       disabled={isPending}
+                      balanceByAccount={balanceByAccount}
                     />
                   </FormControl>
                   <FormMessage />
