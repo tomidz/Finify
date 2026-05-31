@@ -1009,13 +1009,19 @@ const TransactionsAccountBalances = memo(function TransactionsAccountBalances({
 
   if (!selectedMonth) return null;
 
+  // Treat anything that rounds to 0,00 (incl. tiny float drift like -0,004)
+  // as zero, matching what the user actually sees on screen.
+  const roundsToZero = (n: number) => Math.round(n * 100) === 0;
   const isZeroAccount = (
     account: (typeof accountMonthlyBalances)[number],
   ) => {
-    if (account.opening !== 0 || account.closing !== 0) return false;
+    if (!roundsToZero(account.opening) || !roundsToZero(account.closing))
+      return false;
     const live = currentInvestmentByAccount?.[account.accountId];
-    if (live && (live.current !== 0 || live.cost !== 0)) return false;
-    if ((investmentByAccount.get(account.accountId) ?? 0) !== 0) return false;
+    if (live && (!roundsToZero(live.current) || !roundsToZero(live.cost)))
+      return false;
+    if (!roundsToZero(investmentByAccount.get(account.accountId) ?? 0))
+      return false;
     return true;
   };
 
