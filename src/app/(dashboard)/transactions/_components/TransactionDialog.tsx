@@ -28,7 +28,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useAccounts, useCurrencies } from "@/hooks/useAccounts";
+import {
+  useAccounts,
+  useCurrencies,
+  useAccountCurrentBalance,
+} from "@/hooks/useAccounts";
 import { useBudgetCategories } from "@/hooks/useBudget";
 import {
   useCreateTransaction,
@@ -41,6 +45,7 @@ import { useMatchRules, useCreateTransactionRule } from "@/hooks/useTransactionR
 import { Checkbox } from "@/components/ui/checkbox";
 import { CreateTransactionSchema } from "@/lib/validations/transaction.schema";
 import { formatNumberInput, parseNumberInput } from "@/lib/utils";
+import { formatAmount } from "@/lib/format";
 import { fetchExchangeRate } from "@/lib/frankfurter";
 import {
   TRANSACTION_TYPE_LABELS,
@@ -74,6 +79,7 @@ type TransactionFormValues = {
   amount: string;
   exchange_rate: string;
   base_amount: string;
+  target_balance: string;
   notes: string;
 };
 
@@ -94,6 +100,7 @@ export function TransactionDialog({
       amount: "",
       exchange_rate: "1",
       base_amount: "",
+      target_balance: "",
       notes: "",
     },
   });
@@ -149,10 +156,33 @@ export function TransactionDialog({
     control: form.control,
     name: "amount",
   });
+  const watchTargetBalance = useWatch({
+    control: form.control,
+    name: "target_balance",
+  });
 
   const selectedAccount = activeAccounts.find((a) => a.id === watchAccountId);
 
-  const showCategory = watchTransactionType !== "transfer";
+  // Correction = balance adjustment: enter the account's actual current balance
+  // and the delta vs. the recorded balance is computed automatically.
+  const isCorrection = watchTransactionType === "correction";
+  const isBalanceAdjustment = isCorrection && !isEditing;
+
+  const { data: currentBalance, isLoading: isBalanceLoading } =
+    useAccountCurrentBalance(
+      isBalanceAdjustment ? watchAccountId || undefined : undefined,
+    );
+  const recordedBalance = currentBalance?.amount ?? 0;
+  const targetBalanceNum = parseNumberInput(watchTargetBalance);
+  const adjustment =
+    isBalanceAdjustment &&
+    !isBalanceLoading &&
+    watchTargetBalance.trim() !== "" &&
+    !isNaN(targetBalanceNum)
+      ? Math.round((targetBalanceNum - recordedBalance) * 100) / 100
+      : null;
+
+  const showCategory = watchTransactionType !== "transfer" && !isCorrection;
 
   // Filter categories by transaction type
   const filteredCategories = useMemo(() => {
@@ -240,6 +270,7 @@ export function TransactionDialog({
         base_amount: formatNumberInput(
           String(Math.abs(line?.base_amount ?? 0)).replace(".", ","),
         ),
+        target_balance: "",
         notes: transaction.notes ?? "",
       });
     } else {
@@ -252,6 +283,7 @@ export function TransactionDialog({
         amount: "",
         exchange_rate: "1",
         base_amount: "",
+        target_balance: "",
         notes: "",
       });
     }
@@ -348,20 +380,45 @@ export function TransactionDialog({
   const onSubmit = async (values: TransactionFormValues) => {
     form.clearErrors();
 
-    const amountNum = parseNumberInput(values.amount);
     const rateNum = parseNumberInput(values.exchange_rate);
-    const baseNum = parseNumberInput(values.base_amount);
+    const safeRate = isNaN(rateNum) || rateNum <= 0 ? 1 : rateNum;
+
+    let amountNum: number;
+    let baseNum: number;
+    let description = values.description;
+
+    if (isBalanceAdjustment) {
+      if (isBalanceLoading) return;
+      if (adjustment === null) {
+        form.setError("target_balance", {
+          message: "Ingresá el saldo actual de la cuenta",
+        });
+        return;
+      }
+      if (adjustment === 0) {
+        form.setError("target_balance", {
+          message: "El saldo ya coincide, no hay ajuste que registrar",
+        });
+        return;
+      }
+      amountNum = adjustment;
+      baseNum = Math.round(adjustment * safeRate * 100) / 100;
+      description = values.description.trim() || "Ajuste de saldo";
+    } else {
+      amountNum = parseNumberInput(values.amount);
+      baseNum = parseNumberInput(values.base_amount);
+    }
 
     const formData = {
       date: values.date,
       transaction_type: values.transaction_type,
       category_id: showCategory ? values.category_id || null : null,
-      description: values.description,
+      description,
       amounts: [
         {
           account_id: values.account_id,
           amount: isNaN(amountNum) ? 0 : amountNum,
-          exchange_rate: isNaN(rateNum) ? 1 : rateNum,
+          exchange_rate: safeRate,
           base_amount: isNaN(baseNum) ? 0 : baseNum,
         },
       ],
@@ -606,7 +663,102 @@ export function TransactionDialog({
             )}
           </div>
 
-          {/* Row 4: Monto + TC + Monto base */}
+          {/* Row 4: Monto + TC + Monto base — o ajuste de saldo para correcciones */}
+          {isBalanceAdjustment ? (
+            <div className="space-y-3">
+              <div
+                className={`grid gap-4 ${
+                  selectedAccount && selectedAccount.currency !== baseCurrency
+                    ? "grid-cols-2"
+                    : "grid-cols-1"
+                }`}
+              >
+                <FormField
+                  control={form.control}
+                  name="target_balance"
+                  render={() => (
+                    <FormItem>
+                      <FormFieldLabel>
+                        Saldo actual
+                        {selectedAccount ? ` (${selectedAccount.currency})` : ""}
+                      </FormFieldLabel>
+                      <FormControl>
+                        <Input
+                          type="text"
+                          inputMode="decimal"
+                          placeholder="0,00"
+                          disabled={isPending}
+                          value={watchTargetBalance}
+                          onChange={(e) =>
+                            form.setValue(
+                              "target_balance",
+                              formatNumberInput(e.target.value),
+                            )
+                          }
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                {selectedAccount &&
+                  selectedAccount.currency !== baseCurrency && (
+                    <FormField
+                      control={form.control}
+                      name="exchange_rate"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormFieldLabel>
+                            Tipo de cambio
+                            {fetchingRateRef.current && (
+                              <Loader2 className="ml-1 inline size-3 animate-spin" />
+                            )}
+                          </FormFieldLabel>
+                          <FormControl>
+                            <Input
+                              type="text"
+                              inputMode="decimal"
+                              placeholder="1"
+                              disabled={isPending}
+                              value={field.value}
+                              onChange={(e) => handleRateChange(e.target.value)}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
+              </div>
+
+              <div className="bg-muted/30 space-y-1.5 rounded-md border px-3 py-2.5 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground">Saldo registrado</span>
+                  <span className="font-medium">
+                    {isBalanceLoading
+                      ? "…"
+                      : `${selectedAccount?.currency ?? ""} ${formatAmount(recordedBalance)}`}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground">Ajuste a registrar</span>
+                  <span
+                    className={`font-semibold ${
+                      adjustment == null || adjustment === 0
+                        ? "text-muted-foreground"
+                        : adjustment > 0
+                          ? "text-emerald-600"
+                          : "text-red-600"
+                    }`}
+                  >
+                    {adjustment == null
+                      ? "—"
+                      : `${adjustment > 0 ? "+" : adjustment < 0 ? "−" : ""}${selectedAccount?.currency ?? ""} ${formatAmount(Math.abs(adjustment))}`}
+                  </span>
+                </div>
+              </div>
+            </div>
+          ) : (
           <div className="grid grid-cols-3 gap-4">
             <FormField
               control={form.control}
@@ -681,6 +833,7 @@ export function TransactionDialog({
               )}
             />
           </div>
+          )}
 
           {/* Row 5: Notas */}
           <FormField

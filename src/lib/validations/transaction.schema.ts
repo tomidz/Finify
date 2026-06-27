@@ -47,6 +47,8 @@ export const CreateTransactionSchema = z
   })
   .refine(
     (data) => {
+      // Las correcciones (ajustes de saldo) no requieren categoría.
+      if (data.transaction_type === "correction") return true;
       if (data.transaction_type === "transfer") return false;
       return data.category_id != null;
     },
