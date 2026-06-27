@@ -1,19 +1,26 @@
 import { z } from "zod/v4";
 import { TRANSACTION_TYPES } from "@/types/transactions";
 
-const TransactionAmountLineSchema = z.object({
-  account_id: z.string().uuid("Cuenta no válida"),
-  amount: z.number().refine((value) => value !== 0, {
-    message: "El monto no puede ser 0",
-  }),
-  exchange_rate: z
-    .number()
-    .positive("El tipo de cambio debe ser mayor a 0")
-    .default(1),
-  base_amount: z.number().refine((value) => value !== 0, {
-    message: "El monto base no puede ser 0",
-  }),
-});
+const TransactionAmountLineSchema = z
+  .object({
+    account_id: z.string().uuid("Cuenta no válida"),
+    amount: z.number().refine((value) => value !== 0, {
+      message: "El monto no puede ser 0",
+    }),
+    exchange_rate: z
+      .number()
+      .positive("El tipo de cambio debe ser mayor a 0")
+      .default(1),
+    base_amount: z.number().refine((value) => value !== 0, {
+      message: "El monto base no puede ser 0",
+    }),
+  })
+  // base_amount is `amount` converted by a positive FX rate, so it must always
+  // share the same sign. A mismatch corrupts the base-currency balance cascade.
+  .refine((line) => Math.sign(line.amount) === Math.sign(line.base_amount), {
+    message: "El monto base debe tener el mismo signo que el monto",
+    path: ["base_amount"],
+  });
 
 export const CreateTransactionSchema = z
   .object({
