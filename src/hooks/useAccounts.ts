@@ -15,6 +15,7 @@ import {
   getAccountInitialBalance,
   getAccountById,
   getAccountBalanceHistory,
+  getAccountCurrentBalance,
 } from "@/actions/accounts";
 import type { CreateAccountInput, UpdateAccountInput } from "@/lib/validations/account.schema";
 import type { Account } from "@/types/accounts";
@@ -159,6 +160,20 @@ export function useAccountInitialBalance(accountId: string | undefined) {
       return result.data;
     },
     staleTime: 10 * 60_000,
+  });
+}
+
+export function useAccountCurrentBalance(accountId: string | undefined) {
+  return useQuery({
+    queryKey: ["account", accountId, "current-balance"],
+    enabled: !!accountId,
+    queryFn: async () => {
+      if (!accountId) return null;
+      const result = await getAccountCurrentBalance(accountId);
+      if ("error" in result) throw new Error(result.error);
+      return result.data;
+    },
+    staleTime: 60_000,
   });
 }
 

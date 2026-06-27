@@ -234,6 +234,68 @@ export async function getAccountInitialBalance(
   }
 }
 
+// --- GET ACCOUNT CURRENT BALANCE (closing as of now, account currency) ---
+export async function getAccountCurrentBalance(
+  accountId: string,
+): Promise<ActionResult<{ amount: number; base_amount: number }>> {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return { error: "No autenticado" };
+
+    const { data: earliestMonth } = await supabase
+      .from("months")
+      .select("id")
+      .eq("user_id", user.id)
+      .order("year", { ascending: true })
+      .order("month", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    let openingAmount = 0;
+    let openingBase = 0;
+    if (earliestMonth) {
+      const { data: opening } = await supabase
+        .from("opening_balances")
+        .select("opening_amount, opening_base_amount")
+        .eq("month_id", earliestMonth.id)
+        .eq("account_id", accountId)
+        .maybeSingle();
+      openingAmount = Number(opening?.opening_amount ?? 0);
+      openingBase = Number(opening?.opening_base_amount ?? 0);
+    }
+
+    const { data: movements, error } = await supabase
+      .from("transaction_amounts")
+      .select(
+        "amount, base_amount, transactions!inner(user_id, deleted_at)",
+      )
+      .eq("account_id", accountId)
+      .eq("transactions.user_id", user.id)
+      .is("transactions.deleted_at", null);
+
+    if (error) return { error: error.message };
+
+    let amount = openingAmount;
+    let baseAmount = openingBase;
+    for (const m of movements ?? []) {
+      amount += Number(m.amount);
+      baseAmount += Number(m.base_amount);
+    }
+
+    return {
+      data: {
+        amount: Math.round(amount * 100) / 100,
+        base_amount: Math.round(baseAmount * 100) / 100,
+      },
+    };
+  } catch {
+    return { error: "Error al obtener el saldo actual" };
+  }
+}
+
 // --- CREATE ACCOUNT ---
 export async function createAccount(
   input: unknown,
