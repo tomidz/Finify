@@ -124,6 +124,15 @@ export async function createInvestment(
     if (accError) return { error: accError.message };
     if (!account) return { error: "Cuenta no encontrada" };
 
+    // Fees/taxes are capitalized: they raise the lot's cost basis and are
+    // part of the cash deducted (mirrors the sale flow, where they reduce
+    // net proceeds).
+    const purchaseCosts =
+      (parsed.data.fees ?? 0) + (parsed.data.tax ?? 0);
+    const totalCostWithFees = Number(
+      (parsed.data.total_cost + purchaseCosts).toFixed(4),
+    );
+
     // Crear inversión
     const { data, error } = await supabase
       .from("investments")
@@ -136,7 +145,7 @@ export async function createInvestment(
         asset_type: parsed.data.asset_type,
         quantity: parsed.data.quantity,
         price_per_unit: parsed.data.price_per_unit,
-        total_cost: parsed.data.total_cost,
+        total_cost: totalCostWithFees,
         currency: parsed.data.currency,
         purchase_date: parsed.data.purchase_date,
         notes: parsed.data.notes ?? null,
@@ -160,7 +169,7 @@ export async function createInvestment(
         userId,
         parsed.data.account_id,
         account.currency,
-        parsed.data.total_cost,
+        totalCostWithFees,
         parsed.data.currency,
         parsed.data.purchase_date,
         parsed.data.asset_name,
@@ -293,7 +302,8 @@ export async function updateInvestment(
     if (!userId) return { error: "No autenticado" };
 
     const supabase = await createClient();
-    const { id, skip_deduction: _, ...updates } = parsed.data;
+    // fees/tax only exist at purchase time (already baked into total_cost).
+    const { id, skip_deduction: _, fees: _fees, tax: _tax, ...updates } = parsed.data;
     const clean = Object.fromEntries(
       Object.entries(updates).filter(
         ([_, v]) => v !== undefined && v !== null
