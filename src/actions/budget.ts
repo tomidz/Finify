@@ -630,22 +630,29 @@ export async function createBudgetNextMonthFromSource(input: unknown): Promise<
       if (deleteError) return { error: deleteError.message };
     }
 
-    const rowsToInsert = parsed.data.entries
-      .map((entry) => ({
-        line_id: primaryLineByCategoryId.get(entry.category_id),
-        month_id: createdMonth.data.id,
-        planned_amount: entry.planned_amount,
-      }))
-      .filter((row) => !!row.line_id) as {
+    // Dedupe by line: duplicate category entries used to violate
+    // UNIQUE(line_id, month_id) AFTER the delete above, leaving the target
+    // month with zero plans. Upsert keeps the write idempotent regardless.
+    const rowsByLine = new Map<string, {
       line_id: string;
       month_id: string;
       planned_amount: number;
-    }[];
+    }>();
+    for (const entry of parsed.data.entries) {
+      const lineId = primaryLineByCategoryId.get(entry.category_id);
+      if (!lineId) continue;
+      rowsByLine.set(lineId, {
+        line_id: lineId,
+        month_id: createdMonth.data.id,
+        planned_amount: entry.planned_amount,
+      });
+    }
+    const rowsToInsert = [...rowsByLine.values()];
 
     if (rowsToInsert.length > 0) {
       const { error: insertPlansError } = await supabase
         .from("budget_month_plans")
-        .insert(rowsToInsert);
+        .upsert(rowsToInsert, { onConflict: "line_id,month_id" });
       if (insertPlansError) return { error: insertPlansError.message };
     }
 

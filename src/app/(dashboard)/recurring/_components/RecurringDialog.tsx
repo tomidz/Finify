@@ -91,12 +91,15 @@ export function RecurringDialog({
   const { data: baseCurrency } = useBaseCurrency();
   const { data: categories } = useBudgetCategories();
   const { data: usageCounts } = useUsageCounts();
-  const sortedAccounts = [...(accounts ?? [])].sort(
-    (a, b) =>
-      (usageCounts?.accountCounts[b.id] ?? 0) -
-        (usageCounts?.accountCounts[a.id] ?? 0) ||
-      a.name.localeCompare(b.name)
-  );
+  // Only active accounts (every other dialog filters them too).
+  const sortedAccounts = (accounts ?? [])
+    .filter((a) => a.is_active)
+    .sort(
+      (a, b) =>
+        (usageCounts?.accountCounts[b.id] ?? 0) -
+          (usageCounts?.accountCounts[a.id] ?? 0) ||
+        a.name.localeCompare(b.name)
+    );
   const createMutation = useCreateRecurring();
   const updateMutation = useUpdateRecurring();
 
@@ -123,9 +126,9 @@ export function RecurringDialog({
         description: "",
         type: "expense",
         category_id: "",
-        account_id: accounts?.[0]?.id ?? "",
+        account_id: accounts?.find((a) => a.is_active)?.id ?? "",
         amount: "",
-        currency: baseCurrency ?? "EUR",
+        currency: baseCurrency ?? "USD",
         recurrence: "monthly",
         day_of_month: "",
         start_date: format(new Date(), "yyyy-MM-dd"),

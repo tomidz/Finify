@@ -208,20 +208,16 @@ async function autoDeductFromAccount(
   investmentId: string,
 ): Promise<string | null> {
   try {
-    // Resolver month_id para la fecha
+    // Resolver month_id para la fecha — creándolo si no existe. El skip
+    // silencioso anterior registraba el lote SIN debitar el cash cuando la
+    // compra caía en un mes todavía no abierto.
     const parsedDate = new Date(`${date}T00:00:00`);
     const year = parsedDate.getFullYear();
     const month = parsedDate.getMonth() + 1;
 
-    const { data: monthRow } = await supabase
-      .from("months")
-      .select("id")
-      .eq("user_id", userId)
-      .eq("year", year)
-      .eq("month", month)
-      .maybeSingle();
-
-    if (!monthRow) return null; // No month exists yet, skip deduction
+    const monthResult = await createMonth(year, month);
+    if ("error" in monthResult) return monthResult.error;
+    const monthRow = monthResult.data;
 
     // Moneda base del usuario para FX correcto en base_amount
     const { data: prefsRow } = await supabase
@@ -1203,15 +1199,11 @@ async function autoCreditToAccount(
     const year = parsedDate.getFullYear();
     const month = parsedDate.getMonth() + 1;
 
-    const { data: monthRow } = await supabase
-      .from("months")
-      .select("id")
-      .eq("user_id", userId)
-      .eq("year", year)
-      .eq("month", month)
-      .maybeSingle();
-
-    if (!monthRow) return null;
+    // Create the month if needed — skipping silently credited nothing for
+    // sales dated in a not-yet-opened month.
+    const monthResult = await createMonth(year, month);
+    if ("error" in monthResult) return monthResult.error;
+    const monthRow = monthResult.data;
 
     const { data: prefsRow } = await supabase
       .from("user_preferences")

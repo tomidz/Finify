@@ -137,20 +137,25 @@ export async function getSavingsGoals(): Promise<
       }
     }
 
-    return {
-      data: rows.map((row) => {
-        if (!row.account_id || !balances.has(row.account_id)) {
-          return mapGoal(row);
-        }
-        const accountCurrency =
-          (row.accounts?.currency as string | undefined) ?? row.currency;
-        return mapGoal(row, {
-          current_amount: balances.get(row.account_id) ?? 0,
-          currency: accountCurrency,
-          currency_symbol: symbolByCode.get(accountCurrency) ?? accountCurrency,
-        });
-      }),
-    };
+    const mapped = rows.map((row) => {
+      if (!row.account_id || !balances.has(row.account_id)) {
+        return mapGoal(row);
+      }
+      const accountCurrency =
+        (row.accounts?.currency as string | undefined) ?? row.currency;
+      return mapGoal(row, {
+        current_amount: balances.get(row.account_id) ?? 0,
+        currency: accountCurrency,
+        currency_symbol: symbolByCode.get(accountCurrency) ?? accountCurrency,
+      });
+    });
+
+    // Re-sort on the COMPUTED completion: mapGoal derives it live for
+    // account-linked goals, so the stored column the query ordered by can
+    // disagree with what's displayed. Stable sort keeps deadline/name order.
+    mapped.sort((a, b) => Number(a.is_completed) - Number(b.is_completed));
+
+    return { data: mapped };
   } catch (e) {
     console.error("getSavingsGoals:", e);
     return { error: "Error al obtener las metas de ahorro" };
