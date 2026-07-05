@@ -1,5 +1,6 @@
 "use client";
 
+import { format } from "date-fns";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import {
@@ -54,7 +55,7 @@ export function DebtAdjustmentDialog({
   const form = useForm<AdjustmentFormValues>({
     defaultValues: {
       activity_type: "interest",
-      date: new Date().toISOString().split("T")[0],
+      date: format(new Date(), "yyyy-MM-dd"),
       amount: "",
       description: "",
     },
@@ -67,7 +68,7 @@ export function DebtAdjustmentDialog({
     if (!open) return;
     form.reset({
       activity_type: "interest",
-      date: new Date().toISOString().split("T")[0],
+      date: format(new Date(), "yyyy-MM-dd"),
       amount: "",
       description: "",
     });

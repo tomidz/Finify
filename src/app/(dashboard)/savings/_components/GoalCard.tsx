@@ -22,7 +22,9 @@ interface GoalCardProps {
 export function GoalCard({ goal, onEdit, onDelete }: GoalCardProps) {
   const progressPct = Math.min(100, goal.progress_pct);
   const deadlineStr = goal.deadline
-    ? new Date(goal.deadline).toLocaleDateString("es-AR", {
+    ? // Parse as local midnight: bare date strings parse as UTC and render
+      // one day early west of Greenwich.
+      new Date(`${goal.deadline}T00:00:00`).toLocaleDateString("es-AR", {
         day: "numeric",
         month: "short",
         year: "numeric",

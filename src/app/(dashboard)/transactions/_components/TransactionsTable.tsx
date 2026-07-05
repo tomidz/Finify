@@ -87,7 +87,6 @@ import { parseISO, format } from "date-fns";
 import type { Month, NextMonthPreview } from "@/types/months";
 import { MONTH_NAMES, formatAmount, amountTone } from "@/lib/format";
 import { useMonthSummary, getPrimaryLine } from "@/hooks/useMonthSummary";
-import { recalculateAllOpeningBalances } from "@/actions/months";
 
 type TableTransaction = TransactionWithRelations & {
   primaryLine: NonNullable<ReturnType<typeof getPrimaryLine>> | null;
@@ -165,11 +164,6 @@ export function TransactionsTable() {
 
     return () => window.clearTimeout(timeoutId);
   }, [searchDraft]);
-
-  // One-time recalculation of all opening balances to fix stale data
-  useEffect(() => {
-    recalculateAllOpeningBalances().catch(console.error);
-  }, []);
 
   const selectedMonth =
     sortedMonths.find((month) => month.id === selectedMonthId) ?? null;

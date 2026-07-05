@@ -283,8 +283,10 @@ export async function getNwSnapshotsForMonth(
 
       // Always recalculate amount_base for non-base currencies using live FX rate
       if (amount !== 0 && item.currency !== baseCurrency) {
-        const rate = fxMap.get(item.currency as string) ?? 1;
-        amountBase = amount * rate;
+        // Revalue only when a live rate exists; a missing rate must fall
+        // back to the stored amount_base, never to rate 1.
+        const rate = fxMap.get(item.currency as string);
+        if (rate != null) amountBase = amount * rate;
       }
 
       const currencyRaw = item.currencies;
@@ -406,8 +408,10 @@ export async function getNwSnapshotsForYear(
 
       // Always recalculate amount_base for non-base currencies using live FX rate
       if (amount !== 0 && item.currency !== baseCurrencyYear) {
-        const rate = fxMapYear.get(item.currency as string) ?? 1;
-        amountBase = amount * rate;
+        // Revalue only when a live rate exists; a missing rate must fall
+        // back to the stored amount_base, never to rate 1.
+        const rate = fxMapYear.get(item.currency as string);
+        if (rate != null) amountBase = amount * rate;
       }
 
       const currencyRaw = item.currencies;
@@ -707,8 +711,10 @@ export async function getLiabilitiesForMonth(
       let amountBase = snap?.amount_base ?? null;
 
       if (amount !== 0 && item.currency !== baseCurrency) {
-        const rate = fxMap.get(item.currency as string) ?? 1;
-        amountBase = amount * rate;
+        // Revalue only when a live rate exists; a missing rate must fall
+        // back to the stored amount_base, never to rate 1.
+        const rate = fxMap.get(item.currency as string);
+        if (rate != null) amountBase = amount * rate;
       }
 
       const currencyRaw = item.currencies;

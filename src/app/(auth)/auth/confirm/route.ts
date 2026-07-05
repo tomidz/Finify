@@ -11,7 +11,12 @@ export async function GET(request: NextRequest) {
   // Legacy/email OTP flow: Supabase sends "token_hash" + "type"
   const token_hash = searchParams.get("token_hash");
   const type = searchParams.get("type") as EmailOtpType | null;
-  const next = searchParams.get("next") ?? "/";
+  // Only same-origin relative paths: an absolute/protocol-relative `next`
+  // would let a crafted confirmation link land the fresh session on an
+  // attacker-controlled page (open redirect).
+  const rawNext = searchParams.get("next") ?? "/";
+  const next =
+    rawNext.startsWith("/") && !rawNext.startsWith("//") ? rawNext : "/";
 
   const supabase = await createClient();
 

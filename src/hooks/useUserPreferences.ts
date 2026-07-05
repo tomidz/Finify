@@ -9,7 +9,9 @@ import { toast } from "sonner";
 
 const PREF_KEYS = {
   all: ["user-preferences"] as const,
-  baseCurrency: ["baseCurrency"] as const,
+  // Same key the rest of the app reads (TRANSACTION_KEYS.baseCurrency) —
+  // an invalidation under a different key never reaches those queries.
+  baseCurrency: ["preferences", "base-currency"] as const,
 };
 
 export function useUserPreferences() {
@@ -36,8 +38,9 @@ export function useUpdateUserPreferences() {
       return result.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: PREF_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: PREF_KEYS.baseCurrency });
+      // Base currency feeds every stored-base computation; refresh everything
+      // financial, not just the preference queries.
+      queryClient.invalidateQueries();
       toast.success("Preferencias guardadas");
     },
     onError: (err: Error) => toast.error(err.message),

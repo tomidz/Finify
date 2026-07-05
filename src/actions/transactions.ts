@@ -674,6 +674,22 @@ export async function createTransfer(
 
     if (!destAccount) return { error: "Cuenta destino no encontrada" };
 
+    // Build the legs BEFORE inserting the header: an FX failure here used to
+    // leave an orphan 0-leg transfer visible in the feed but invisible to
+    // balances (happened in production with future-dated transfers).
+    const transferLinesResult = await buildTransferLines({
+      date: parsed.data.date,
+      sourceAccount,
+      destAccount,
+      sourceAmount: parsed.data.amount,
+      destinationAmount: parsed.data.base_amount,
+      exchangeRate: parsed.data.exchange_rate,
+      fee: parsed.data.fee ?? 0,
+    });
+    if ("error" in transferLinesResult) return transferLinesResult;
+
+    const transferLines = transferLinesResult.data;
+
     const { data: transaction, error: txError } = await supabase
       .from("transactions")
       .insert({
@@ -690,19 +706,6 @@ export async function createTransfer(
       .single();
 
     if (txError) return { error: txError.message };
-
-    const transferLinesResult = await buildTransferLines({
-      date: parsed.data.date,
-      sourceAccount,
-      destAccount,
-      sourceAmount: parsed.data.amount,
-      destinationAmount: parsed.data.base_amount,
-      exchangeRate: parsed.data.exchange_rate,
-      fee: parsed.data.fee ?? 0,
-    });
-    if ("error" in transferLinesResult) return transferLinesResult;
-
-    const transferLines = transferLinesResult.data;
 
     const rows = transferLines.map((line) => ({
       transaction_id: transaction.id,
@@ -839,10 +842,11 @@ export async function updateTransaction(
     const { data: existing } = await supabase
       .from("transactions")
       .select(
-        "id, transaction_type, month_id, date, fee, source_investment_id, source_investment_sale_id",
+        "id, transaction_type, month_id, date, fee, category_id, description, notes, source_investment_id, source_investment_sale_id",
       )
       .eq("id", id)
       .eq("user_id", user.id)
+      .is("deleted_at", null)
       .single();
 
     if (!existing) return { error: "Transacción no encontrada" };
@@ -868,24 +872,17 @@ export async function updateTransaction(
       ...(nextMonthId ? { month_id: nextMonthId } : {}),
     };
 
-    const { data: updatedTransaction, error: txError } = await supabase
-      .from("transactions")
-      .update(payload)
-      .eq("id", id)
-      .eq("user_id", user.id)
-      .select()
-      .single();
-
-    if (txError) return { error: txError.message };
+    // Read + validate + build everything BEFORE any write, so an FX or
+    // validation failure can't leave the header updated with stale legs.
+    // currentLines doubles as the restore snapshot if the leg swap fails.
+    const { data: currentLines } = await supabase
+      .from("transaction_amounts")
+      .select("account_id, amount, exchange_rate, base_amount, original_currency")
+      .eq("transaction_id", id);
 
     let amountLines = amounts ?? null;
 
     if (existing.transaction_type === "transfer") {
-      const { data: currentLines } = await supabase
-        .from("transaction_amounts")
-        .select("account_id, amount, exchange_rate")
-        .eq("transaction_id", id);
-
       const sourceLine = amountLines?.find((line) => line.amount < 0) ??
         currentLines?.find((line) => line.amount < 0);
       const destinationLine = amountLines?.find((line) => line.amount > 0) ??
@@ -942,11 +939,6 @@ export async function updateTransaction(
       if ("error" in transferLinesResult) return transferLinesResult;
       amountLines = transferLinesResult.data;
     } else if (!amountLines) {
-      const { data: currentLines } = await supabase
-        .from("transaction_amounts")
-        .select("account_id, amount")
-        .eq("transaction_id", id);
-
       amountLines = buildLegacyAmountLines(
         existing.transaction_type,
         {
@@ -959,6 +951,15 @@ export async function updateTransaction(
         currentLines ?? []
       );
     }
+
+    let rows: {
+      transaction_id: string;
+      account_id: string;
+      amount: number;
+      original_currency: string;
+      exchange_rate: number;
+      base_amount: number;
+    }[] | null = null;
 
     if (amountLines) {
       const accountIds = [...new Set(amountLines.map((line) => line.account_id))];
@@ -975,14 +976,7 @@ export async function updateTransaction(
 
       const accountById = new Map(accounts.map((acc) => [acc.id, acc.currency]));
 
-      const { error: deleteLinesError } = await supabase
-        .from("transaction_amounts")
-        .delete()
-        .eq("transaction_id", id);
-
-      if (deleteLinesError) return { error: deleteLinesError.message };
-
-      const rows = amountLines.map((line) => ({
+      rows = amountLines.map((line) => ({
         transaction_id: id,
         account_id: line.account_id,
         amount: line.amount,
@@ -990,12 +984,71 @@ export async function updateTransaction(
         exchange_rate: line.exchange_rate,
         base_amount: line.base_amount,
       }));
+    }
+
+    // --- Writes start here. Header first; if the leg swap fails afterwards,
+    // restore the snapshot legs and revert the header so no half-updated
+    // transaction survives.
+    const { data: updatedTransaction, error: txError } = await supabase
+      .from("transactions")
+      .update(payload)
+      .eq("id", id)
+      .eq("user_id", user.id)
+      .select()
+      .single();
+
+    if (txError) return { error: txError.message };
+
+    if (rows) {
+      const revertHeader = async () => {
+        const { error: revertError } = await supabase
+          .from("transactions")
+          .update({
+            date: existing.date,
+            month_id: existing.month_id,
+            category_id: existing.category_id,
+            description: existing.description,
+            notes: existing.notes,
+            fee: existing.fee,
+          })
+          .eq("id", id)
+          .eq("user_id", user.id);
+        if (revertError) {
+          console.error("updateTransaction: header revert failed:", revertError);
+        }
+      };
+
+      const { error: deleteLinesError } = await supabase
+        .from("transaction_amounts")
+        .delete()
+        .eq("transaction_id", id);
+
+      if (deleteLinesError) {
+        await revertHeader();
+        return { error: deleteLinesError.message };
+      }
 
       const { error: insertLinesError } = await supabase
         .from("transaction_amounts")
         .insert(rows);
 
-      if (insertLinesError) return { error: insertLinesError.message };
+      if (insertLinesError) {
+        if (currentLines && currentLines.length > 0) {
+          const { error: restoreError } = await supabase
+            .from("transaction_amounts")
+            .insert(
+              currentLines.map((line) => ({ ...line, transaction_id: id })),
+            );
+          if (restoreError) {
+            console.error(
+              "updateTransaction: leg restore failed — transaction left without legs:",
+              restoreError,
+            );
+          }
+        }
+        await revertHeader();
+        return { error: insertLinesError.message };
+      }
     }
 
     // Recalculate opening balances starting from the earlier of (old month, new month).

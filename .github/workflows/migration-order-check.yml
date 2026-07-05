@@ -29,7 +29,11 @@ jobs:
           set -euo pipefail
 
           # Highest timestamp on main, defaulting to 0 if there are no migrations.
-          base_max=$(git ls-tree --name-only origin/${{ github.base_ref }} -- supabase/migrations \
+          # -r is load-bearing: without it ls-tree prints the directory entry
+          # itself ("supabase/migrations"), the grep matches nothing and
+          # base_max is always 0 — the check silently passed everything.
+          base_max=$(git ls-tree -r --name-only origin/${{ github.base_ref }} -- supabase/migrations \
+            | xargs -rn1 basename \
             | grep -E '^[0-9]+_' \
             | cut -d_ -f1 \
             | sort -n \

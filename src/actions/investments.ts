@@ -155,13 +155,15 @@ export async function createInvestment(
 
     if (error) return { error: error.message };
 
-    // Auto-descuento para brokers y para exchanges/wallets cuando se paga
-    // con cash en la misma moneda que la cuenta (compra real, no transferencia entrante)
+    // Auto-descuento solo cuando la moneda de la inversión coincide con la de
+    // la cuenta: un débito cross-currency registraría el monto en la moneda
+    // equivocada (p. ej. cuenta EUR debitada "1.000 EUR" por una compra de
+    // USD 1.000). En ese caso el usuario registra el débito manualmente.
     const eligibleForDeduction =
-      account.account_type === "investment_broker" ||
-      ((account.account_type === "crypto_exchange" ||
+      (account.account_type === "investment_broker" ||
+        account.account_type === "crypto_exchange" ||
         account.account_type === "crypto_wallet") &&
-        account.currency === parsed.data.currency);
+      account.currency === parsed.data.currency;
 
     if (eligibleForDeduction && !parsed.data.skip_deduction) {
       const deductionError = await autoDeductFromAccount(
@@ -310,6 +312,17 @@ export async function updateInvestment(
       )
     ) as Record<string, unknown>;
 
+    // Fetch the current row first to detect an account move — the linked
+    // cash deduction must follow the lot to the new account or the old
+    // account stays debited (one-sided edit).
+    const { data: existingLot } = await supabase
+      .from("investments")
+      .select("account_id")
+      .eq("id", id)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (!existingLot) return { error: "Inversión no encontrada" };
+
     const { data, error } = await supabase
       .from("investments")
       .update(clean)
@@ -320,9 +333,17 @@ export async function updateInvestment(
 
     if (error) return { error: error.message };
 
-    // If total_cost or purchase_date changed, sync the linked auto-deduction
-    // correction transaction to keep cash accounting honest.
-    if (updates.total_cost !== undefined || updates.purchase_date !== undefined) {
+    const accountChanged =
+      updates.account_id !== undefined &&
+      updates.account_id !== existingLot.account_id;
+
+    // If total_cost, purchase_date or account changed, sync the linked
+    // auto-deduction transaction to keep cash accounting honest.
+    if (
+      updates.total_cost !== undefined ||
+      updates.purchase_date !== undefined ||
+      accountChanged
+    ) {
       const { data: linkedTxs } = await supabase
         .from("transactions")
         .select("id, month_id, date")
@@ -330,7 +351,16 @@ export async function updateInvestment(
         .eq("source_investment_id", id);
 
       const newTotalCost = Number(data.total_cost);
-      const accountCurrency = data.currency as string;
+
+      // The leg lives in the ACCOUNT's currency, not the investment's.
+      const { data: accountRow } = await supabase
+        .from("accounts")
+        .select("id, currency")
+        .eq("id", data.account_id)
+        .eq("user_id", userId)
+        .maybeSingle();
+      const accountCurrency =
+        (accountRow?.currency as string) ?? (data.currency as string);
 
       const { data: prefsRow } = await supabase
         .from("user_preferences")
@@ -359,7 +389,9 @@ export async function updateInvestment(
         await supabase
           .from("transaction_amounts")
           .update({
+            account_id: data.account_id,
             amount: -Math.abs(newTotalCost),
+            original_currency: accountCurrency,
             exchange_rate: exchangeRate,
             base_amount: baseAmount,
           })
@@ -1223,11 +1255,13 @@ export async function sellInvestment(
       }
     }
 
+    // Same currency gate as the purchase deduction: a cross-currency credit
+    // would book the proceeds in the wrong currency.
     const eligibleForCredit =
-      account.account_type === "investment_broker" ||
-      ((account.account_type === "crypto_exchange" ||
+      (account.account_type === "investment_broker" ||
+        account.account_type === "crypto_exchange" ||
         account.account_type === "crypto_wallet") &&
-        account.currency === parsed.data.currency);
+      account.currency === parsed.data.currency;
 
     if (eligibleForCredit && !parsed.data.skip_credit && netProceeds > 0) {
       const creditError = await autoCreditToAccount(
@@ -1492,7 +1526,9 @@ export async function deleteInvestmentSale(
     // honest. Pricing per unit is recomputed.
     const restoreQty = Number(sale.quantity_sold);
     const restoreCost = Number(sale.cost_basis);
-    if (restoreQty > QTY_EPSILON && restoreCost > 0) {
+    // Zero-cost lots (adjustments, airdrops) are valid since migration 0032:
+    // restore them too, or reverting the sale silently loses the coins.
+    if (restoreQty > QTY_EPSILON && restoreCost >= 0) {
       const pricePerUnit = restoreCost / restoreQty;
       const { error: insertError } = await supabase.from("investments").insert({
         user_id: userId,

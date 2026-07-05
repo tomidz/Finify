@@ -118,12 +118,14 @@ export const UpdateTransactionSchema = z.object({
   id: z.string().uuid("ID de transacción no válido"),
   transaction_type: z.enum(TRANSACTION_TYPES).optional(),
   date: z.string().min(1).optional(),
+  // Preserve `undefined` (field omitted → untouched); only map ""/null → null.
+  // Coercing undefined to null would make every partial update wipe the field.
   category_id: z
     .string()
     .uuid()
     .nullable()
     .optional()
-    .transform((v) => v || null),
+    .transform((v) => (v === undefined ? undefined : v || null)),
   description: z.string().min(1).max(200).trim().optional(),
   amounts: z.array(TransactionAmountLineSchema).min(1).optional(),
   source_account_id: z.string().uuid().optional(),
@@ -138,7 +140,7 @@ export const UpdateTransactionSchema = z.object({
     .nullable()
     .optional()
     .or(z.literal(""))
-    .transform((v) => v || null),
+    .transform((v) => (v === undefined ? undefined : v || null)),
 }).refine((data) => {
   if (data.source_account_id && data.destination_account_id) {
     return data.source_account_id !== data.destination_account_id;

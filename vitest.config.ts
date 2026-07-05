@@ -5,8 +5,10 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: false,
-    include: ["**/*.test.ts", "**/*.test.tsx"],
-    exclude: ["node_modules", ".next", "out", "build"],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "tests/**/*.test.ts"],
+    // Glob patterns, not bare names: "node_modules" alone fails to prune
+    // nested real directories and once ran 13k third-party tests locally.
+    exclude: ["**/node_modules/**", "**/.next/**", "**/out/**", "**/build/**"],
   },
   resolve: {
     alias: {

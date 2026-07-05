@@ -14,7 +14,10 @@ export function QueryProvider({ children }: { children: React.ReactNode }) {
             retry: 1,
             refetchOnWindowFocus: false,
             refetchOnReconnect: false,
-            refetchOnMount: false,
+            // refetchOnMount must stay on: invalidateQueries only refetches
+            // MOUNTED queries — inactive ones are just flagged stale, and with
+            // refetchOnMount:false the flag never triggered a fetch, so every
+            // cross-page invalidation was a permanent no-op (stale balances).
           },
           mutations: {
             retry: 0,

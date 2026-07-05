@@ -1,5 +1,6 @@
 "use client";
 
+import { format } from "date-fns";
 import { useCallback, useEffect, useMemo } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import {
@@ -88,7 +89,7 @@ export function InvestmentDialog({
       fees: "",
       tax: "",
       currency: "USD",
-      purchase_date: new Date().toISOString().slice(0, 10),
+      purchase_date: format(new Date(), "yyyy-MM-dd"),
       notes: "",
       skip_deduction: false,
     },
@@ -141,10 +142,11 @@ export function InvestmentDialog({
     selectedAccount?.account_type === "crypto_exchange" ||
     selectedAccount?.account_type === "crypto_wallet";
   const watchCurrency = useWatch({ control: form.control, name: "currency" });
+  // Mirrors the server gate: auto-deduct only when currencies match.
   const willAutoDeduct =
     !!selectedAccount &&
-    (isBroker ||
-      (isCryptoAccount && selectedAccount.currency === watchCurrency));
+    (isBroker || isCryptoAccount) &&
+    selectedAccount.currency === watchCurrency;
   const isCrypto = watchAssetType === "crypto";
   const maxDec = 7;
 
@@ -190,7 +192,7 @@ export function InvestmentDialog({
         fees: "",
         tax: "",
         currency: investmentAccounts[0]?.currency ?? "USD",
-        purchase_date: new Date().toISOString().slice(0, 10),
+        purchase_date: format(new Date(), "yyyy-MM-dd"),
         notes: "",
         skip_deduction: false,
       });
