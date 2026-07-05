@@ -145,8 +145,21 @@ export async function recordDebtPayment(
     const month = parsedDate.getMonth() + 1;
 
     const currentBalance = await getDebtCurrentBalance(nw_item_id, year, month);
-    const amountInLiabilityCurrency =
-      (await convertAmount(amount, accountCurrency, liabilityCurrency, date)) ?? amount;
+    const amountInLiabilityCurrency = await convertAmount(
+      amount,
+      accountCurrency,
+      liabilityCurrency,
+      date,
+    );
+    if (amountInLiabilityCurrency == null) {
+      // Subtracting raw foreign units (the old `?? amount` fallback) could
+      // wipe a USD debt with an ARS payment amount. The expense and activity
+      // are already recorded; the snapshot must not be corrupted.
+      return {
+        error:
+          "Pago registrado, pero no se pudo convertir a la moneda de la deuda; actualizá el saldo manualmente",
+      };
+    }
     const newBalance = Math.max(0, currentBalance - amountInLiabilityCurrency);
 
     // newAmountBase = newBalance in user's base currency
@@ -162,6 +175,30 @@ export async function recordDebtPayment(
       amount: newBalance,
       amount_base: newAmountBase,
     });
+
+    // Propagate to snapshots AFTER the payment month: a backdated payment
+    // only wrote its own month, so the carry-forward read (latest snapshot)
+    // never saw it and the reported balance didn't move.
+    const payCode = year * 100 + month;
+    const { data: laterSnaps } = await supabase
+      .from("nw_snapshots")
+      .select("id, year, month, amount, amount_base")
+      .eq("nw_item_id", nw_item_id);
+    for (const snap of laterSnaps ?? []) {
+      const snapCode = Number(snap.year) * 100 + Number(snap.month);
+      if (snapCode <= payCode) continue;
+      const oldAmount = Number(snap.amount);
+      const nextAmount = Math.max(0, oldAmount - amountInLiabilityCurrency);
+      const oldBase = snap.amount_base != null ? Number(snap.amount_base) : null;
+      const nextBase =
+        oldBase != null && oldAmount > 0
+          ? Number(((oldBase * nextAmount) / oldAmount).toFixed(4))
+          : oldBase;
+      await supabase
+        .from("nw_snapshots")
+        .update({ amount: nextAmount, amount_base: nextBase })
+        .eq("id", snap.id);
+    }
 
     return { data: activity as DebtActivity };
   } catch (e) {

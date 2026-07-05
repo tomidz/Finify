@@ -33,6 +33,23 @@ export interface InvestmentWithAccount extends Investment {
   currency_symbol: string;
 }
 
+/**
+ * Canonical grouping key for a holding. Must stay in sync with the server's
+ * lot matching (`lotMatchesHolding` + account/type/currency filters in
+ * actions/investments.ts) — a looser client key groups lots the server won't
+ * find, producing "no hay cantidad suficiente" failures.
+ */
+export function holdingGroupKey(inv: {
+  ticker: string | null;
+  asset_name: string;
+  account_id: string;
+  asset_type: string;
+  currency: string;
+}): string {
+  const assetKey = inv.ticker?.trim() || inv.asset_name.trim();
+  return `${assetKey}::${inv.account_id}::${inv.asset_type}::${inv.currency}`;
+}
+
 export interface HoldingPosition {
   ticker: string;
   isin: string | null;

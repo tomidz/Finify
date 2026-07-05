@@ -1205,6 +1205,17 @@ export type Database = {
           opening_base_amount: number
         }[]
       }
+      reduce_investment_lots: {
+        Args: {
+          p_account_id: string
+          p_asset_name: string
+          p_asset_type: string
+          p_currency: string
+          p_quantity: number
+          p_ticker: string
+        }
+        Returns: number
+      }
       resolve_base_currency: {
         Args: { p_base_currency?: string }
         Returns: string
@@ -1236,6 +1247,21 @@ export type Database = {
           updated_at: string
           user_id: string
         }[]
+      }
+      transfer_investment_lots: {
+        Args: {
+          p_asset_name: string
+          p_asset_type: string
+          p_currency: string
+          p_destination_account_id: string
+          p_fee_quantity: number
+          p_notes: string
+          p_quantity: number
+          p_source_account_id: string
+          p_ticker: string
+          p_transfer_date: string
+        }
+        Returns: undefined
       }
       usage_counts: {
         Args: never

@@ -817,95 +817,23 @@ export async function transferInvestmentPosition(
       return { error: "Solo se puede mover posicion entre cuentas de inversion" };
     }
 
-    const { data: sourceLots, error: sourceError } = await supabase
-      .from("investments")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("account_id", parsed.data.source_account_id)
-      .eq("asset_type", parsed.data.asset_type)
-      .eq("currency", parsed.data.currency)
-      .order("purchase_date", { ascending: true })
-      .order("created_at", { ascending: true });
-
-    if (sourceError) return { error: sourceError.message };
-
-    const matchingLots = (sourceLots ?? []).filter((lot) =>
-      lotMatchesHolding(lot, parsed.data.ticker, parsed.data.asset_name),
-    );
-
-    const availableQuantity = matchingLots.reduce(
-      (sum, lot) => sum + Number(lot.quantity),
-      0,
-    );
-
-    if (availableQuantity < parsed.data.quantity) {
-      return { error: "No hay cantidad suficiente para transferir" };
-    }
-
-    // Network fee in asset units: the source loses the full quantity, the
-    // destination receives quantity - fee_quantity, and the cost basis is
-    // preserved on what arrives (per-unit cost rises, no realized loss).
-    const feeFraction =
-      parsed.data.quantity > 0
-        ? parsed.data.fee_quantity / parsed.data.quantity
-        : 0;
-
-    let remainingQuantity = parsed.data.quantity;
-
-    for (const lot of matchingLots) {
-      if (remainingQuantity <= 0) break;
-
-      const lotQuantity = Number(lot.quantity);
-      const movedQuantity = Math.min(lotQuantity, remainingQuantity);
-      const unitCost = lotQuantity > 0 ? Number(lot.total_cost) / lotQuantity : 0;
-      const movedCost = Number((movedQuantity * unitCost).toFixed(8));
-      const receivedQuantity = Number(
-        (movedQuantity * (1 - feeFraction)).toFixed(8),
-      );
-      const remainingLotQuantity = Number((lotQuantity - movedQuantity).toFixed(8));
-      const remainingLotCost = Number((Number(lot.total_cost) - movedCost).toFixed(8));
-
-      if (receivedQuantity > 0.00000001) {
-        const { error: insertError } = await supabase.from("investments").insert({
-          user_id: userId,
-          account_id: parsed.data.destination_account_id,
-          asset_name: lot.asset_name,
-          ticker: lot.ticker,
-          isin: lot.isin,
-          asset_type: lot.asset_type,
-          quantity: receivedQuantity,
-          price_per_unit: lot.price_per_unit,
-          total_cost: movedCost,
-          currency: lot.currency,
-          purchase_date: parsed.data.transfer_date,
-          notes: parsed.data.notes ?? `Transferido desde otra cuenta`,
-        });
-
-        if (insertError) return { error: insertError.message };
-      }
-
-      if (remainingLotQuantity <= 0.00000001) {
-        const { error: deleteError } = await supabase
-          .from("investments")
-          .delete()
-          .eq("id", lot.id)
-          .eq("user_id", userId);
-        if (deleteError) return { error: deleteError.message };
-      } else {
-        const { error: updateError } = await supabase
-          .from("investments")
-          .update({
-            quantity: remainingLotQuantity,
-            total_cost: remainingLotCost,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", lot.id)
-          .eq("user_id", userId);
-        if (updateError) return { error: updateError.message };
-      }
-
-      remainingQuantity = Number((remainingQuantity - movedQuantity).toFixed(8));
-    }
+    // Atomic FIFO move: the RPC locks the source holding, validates
+    // availability inside the lock and rolls back as a unit. The TS loop it
+    // replaces could duplicate the position between accounts (insert at
+    // destination succeeded, source reduction failed).
+    const { error: moveError } = await supabase.rpc("transfer_investment_lots", {
+      p_source_account_id: parsed.data.source_account_id,
+      p_destination_account_id: parsed.data.destination_account_id,
+      p_asset_name: parsed.data.asset_name,
+      p_ticker: parsed.data.ticker ?? "",
+      p_asset_type: parsed.data.asset_type,
+      p_currency: parsed.data.currency,
+      p_quantity: parsed.data.quantity,
+      p_fee_quantity: parsed.data.fee_quantity,
+      p_transfer_date: parsed.data.transfer_date,
+      p_notes: parsed.data.notes ?? null,
+    });
+    if (moveError) return { error: moveError.message };
 
     // Cash fee: deduct from the source account's cash as a `correction`
     // (a cost, not a budget expense), mirroring the investment-buy deduction.
@@ -1036,61 +964,25 @@ export async function adjustInvestmentPosition(
       return { data: null };
     }
 
-    // Decrease: reduce lots proportionally, mirroring sellInvestment.
-    const { data: lots, error: lotsError } = await supabase
-      .from("investments")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("account_id", parsed.data.account_id)
-      .eq("asset_type", parsed.data.asset_type)
-      .eq("currency", parsed.data.currency)
-      .order("purchase_date", { ascending: true })
-      .order("created_at", { ascending: true });
-
-    if (lotsError) return { error: lotsError.message };
-
-    const matchingLots = (lots ?? []).filter((lot) =>
-      lotMatchesHolding(lot, parsed.data.ticker, parsed.data.asset_name),
+    // Decrease: atomic proportional reduction (same RPC as sales — locks the
+    // holding and validates availability inside the lock).
+    const { error: reduceError } = await supabase.rpc(
+      "reduce_investment_lots",
+      {
+        p_account_id: parsed.data.account_id,
+        p_asset_name: parsed.data.asset_name,
+        p_ticker: parsed.data.ticker ?? "",
+        p_asset_type: parsed.data.asset_type,
+        p_currency: parsed.data.currency,
+        p_quantity: parsed.data.quantity,
+      },
     );
-
-    const totalQuantity = matchingLots.reduce(
-      (sum, lot) => sum + Number(lot.quantity),
-      0,
-    );
-
-    if (totalQuantity <= 0) {
-      return { error: "No hay posición para ajustar" };
-    }
-    if (parsed.data.quantity > totalQuantity + QTY_EPSILON) {
-      return { error: "No hay cantidad suficiente para ajustar" };
-    }
-
-    const remainingQuantity = totalQuantity - parsed.data.quantity;
-    const factor = Math.max(0, remainingQuantity / totalQuantity);
-
-    for (const lot of matchingLots) {
-      const newQty = Number((Number(lot.quantity) * factor).toFixed(8));
-      const newCost = Number((Number(lot.total_cost) * factor).toFixed(4));
-
-      if (newQty <= QTY_EPSILON) {
-        const { error: deleteError } = await supabase
-          .from("investments")
-          .delete()
-          .eq("id", lot.id)
-          .eq("user_id", userId);
-        if (deleteError) return { error: deleteError.message };
-      } else {
-        const { error: updateError } = await supabase
-          .from("investments")
-          .update({
-            quantity: newQty,
-            total_cost: newCost,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", lot.id)
-          .eq("user_id", userId);
-        if (updateError) return { error: updateError.message };
-      }
+    if (reduceError) {
+      return {
+        error: reduceError.message.includes("No hay cantidad")
+          ? "No hay cantidad suficiente para ajustar"
+          : reduceError.message,
+      };
     }
 
     return { data: null };
@@ -1218,41 +1110,40 @@ export async function sellInvestment(
 
     if (saleError) return { error: saleError.message };
 
-    // Reducir lotes proporcionalmente para mantener el avg cost
-    const remainingQuantity = totalQuantity - parsed.data.quantity_sold;
-    const factor = remainingQuantity / totalQuantity;
+    // Reduce the lots atomically (proportional, keeps avg cost). The RPC
+    // locks the holding, re-validates availability inside the lock (kills
+    // the concurrent double-sell race) and rolls back as a unit — the loop
+    // it replaced could leave lots half-reduced on a mid-loop failure.
+    const { data: removedCost, error: reduceError } = await supabase.rpc(
+      "reduce_investment_lots",
+      {
+        p_account_id: parsed.data.account_id,
+        p_asset_name: parsed.data.asset_name,
+        p_ticker: parsed.data.ticker ?? "",
+        p_asset_type: parsed.data.asset_type,
+        p_currency: parsed.data.currency,
+        p_quantity: parsed.data.quantity_sold,
+      },
+    );
 
-    for (const lot of matchingLots) {
-      const lotQty = Number(lot.quantity);
-      const lotCost = Number(lot.total_cost);
-      const newQty = Number((lotQty * factor).toFixed(8));
-      const newCost = Number((lotCost * factor).toFixed(4));
+    if (reduceError) {
+      await supabase.from("investment_sales").delete().eq("id", saleRow.id);
+      return { error: reduceError.message };
+    }
 
-      if (newQty <= QTY_EPSILON) {
-        const { error: deleteError } = await supabase
-          .from("investments")
-          .delete()
-          .eq("id", lot.id)
-          .eq("user_id", userId);
-        if (deleteError) {
-          await supabase.from("investment_sales").delete().eq("id", saleRow.id);
-          return { error: deleteError.message };
-        }
-      } else {
-        const { error: updateError } = await supabase
-          .from("investments")
-          .update({
-            quantity: newQty,
-            total_cost: newCost,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", lot.id)
-          .eq("user_id", userId);
-        if (updateError) {
-          await supabase.from("investment_sales").delete().eq("id", saleRow.id);
-          return { error: updateError.message };
-        }
-      }
+    // The RPC returns the exact cost removed under the lock; if a concurrent
+    // mutation shifted the basis between our read and the lock, sync the sale.
+    const actualCostBasis = Number(removedCost ?? costBasisOfSale);
+    if (Math.abs(actualCostBasis - costBasisOfSale) > 0.005) {
+      const syncedPnl = Number(
+        (grossProceeds - fees - tax - actualCostBasis).toFixed(4),
+      );
+      await supabase
+        .from("investment_sales")
+        .update({ cost_basis: actualCostBasis, realized_pnl: syncedPnl })
+        .eq("id", saleRow.id);
+      saleRow.cost_basis = actualCostBasis;
+      saleRow.realized_pnl = syncedPnl;
     }
 
     // Same currency gate as the purchase deduction: a cross-currency credit

@@ -73,7 +73,14 @@ export const UpdateRecurringSchema = z.object({
   start_date: z.string().min(1).optional(),
   end_date: z.string().nullable().optional().transform((v) => v || null),
   notes: z.string().max(500).nullable().optional().transform((v) => v || null),
-});
+}).refine(
+  // Same invariant as the create schema — updates could end with both set.
+  (data) => !(data.day_of_month != null && data.day_of_week != null),
+  {
+    message: "No se puede definir día del mes y día de la semana a la vez",
+    path: ["day_of_month"],
+  }
+);
 
 export type CreateRecurringInput = z.infer<typeof CreateRecurringSchema>;
 export type UpdateRecurringInput = z.infer<typeof UpdateRecurringSchema>;

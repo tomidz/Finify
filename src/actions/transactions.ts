@@ -1103,6 +1103,22 @@ export async function deleteTransaction(
       };
     }
 
+    // A debt payment lives in three places (transaction, activity, snapshot).
+    // Deleting only the transaction restored the cash but left the debt
+    // reduced and a payment in the history with no money behind it.
+    const { data: linkedActivity } = await supabase
+      .from("debt_activities")
+      .select("id")
+      .eq("transaction_id", id)
+      .limit(1)
+      .maybeSingle();
+    if (linkedActivity) {
+      return {
+        error:
+          "Esta transacción es un pago de deuda. Gestionalo desde la página de Deudas para mantener el saldo consistente.",
+      };
+    }
+
     const { error } = await supabase
       .from("transactions")
       .update({ deleted_at: new Date().toISOString() })
