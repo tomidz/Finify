@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import type { TablesUpdate } from "@/types/database.types";
 import {
   CreateNwItemSchema,
   UpdateNwItemSchema,
@@ -18,7 +19,7 @@ import type {
   NetWorthEvolutionPoint,
 } from "@/types/net-worth";
 
-import { fetchExchangeRate } from "@/lib/frankfurter";
+import { getOrFetchFxRate } from "@/actions/fx";
 
 type ActionResult<T> = { data: T } | { error: string };
 
@@ -31,49 +32,37 @@ async function getUserId() {
 }
 
 /**
- * Build an FX rate map for converting currencies to baseCurrency.
- * First tries the fx_rates cache table, then falls back to Frankfurter API.
+ * Build an FX rate map for converting currencies to baseCurrency, using
+ * today's rate through the shared getOrFetchFxRate path (one cache, one
+ * fallback policy, fetched rates persist to fx_rates). The previous custom
+ * lookup took ANY cached date as "live" and never persisted API fetches, so
+ * it could serve years-old rates and re-hit the API on every render.
  */
 async function buildFxMap(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  supabase: any,
   currencies: string[],
   baseCurrency: string
 ): Promise<Map<string, number>> {
   const fxMap = new Map<string, number>();
   fxMap.set(baseCurrency, 1);
 
-  const nonBase = currencies.filter((c) => c !== baseCurrency);
+  const nonBase = [...new Set(currencies.filter((c) => c !== baseCurrency))];
   if (nonBase.length === 0) return fxMap;
 
-  // Try cached rates first
-  const { data: fxRows } = await supabase
-    .from("fx_rates")
-    .select("from_currency, rate")
-    .in("from_currency", nonBase)
-    .eq("to_currency", baseCurrency)
-    .order("rate_date", { ascending: false });
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 
-  for (const fx of fxRows ?? []) {
-    if (!fxMap.has(fx.from_currency)) {
-      fxMap.set(fx.from_currency, Number(fx.rate));
-    }
-  }
-
-  // For any missing currencies, fetch from Frankfurter API
-  const missing = nonBase.filter((c) => !fxMap.has(c));
-  if (missing.length > 0) {
-    await Promise.all(
-      missing.map(async (currency) => {
-        try {
-          const rate = await fetchExchangeRate(currency, baseCurrency);
-          if (rate != null) fxMap.set(currency, rate);
-        } catch {
-          // Leave missing — will fallback to 1
-        }
-      })
-    );
-  }
+  await Promise.all(
+    nonBase.map(async (currency) => {
+      const result = await getOrFetchFxRate({
+        date: today,
+        from: currency,
+        to: baseCurrency,
+      });
+      // Missing entries deliberately stay unset: callers fall back to the
+      // stored amount_base, never to rate 1.
+      if (!("error" in result)) fxMap.set(currency, result.data);
+    })
+  );
 
   return fxMap;
 }
@@ -179,7 +168,7 @@ export async function updateNwItem(
       Object.entries(payload).filter(
         ([_, v]) => v !== undefined && v !== null
       )
-    ) as Record<string, unknown>;
+    ) as TablesUpdate<"nw_items">;
 
     const { data, error } = await supabase
       .from("nw_items")
@@ -271,7 +260,7 @@ export async function getNwSnapshotsForMonth(
     const baseCurrency = (userPref as { base_currency?: string })?.base_currency ?? "USD";
 
     const itemCurrencies = [...new Set((items ?? []).map((i) => i.currency as string))];
-    const fxMap = await buildFxMap(supabase, itemCurrencies, baseCurrency);
+    const fxMap = await buildFxMap(itemCurrencies, baseCurrency);
 
     let totalAssets = 0;
     let totalLiabilities = 0;
@@ -395,7 +384,7 @@ export async function getNwSnapshotsForYear(
     const baseCurrencyYear = (userPrefYear as { base_currency?: string })?.base_currency ?? "USD";
 
     const itemCurrenciesYear = [...new Set((items ?? []).map((i) => i.currency as string))];
-    const fxMapYear = await buildFxMap(supabase, itemCurrenciesYear, baseCurrencyYear);
+    const fxMapYear = await buildFxMap(itemCurrenciesYear, baseCurrencyYear);
 
     let totalAssets = 0;
     let totalLiabilities = 0;
@@ -518,7 +507,7 @@ export async function getAccountNetWorth(
     const supabase = await createClient();
     const { data, error } = await supabase.rpc("account_net_worth_year", {
       p_year: year,
-      p_base_currency: null,
+      p_base_currency: undefined,
     });
 
     if (error) return { error: error.message };
@@ -581,7 +570,7 @@ export async function getLiabilitiesForYear(
     const supabase = await createClient();
     const { data, error } = await supabase.rpc("liabilities_year", {
       p_year: year,
-      p_base_currency: null,
+      p_base_currency: undefined,
     });
 
     if (error) return { error: error.message };
@@ -702,7 +691,7 @@ export async function getLiabilitiesForMonth(
     const itemCurrencies = [
       ...new Set((items ?? []).map((i) => i.currency as string)),
     ];
-    const fxMap = await buildFxMap(supabase, itemCurrencies, baseCurrency);
+    const fxMap = await buildFxMap(itemCurrencies, baseCurrency);
 
     let total = 0;
     const summaryItems = (items ?? []).map((item) => {
@@ -792,7 +781,7 @@ export async function getNetWorthEvolution(
     const supabase = await createClient();
     const { data, error } = await supabase.rpc("net_worth_evolution_year", {
       p_year: year,
-      p_base_currency: null,
+      p_base_currency: undefined,
     });
 
     if (error) return { error: error.message };

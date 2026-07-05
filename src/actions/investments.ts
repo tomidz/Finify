@@ -1,8 +1,9 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import type { TablesUpdate } from "@/types/database.types";
 import { getOrFetchFxRate } from "@/actions/fx";
-import { createMonth, recalculateOpeningBalances } from "@/actions/months";
+import { createMonth, pickEarliestMonthId, recalculateOpeningBalances } from "@/actions/months";
 import {
   AdjustInvestmentPositionSchema,
   CreateInvestmentSchema,
@@ -196,8 +197,7 @@ export async function createInvestment(
 }
 
 async function autoDeductFromAccount(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  supabase: any,
+  supabase: Awaited<ReturnType<typeof createClient>>,
   userId: string,
   accountId: string,
   accountCurrency: string,
@@ -306,7 +306,7 @@ export async function updateInvestment(
       Object.entries(updates).filter(
         ([_, v]) => v !== undefined && v !== null
       )
-    ) as Record<string, unknown>;
+    ) as TablesUpdate<"investments">;
 
     // Fetch the current row first to detect an account move — the linked
     // cash deduction must follow the lot to the new account or the old
@@ -416,7 +416,7 @@ export async function updateInvestment(
         }
       }
 
-      const earliest = await pickEarliestMonth(supabase, [...monthsToRecalc]);
+      const earliest = await pickEarliestMonthId([...monthsToRecalc]);
       if (earliest) {
         await recalculateOpeningBalances(earliest);
       }
@@ -453,23 +453,6 @@ async function resolveMonthForDate(
   return row?.id ?? null;
 }
 
-async function pickEarliestMonth(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  monthIds: string[],
-): Promise<string | null> {
-  if (monthIds.length === 0) return null;
-  if (monthIds.length === 1) return monthIds[0];
-  const { data } = await supabase
-    .from("months")
-    .select("id, year, month")
-    .in("id", monthIds);
-  if (!data || data.length === 0) return null;
-  const sorted = [...data].sort(
-    (a, b) => a.year * 100 + a.month - (b.year * 100 + b.month),
-  );
-  return sorted[0].id;
-}
-
 export async function deleteInvestment(
   id: string
 ): Promise<ActionResult<null>> {
@@ -502,7 +485,7 @@ export async function deleteInvestment(
 
     if (error) return { error: error.message };
 
-    const earliest = await pickEarliestMonth(supabase, [...monthsToRecalc]);
+    const earliest = await pickEarliestMonthId([...monthsToRecalc]);
     if (earliest) {
       await recalculateOpeningBalances(earliest);
     }
@@ -827,7 +810,7 @@ export async function transferInvestmentPosition(
       p_quantity: parsed.data.quantity,
       p_fee_quantity: parsed.data.fee_quantity,
       p_transfer_date: parsed.data.transfer_date,
-      p_notes: parsed.data.notes ?? null,
+      p_notes: parsed.data.notes ?? "Transferido desde otra cuenta",
     });
     if (moveError) return { error: moveError.message };
 
@@ -1184,8 +1167,7 @@ export async function sellInvestment(
 }
 
 async function autoCreditToAccount(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  supabase: any,
+  supabase: Awaited<ReturnType<typeof createClient>>,
   userId: string,
   accountId: string,
   accountCurrency: string,
@@ -1437,7 +1419,7 @@ export async function deleteInvestmentSale(
       .eq("user_id", userId);
     if (deleteError) return { error: deleteError.message };
 
-    const earliest = await pickEarliestMonth(supabase, [...monthsToRecalc]);
+    const earliest = await pickEarliestMonthId([...monthsToRecalc]);
     if (earliest) {
       await recalculateOpeningBalances(earliest);
     }

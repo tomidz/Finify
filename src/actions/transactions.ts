@@ -14,7 +14,12 @@ import type {
   TransactionWithRelations,
   TransactionAmountWithRelations,
 } from "@/types/transactions";
-import { createMonth, getMonthsInRange, recalculateOpeningBalances } from "@/actions/months";
+import {
+  createMonth,
+  getMonthsInRange,
+  pickEarliestMonthId,
+  recalculateOpeningBalances,
+} from "@/actions/months";
 
 type ActionResult<T> = { data: T } | { error: string };
 
@@ -168,23 +173,6 @@ async function resolveMonthIdFromDate(
   const monthResult = await createMonth(year, month);
   if ("error" in monthResult) return { error: monthResult.error };
   return { data: monthResult.data.id };
-}
-
-async function pickEarliestMonthId(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  monthIds: string[],
-): Promise<string | null> {
-  if (monthIds.length === 0) return null;
-  if (monthIds.length === 1) return monthIds[0];
-  const { data } = await supabase
-    .from("months")
-    .select("id, year, month")
-    .in("id", monthIds);
-  if (!data || data.length === 0) return null;
-  const sorted = [...data].sort(
-    (a, b) => a.year * 100 + a.month - (b.year * 100 + b.month),
-  );
-  return sorted[0].id;
 }
 
 // --- GET BASE CURRENCY ---
@@ -379,11 +367,11 @@ export async function getTransactionsPage(
       p_month_id: input.monthId,
       p_limit: limit,
       p_offset: offset,
-      p_search: input.search?.trim() || null,
-      p_transaction_type: input.transaction_type ?? null,
-      p_account_id: input.account_id ?? null,
-      p_category_id: input.category_id ?? null,
-      p_category_type: input.category_type ?? null,
+      p_search: input.search?.trim() || undefined,
+      p_transaction_type: input.transaction_type ?? undefined,
+      p_account_id: input.account_id ?? undefined,
+      p_category_id: input.category_id ?? undefined,
+      p_category_type: input.category_type ?? undefined,
     });
 
     if (error) return { error: error.message };
@@ -1055,7 +1043,6 @@ export async function updateTransaction(
     // The recalc cascades to all later months, so we only need to anchor at the earliest
     // affected month — otherwise we'd compute the new month from stale state and clobber it.
     const earliestAffectedMonthId = await pickEarliestMonthId(
-      supabase,
       [existing.month_id, nextMonthId].filter(Boolean) as string[],
     );
     if (earliestAffectedMonthId) {

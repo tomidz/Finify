@@ -572,6 +572,29 @@ export async function recalculateAllOpeningBalances(): Promise<ActionResult<null
   }
 }
 
+/**
+ * Earliest of a set of month ids — the anchor for recalc cascades.
+ * (Single shared implementation; transactions.ts and investments.ts used to
+ * carry byte-identical copies.)
+ */
+export async function pickEarliestMonthId(
+  monthIds: string[],
+): Promise<string | null> {
+  const ids = monthIds.filter(Boolean);
+  if (ids.length === 0) return null;
+  if (ids.length === 1) return ids[0];
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("months")
+    .select("id, year, month")
+    .in("id", ids);
+  if (!data || data.length === 0) return null;
+  const sorted = [...data].sort(
+    (a, b) => a.year * 100 + a.month - (b.year * 100 + b.month),
+  );
+  return sorted[0].id;
+}
+
 export async function getMonthsInRange(
   startMonthId: string,
   endMonthId: string
@@ -636,7 +659,7 @@ export async function getOpeningBalances(
       "opening_balances_with_current_base",
       {
         p_month_id: monthId,
-        p_base_currency: null,
+        p_base_currency: undefined,
       },
     );
 

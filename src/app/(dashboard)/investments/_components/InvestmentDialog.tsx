@@ -41,6 +41,7 @@ import { formatAmount } from "@/lib/format";
 import {
   ASSET_TYPES,
   ASSET_TYPE_LABELS,
+  INVESTMENT_ACCOUNT_TYPES,
 } from "@/types/investments";
 import type { InvestmentWithAccount } from "@/types/investments";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -109,9 +110,7 @@ export function InvestmentDialog({
       (accounts ?? []).filter(
         (a) =>
           a.is_active &&
-          ["investment_broker", "crypto_exchange", "crypto_wallet"].includes(
-            a.account_type
-          )
+          INVESTMENT_ACCOUNT_TYPES.has(a.account_type)
       ),
     [accounts]
   );

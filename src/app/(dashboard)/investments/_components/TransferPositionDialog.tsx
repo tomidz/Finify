@@ -34,12 +34,7 @@ import { formatNumberInput, parseNumberInput } from "@/lib/utils";
 import { useAccounts } from "@/hooks/useAccounts";
 import { useTransferInvestmentPosition } from "@/hooks/useInvestments";
 import type { HoldingPosition } from "@/types/investments";
-
-const INVESTMENT_ACCOUNT_TYPES = new Set([
-  "investment_broker",
-  "crypto_exchange",
-  "crypto_wallet",
-]);
+import { INVESTMENT_ACCOUNT_TYPES } from "@/types/investments";
 
 type FormValues = {
   holding_key: string;

@@ -62,20 +62,32 @@ export async function updateUserPreferences(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    const payload: Record<string, string> = {};
-    if (parsed.data.base_currency != null)
-      payload.base_currency = parsed.data.base_currency;
-    if (parsed.data.fx_source != null)
-      payload.fx_source = parsed.data.fx_source;
-
-    if (Object.keys(payload).length === 0) {
+    if (parsed.data.base_currency == null && parsed.data.fx_source == null) {
       return getUserPreferences();
+    }
+
+    // base_currency is NOT NULL: when only fx_source changes, carry the
+    // current value (or the default) so the upsert's insert arm is valid.
+    let baseCurrency = parsed.data.base_currency;
+    if (baseCurrency == null) {
+      const { data: current } = await supabase
+        .from("user_preferences")
+        .select("base_currency")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      baseCurrency = current?.base_currency ?? "USD";
     }
 
     const { data, error } = await supabase
       .from("user_preferences")
       .upsert(
-        { user_id: user.id, ...payload },
+        {
+          user_id: user.id,
+          base_currency: baseCurrency,
+          ...(parsed.data.fx_source != null
+            ? { fx_source: parsed.data.fx_source }
+            : {}),
+        },
         { onConflict: "user_id" },
       )
       .eq("user_id", user.id)
