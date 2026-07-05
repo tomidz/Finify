@@ -1,5 +1,6 @@
 "use client";
 
+import { format } from "date-fns";
 import { useEffect, useMemo } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import {
@@ -79,7 +80,7 @@ export function RecurringDialog({
       currency: "EUR",
       recurrence: "monthly",
       day_of_month: "",
-      start_date: new Date().toISOString().slice(0, 10),
+      start_date: format(new Date(), "yyyy-MM-dd"),
       end_date: "",
       notes: "",
     },
@@ -127,7 +128,7 @@ export function RecurringDialog({
         currency: baseCurrency ?? "EUR",
         recurrence: "monthly",
         day_of_month: "",
-        start_date: new Date().toISOString().slice(0, 10),
+        start_date: format(new Date(), "yyyy-MM-dd"),
         end_date: "",
         notes: "",
       });

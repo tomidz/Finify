@@ -479,6 +479,17 @@ export function TransactionDialog({
                 base_amount: -Math.abs(line.base_amount),
               };
             }
+            if (transaction.transaction_type === "correction") {
+              // The form loads |amount|, so a negative adjustment must keep
+              // its original sign — a cosmetic edit used to flip −500 → +500.
+              const originalSign =
+                Math.sign(transaction.amounts[0]?.amount ?? 1) || 1;
+              return {
+                ...line,
+                amount: originalSign * Math.abs(line.amount),
+                base_amount: originalSign * Math.abs(line.base_amount),
+              };
+            }
             return line;
           }),
         });

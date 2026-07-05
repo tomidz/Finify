@@ -1,5 +1,6 @@
 "use client";
 
+import { format } from "date-fns";
 import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import {
@@ -51,7 +52,7 @@ export function DebtPaymentDialog({
 }: DebtPaymentDialogProps) {
   const form = useForm<PaymentFormValues>({
     defaultValues: {
-      date: new Date().toISOString().split("T")[0],
+      date: format(new Date(), "yyyy-MM-dd"),
       amount: "",
       account_id: "",
       category_id: "",
@@ -82,7 +83,7 @@ export function DebtPaymentDialog({
   useEffect(() => {
     if (!open) return;
     form.reset({
-      date: new Date().toISOString().split("T")[0],
+      date: format(new Date(), "yyyy-MM-dd"),
       amount: "",
       account_id: "",
       category_id: debtCategories.length === 1 ? debtCategories[0].id : "",

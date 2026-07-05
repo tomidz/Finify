@@ -44,6 +44,9 @@ async function invalidateFinancialQueries(queryClient: ReturnType<typeof useQuer
     queryClient.invalidateQueries({ queryKey: ["net-worth"] }),
     queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
     queryClient.invalidateQueries({ queryKey: ["forecast"] }),
+    // Per-account balance/history queries — the balance-adjustment dialog
+    // computes deltas from these; stale values produce wrong corrections.
+    queryClient.invalidateQueries({ queryKey: ["account"] }),
   ]);
 }
 
