@@ -6,7 +6,7 @@ import {
   UpdateAccountSchema,
 } from "@/lib/validations/account.schema";
 import { getOrFetchFxRate } from "@/actions/fx";
-import { recalculateOpeningBalances } from "@/actions/months";
+import { createMonth, recalculateOpeningBalances } from "@/actions/months";
 import type { Account, Currency } from "@/types/accounts";
 
 /** Devuelve el opening_base_amount correcto usando FX si es necesario. */
@@ -366,13 +366,17 @@ export async function createAccount(
     );
 
     if (!hasCurrentMonth) {
-      // Try to create the current month row so we can attach an opening balance
-      const { data: newMonthRow } = await supabase
-        .from("months")
-        .insert({ user_id: user.id, year: currentYear, month: currentMonth })
-        .select("id, year, month")
-        .single();
-      if (newMonthRow) monthList.push(newMonthRow);
+      // Create it through createMonth so every EXISTING account gets its
+      // opening carried forward — a raw insert here used to seed only the
+      // new account, zeroing everyone else's balances for the month.
+      const created = await createMonth(currentYear, currentMonth);
+      if (!("error" in created)) {
+        monthList.push({
+          id: created.data.id,
+          year: created.data.year,
+          month: created.data.month,
+        });
+      }
     }
 
     const openingRows = monthList.map((month) => ({
