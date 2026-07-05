@@ -492,7 +492,7 @@ function BudgetMonthContent({
                 : group.actualTotal;
               const executionPercent = group.plannedTotal > 0 ? (effectiveActual / group.plannedTotal) * 100 : 0;
               return (
-                <div key={group.type} className="overflow-hidden rounded-md border bg-white">
+                <div key={group.type} className="overflow-hidden rounded-md border bg-card">
                   <div className={`px-3 py-2 text-xs font-semibold ${CATEGORY_HEADER_STYLES[group.type] ?? "bg-muted text-foreground"}`}>{group.label}</div>
                   <div className="grid grid-cols-[1fr_auto_auto] gap-2 border-b bg-muted/20 px-3 py-2 text-xs font-medium">
                     <span>Subcategoría</span>

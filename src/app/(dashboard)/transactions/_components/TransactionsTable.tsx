@@ -662,9 +662,13 @@ export function TransactionsTable() {
                 >
                   <div className="flex flex-col items-center justify-center gap-3">
                     <p className="text-sm">
-                      {selectedMonth
-                        ? `No hay transacciones en ${MONTH_NAMES[selectedMonth.month - 1]} ${selectedMonth.year}.`
-                        : "Seleccioná un mes para ver transacciones."}
+                      {isFeedLoading
+                        ? "Cargando transacciones..."
+                        : hasActiveFilters
+                          ? "Ningún resultado con los filtros aplicados."
+                          : selectedMonth
+                            ? `No hay transacciones en ${MONTH_NAMES[selectedMonth.month - 1]} ${selectedMonth.year}.`
+                            : "Seleccioná un mes para ver transacciones."}
                     </p>
                     <Button
                       onClick={handleCreateTx}
@@ -749,8 +753,8 @@ export function TransactionsTable() {
               {deletingTx?.transaction_type === "transfer" ? (
                 <>
                   ¿Estás seguro de que querés eliminar esta transferencia? Se
-                  eliminará la transacción y sus líneas asociadas. Esta acción
-                  no se puede deshacer.
+                  eliminará la transacción y sus líneas asociadas. Vas a poder
+                  deshacerlo desde el aviso que aparece al confirmar.
                 </>
               ) : (
                 <>
@@ -758,7 +762,8 @@ export function TransactionsTable() {
                   <span className="font-semibold">
                     {deletingTx?.description}
                   </span>
-                  ? Esta acción no se puede deshacer.
+                  ? Vas a poder deshacerlo desde el aviso que aparece al
+                  confirmar.
                 </>
               )}
             </DialogDescription>
