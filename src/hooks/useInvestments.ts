@@ -7,6 +7,7 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query";
 import {
+  adjustInvestmentPosition,
   getInvestments,
   getInvestmentSales,
   createInvestment,
@@ -21,6 +22,7 @@ import {
   transferInvestmentPosition,
 } from "@/actions/investments";
 import type {
+  AdjustInvestmentPositionInput,
   CreateInvestmentInput,
   SellInvestmentInput,
   TransferInvestmentPositionInput,
@@ -298,6 +300,29 @@ export function useSellInvestment() {
       queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
       queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
       queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+    },
+  });
+}
+
+export function useAdjustInvestmentPosition() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: AdjustInvestmentPositionInput) => {
+      const result = await adjustInvestmentPosition(input);
+      if ("error" in result) throw new Error(result.error);
+      return result.data;
+    },
+    onError: (err: Error) => {
+      toast.error(err.message);
+    },
+    onSuccess: () => {
+      toast.success("Posición ajustada");
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
+      queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
       queryClient.invalidateQueries({ queryKey: ["net-worth"] });
     },
   });
