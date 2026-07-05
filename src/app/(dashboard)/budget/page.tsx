@@ -400,7 +400,10 @@ function BudgetMonthContent({
         income.planned += group.plannedTotal;
         income.actual += group.actualTotal;
       } else if (group.type === "savings") {
+        // Ahorro = lo categorizado como ahorro (decisión de producto):
+        // el plan y el ejecutado salen de las categorías, no del residuo.
         savings.planned += group.plannedTotal;
+        savings.actual += group.actualTotal;
       } else if (group.type === "investments") {
         investments.planned += group.plannedTotal;
       } else {
@@ -411,12 +414,11 @@ function BudgetMonthContent({
 
     // Inversiones real: del módulo de inversiones (compras del mes)
     investments.actual = monthInvestmentTotal;
-    // Plan de ahorro: lo que debería sobrar según el presupuesto
-    savings.planned = income.planned - expenses.planned - investments.planned;
-    // Ahorro real: lo que sobra después de gastos e inversiones
-    savings.actual = income.actual - expenses.actual - investments.actual;
+    // Sobrante informativo: lo que quedó sin gastar ni asignar.
+    const leftover =
+      income.actual - expenses.actual - investments.actual - savings.actual;
 
-    return { income, expenses, savings, investments };
+    return { income, expenses, savings, investments, leftover };
   }, [rowsByType, monthInvestmentTotal]);
 
   if (categoriesLoading || linesLoading || summaryLoading || !categories || !lines || !summary) {
@@ -474,6 +476,9 @@ function BudgetMonthContent({
                 {groupedTotals.savings.actual >= groupedTotals.savings.planned ? "+" : ""}{currencySymbol} {formatAmount(groupedTotals.savings.actual - groupedTotals.savings.planned)} vs plan
               </p>
             )}
+            <p className="text-muted-foreground text-xs">
+              Sobrante del mes: {currencySymbol} {formatAmount(groupedTotals.leftover)}
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -486,9 +491,9 @@ function BudgetMonthContent({
         ) : (
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {rowsByType.map((group) => {
-              // For investments, use real from investments module; for savings, use calculated value
+              // Investments execute from the investments module; every other
+              // group (savings included) executes from its own categories.
               const effectiveActual = group.type === "investments" ? monthInvestmentTotal
-                : group.type === "savings" ? groupedTotals.savings.actual
                 : group.actualTotal;
               const executionPercent = group.plannedTotal > 0 ? (effectiveActual / group.plannedTotal) * 100 : 0;
               return (

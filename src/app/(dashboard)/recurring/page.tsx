@@ -1,4 +1,5 @@
 import { RecurringTable } from "./_components/RecurringTable";
+import { PendingRecurringCard } from "./_components/PendingRecurringCard";
 
 export default function RecurringPage() {
   return (
@@ -8,10 +9,11 @@ export default function RecurringPage() {
           Transacciones Recurrentes
         </h1>
         <p className="text-muted-foreground text-sm">
-          Definí gastos e ingresos que se repiten periódicamente para
-          automatizar tu registro mensual.
+          Definí gastos e ingresos que se repiten. Cada mes te sugerimos los
+          pendientes y los registrás con un clic.
         </p>
       </div>
+      <PendingRecurringCard />
       <RecurringTable />
     </div>
   );

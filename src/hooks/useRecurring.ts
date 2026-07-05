@@ -7,6 +7,7 @@ import {
   updateRecurring,
   deleteRecurring,
   getPendingRecurring,
+  registerRecurringOccurrence,
 } from "@/actions/recurring";
 import type {
   CreateRecurringInput,
@@ -43,6 +44,32 @@ export function usePendingRecurring(year: number, month: number) {
       return result.data;
     },
     staleTime: 60_000,
+  });
+}
+
+export function useRegisterRecurringOccurrence() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { recurring_id: string; date: string }) => {
+      const result = await registerRecurringOccurrence(input);
+      if ("error" in result) throw new Error(result.error);
+      return result.data;
+    },
+    onError: (err: Error) => toast.error(err.message),
+    onSuccess: () => toast.success("Transacción registrada"),
+    onSettled: () => {
+      // It creates a real transaction: refresh everything financial.
+      queryClient.invalidateQueries({ queryKey: RECURRING_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: ["recurring", "pending"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      queryClient.invalidateQueries({ queryKey: ["months"] });
+      queryClient.invalidateQueries({ queryKey: ["opening-balances"] });
+      queryClient.invalidateQueries({ queryKey: ["budget", "summary"] });
+      queryClient.invalidateQueries({ queryKey: ["budget", "summary-range"] });
+      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+      queryClient.invalidateQueries({ queryKey: ["forecast"] });
+      queryClient.invalidateQueries({ queryKey: ["account"] });
+    },
   });
 }
 

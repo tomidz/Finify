@@ -1,6 +1,8 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { createTransaction, getBaseCurrency } from "@/actions/transactions";
+import { getOrFetchFxRate } from "@/actions/fx";
 import {
   CreateRecurringSchema,
   UpdateRecurringSchema,
@@ -234,11 +236,16 @@ export async function getPendingRecurring(
       .eq("month", month)
       .maybeSingle();
 
-    let existingTxs: { description: string; account_id: string; base_amount: number }[] = [];
+    let existingTxs: {
+      description: string;
+      account_id: string;
+      base_amount: number;
+      amount: number;
+    }[] = [];
     if (monthRow) {
       const { data: txData } = await supabase
         .from("transactions")
-        .select("description, transaction_amounts ( account_id, base_amount )")
+        .select("description, transaction_amounts ( account_id, base_amount, amount )")
         .eq("user_id", user.id)
         .eq("month_id", monthRow.id)
         .is("deleted_at", null);
@@ -252,6 +259,7 @@ export async function getPendingRecurring(
           description: (tx.description ?? "").toLowerCase().trim(),
           account_id: firstLine?.account_id ?? "",
           base_amount: Math.abs(Number(firstLine?.base_amount ?? 0)),
+          amount: Math.abs(Number(firstLine?.amount ?? 0)),
         };
       });
     }
@@ -297,15 +305,26 @@ export async function getPendingRecurring(
       };
 
       for (const expectedDate of expectedDates) {
-        // Check if a matching transaction exists (same description + account + similar amount)
+        // A matching transaction covers exactly ONE occurrence: consume it so
+        // a single payment doesn't mark every weekly date as registered.
+        // Foreign-currency recurrings with no stored base_amount compare in
+        // the account currency (they could never match in base).
         const descLower = rec.description.toLowerCase().trim();
-        const recAmount = Math.abs(Number(rec.base_amount ?? rec.amount));
-        const isRegistered = existingTxs.some(
-          (tx) =>
-            tx.description === descLower &&
-            tx.account_id === rec.account_id &&
-            Math.abs(tx.base_amount - recAmount) / (recAmount || 1) < RECURRING_AMOUNT_TOLERANCE
+        const compareInBase = rec.base_amount != null;
+        const recAmount = Math.abs(
+          Number(compareInBase ? rec.base_amount : rec.amount),
         );
+        const matchIndex = existingTxs.findIndex((tx) => {
+          if (tx.description !== descLower) return false;
+          if (tx.account_id !== rec.account_id) return false;
+          const txAmount = compareInBase ? tx.base_amount : tx.amount;
+          return (
+            Math.abs(txAmount - recAmount) / (recAmount || 1) <
+            RECURRING_AMOUNT_TOLERANCE
+          );
+        });
+        const isRegistered = matchIndex !== -1;
+        if (isRegistered) existingTxs.splice(matchIndex, 1);
 
         results.push({
           recurring: mapped,
@@ -406,4 +425,75 @@ function getExpectedDatesInMonth(
   }
 
   return dates;
+}
+
+// --- REGISTER A PENDING OCCURRENCE AS A REAL TRANSACTION ---
+// One click from the pending list: builds the transaction server-side with
+// the recurring's data and a fresh FX conversion for the expected date.
+export async function registerRecurringOccurrence(input: {
+  recurring_id: string;
+  date: string; // yyyy-MM-dd (the expected occurrence date)
+}): Promise<ActionResult<null>> {
+  try {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date ?? "")) {
+      return { error: "Fecha inválida" };
+    }
+
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return { error: "No autenticado" };
+
+    const { data: rec, error: recError } = await supabase
+      .from("recurring_transactions")
+      .select("*")
+      .eq("id", input.recurring_id)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (recError) return { error: recError.message };
+    if (!rec) return { error: "Recurrente no encontrada" };
+
+    const baseCurrencyResult = await getBaseCurrency();
+    if ("error" in baseCurrencyResult) return baseCurrencyResult;
+    const baseCurrency = baseCurrencyResult.data;
+
+    const rawAmount = Math.abs(Number(rec.amount));
+    let exchangeRate = 1;
+    let baseAmount = rawAmount;
+    if (rec.currency !== baseCurrency) {
+      const fx = await getOrFetchFxRate({
+        date: input.date,
+        from: rec.currency,
+        to: baseCurrency,
+      });
+      if ("error" in fx) return fx;
+      exchangeRate = fx.data;
+      baseAmount = Number((rawAmount * fx.data).toFixed(4));
+    }
+
+    const sign = rec.type === "expense" ? -1 : 1;
+    const txResult = await createTransaction({
+      date: input.date,
+      transaction_type: rec.type,
+      category_id: rec.category_id,
+      description: rec.description,
+      amounts: [
+        {
+          account_id: rec.account_id,
+          amount: sign * rawAmount,
+          exchange_rate: exchangeRate,
+          base_amount: sign * baseAmount,
+        },
+      ],
+      notes: rec.notes,
+    });
+
+    if ("error" in txResult) return { error: txResult.error };
+    return { data: null };
+  } catch (e) {
+    console.error("registerRecurringOccurrence:", e);
+    return { error: "Error al registrar la recurrente" };
+  }
 }
