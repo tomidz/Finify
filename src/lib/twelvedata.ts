@@ -65,7 +65,7 @@ const MIC_TO_YAHOO_SUFFIX: Record<string, string> = {
 };
 
 async function fetchQuote(query: string): Promise<{ price: number; currency: string | null } | null> {
-  const apiKey = process.env.TWELVEDATA_API_KEY ?? process.env.NEXT_PUBLIC_TWELVEDATA_API_KEY;
+  const apiKey = process.env.TWELVEDATA_API_KEY;
   if (!apiKey || !query) return null;
 
   const url = new URL("https://api.twelvedata.com/quote");
@@ -99,7 +99,7 @@ async function fetchQuote(query: string): Promise<{ price: number; currency: str
 }
 
 async function searchSymbol(query: string): Promise<ResolvedSymbol | null> {
-  const apiKey = process.env.TWELVEDATA_API_KEY ?? process.env.NEXT_PUBLIC_TWELVEDATA_API_KEY;
+  const apiKey = process.env.TWELVEDATA_API_KEY;
   if (!apiKey || !query) return null;
 
   const url = new URL("https://api.twelvedata.com/symbol_search");
@@ -187,7 +187,7 @@ async function fetchYahooQuote(
 export async function fetchTwelveDataInstrument(
   query: string,
 ): Promise<TwelveDataInstrument | null> {
-  const apiKey = process.env.TWELVEDATA_API_KEY ?? process.env.NEXT_PUBLIC_TWELVEDATA_API_KEY;
+  const apiKey = process.env.TWELVEDATA_API_KEY;
   if (!apiKey || !query) return null;
 
   const resolved = await searchSymbol(query);

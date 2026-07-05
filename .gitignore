@@ -5,10 +5,12 @@
 /.next/
 /out/
 
-# Environment variables
+# Environment variables (/env.ts guards a past incident: real secrets were
+# once saved under that filename and it isn't a source file)
 .env
 .env.local
 .env.*.local
+/env.ts
 
 # Vercel
 .vercel
