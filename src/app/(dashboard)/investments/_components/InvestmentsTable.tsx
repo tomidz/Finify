@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useMemo, useState } from "react";
-import { Plus, Pencil, Trash2, RefreshCw, ChevronDown, ChevronRight, ArrowLeftRight, TrendingDown } from "lucide-react";
+import { Plus, Pencil, Trash2, RefreshCw, ChevronDown, ChevronRight, ArrowLeftRight, TrendingDown, SlidersHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -56,6 +56,7 @@ import type { InvestmentWithAccount, HoldingPosition } from "@/types/investments
 import { InvestmentDialog } from "./InvestmentDialog";
 import { SellInvestmentDialog } from "./SellInvestmentDialog";
 import { TransferPositionDialog } from "./TransferPositionDialog";
+import { AdjustPositionDialog } from "./AdjustPositionDialog";
 
 export function InvestmentsTable() {
   const { data: investments, isLoading, isError, error, refetch } = useInvestments();
@@ -173,6 +174,8 @@ export function InvestmentsTable() {
   const [transferDialogOpen, setTransferDialogOpen] = useState(false);
   const [sellHolding, setSellHolding] = useState<HoldingPosition | null>(null);
   const [sellDialogOpen, setSellDialogOpen] = useState(false);
+  const [adjustHolding, setAdjustHolding] = useState<HoldingPosition | null>(null);
+  const [adjustDialogOpen, setAdjustDialogOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [assetTypeFilter, setAssetTypeFilter] = useState("all");
   const [accountFilter, setAccountFilter] = useState("all");
@@ -324,6 +327,10 @@ export function InvestmentsTable() {
         onSell={(selectedHolding) => {
           setSellHolding(selectedHolding);
           setSellDialogOpen(true);
+        }}
+        onAdjust={(selectedHolding) => {
+          setAdjustHolding(selectedHolding);
+          setAdjustDialogOpen(true);
         }}
         onEdit={handleEdit}
         onDelete={setDeletingInvestment}
@@ -571,6 +578,15 @@ export function InvestmentsTable() {
         }}
       />
 
+      <AdjustPositionDialog
+        holding={adjustHolding}
+        open={adjustDialogOpen}
+        onOpenChange={(open) => {
+          setAdjustDialogOpen(open);
+          if (!open) setAdjustHolding(null);
+        }}
+      />
+
       {/* Delete Confirmation Dialog */}
       <Dialog
         open={!!deletingInvestment}
@@ -760,6 +776,7 @@ const HoldingRows = React.memo(function HoldingRows({
   onToggleExpanded,
   onTransfer,
   onSell,
+  onAdjust,
   onEdit,
   onDelete,
 }: {
@@ -768,6 +785,7 @@ const HoldingRows = React.memo(function HoldingRows({
   onToggleExpanded: (key: string) => void;
   onTransfer: (holding: HoldingPosition) => void;
   onSell: (holding: HoldingPosition) => void;
+  onAdjust: (holding: HoldingPosition) => void;
   onEdit: (investment: InvestmentWithAccount) => void;
   onDelete: (investment: InvestmentWithAccount) => void;
 }) {
@@ -839,6 +857,9 @@ const HoldingRows = React.memo(function HoldingRows({
               <Button variant="ghost" size="icon" aria-label="Vender" onClick={() => onSell(holding)}>
                 <TrendingDown className="size-4" />
               </Button>
+              <Button variant="ghost" size="icon" aria-label="Ajustar posición" onClick={() => onAdjust(holding)}>
+                <SlidersHorizontal className="size-4" />
+              </Button>
               <Button variant="ghost" size="icon" aria-label="Transferir posicion" onClick={() => onTransfer(holding)}>
                 <ArrowLeftRight className="size-4" />
               </Button>
@@ -861,6 +882,17 @@ const HoldingRows = React.memo(function HoldingRows({
                 }}
               >
                 <TrendingDown className="size-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Ajustar posición"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onAdjust(holding);
+                }}
+              >
+                <SlidersHorizontal className="size-4" />
               </Button>
               <span className="text-xs text-muted-foreground">{holding.investments.length} compras</span>
             </div>

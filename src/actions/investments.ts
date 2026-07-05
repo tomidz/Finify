@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getOrFetchFxRate } from "@/actions/fx";
 import { createMonth, recalculateOpeningBalances } from "@/actions/months";
 import {
+  AdjustInvestmentPositionSchema,
   CreateInvestmentSchema,
   SellInvestmentSchema,
   TransferInvestmentPositionSchema,
@@ -940,6 +941,125 @@ export async function transferInvestmentPosition(
     return { data: null };
   } catch {
     return { error: "Error al transferir posicion" };
+  }
+}
+
+/**
+ * Adjusts a holding's quantity without touching cash — the investment
+ * counterpart of an account correction. Increases insert a new lot (cost
+ * basis defaults to 0: interés en especie, airdrop, reconciliación);
+ * decreases reduce the matching lots proportionally (quantity and cost),
+ * with no sale record, realized PnL, or cash credit.
+ */
+export async function adjustInvestmentPosition(
+  input: unknown,
+): Promise<ActionResult<null>> {
+  try {
+    const parsed = AdjustInvestmentPositionSchema.safeParse(input);
+    if (!parsed.success) {
+      return {
+        error: parsed.error.issues[0]?.message ?? "Datos inválidos",
+      };
+    }
+
+    const userId = await getUserId();
+    if (!userId) return { error: "No autenticado" };
+
+    const supabase = await createClient();
+
+    const { data: account, error: accError } = await supabase
+      .from("accounts")
+      .select("id")
+      .eq("id", parsed.data.account_id)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (accError) return { error: accError.message };
+    if (!account) return { error: "Cuenta no encontrada" };
+
+    if (parsed.data.direction === "increase") {
+      const costBasis = parsed.data.cost_basis ?? 0;
+      const { error: insertError } = await supabase.from("investments").insert({
+        user_id: userId,
+        account_id: parsed.data.account_id,
+        asset_name: parsed.data.asset_name,
+        ticker: parsed.data.ticker ?? null,
+        isin: parsed.data.isin ?? null,
+        asset_type: parsed.data.asset_type,
+        quantity: parsed.data.quantity,
+        price_per_unit: costBasis / parsed.data.quantity,
+        total_cost: costBasis,
+        currency: parsed.data.currency,
+        purchase_date: parsed.data.adjustment_date,
+        notes: parsed.data.notes ?? "Ajuste de posición",
+      });
+      if (insertError) return { error: insertError.message };
+      return { data: null };
+    }
+
+    // Decrease: reduce lots proportionally, mirroring sellInvestment.
+    const { data: lots, error: lotsError } = await supabase
+      .from("investments")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("account_id", parsed.data.account_id)
+      .eq("asset_name", parsed.data.asset_name)
+      .eq("asset_type", parsed.data.asset_type)
+      .eq("currency", parsed.data.currency)
+      .order("purchase_date", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    if (lotsError) return { error: lotsError.message };
+
+    const matchingLots = (lots ?? []).filter(
+      (lot) =>
+        (lot.ticker ?? null) === (parsed.data.ticker ?? null) &&
+        (lot.isin ?? null) === (parsed.data.isin ?? null),
+    );
+
+    const totalQuantity = matchingLots.reduce(
+      (sum, lot) => sum + Number(lot.quantity),
+      0,
+    );
+
+    if (totalQuantity <= 0) {
+      return { error: "No hay posición para ajustar" };
+    }
+    if (parsed.data.quantity > totalQuantity + QTY_EPSILON) {
+      return { error: "No hay cantidad suficiente para ajustar" };
+    }
+
+    const remainingQuantity = totalQuantity - parsed.data.quantity;
+    const factor = Math.max(0, remainingQuantity / totalQuantity);
+
+    for (const lot of matchingLots) {
+      const newQty = Number((Number(lot.quantity) * factor).toFixed(8));
+      const newCost = Number((Number(lot.total_cost) * factor).toFixed(4));
+
+      if (newQty <= QTY_EPSILON) {
+        const { error: deleteError } = await supabase
+          .from("investments")
+          .delete()
+          .eq("id", lot.id)
+          .eq("user_id", userId);
+        if (deleteError) return { error: deleteError.message };
+      } else {
+        const { error: updateError } = await supabase
+          .from("investments")
+          .update({
+            quantity: newQty,
+            total_cost: newCost,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", lot.id)
+          .eq("user_id", userId);
+        if (updateError) return { error: updateError.message };
+      }
+    }
+
+    return { data: null };
+  } catch {
+    return { error: "Error al ajustar la posición" };
   }
 }
 

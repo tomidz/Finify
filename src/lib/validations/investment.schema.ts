@@ -54,6 +54,25 @@ export const TransferInvestmentPositionSchema = z.object({
     path: ["fee_quantity"],
   });
 
+export const AdjustInvestmentPositionSchema = z.object({
+  account_id: z.string().uuid("Cuenta inválida"),
+  asset_name: z.string().min(1, "El activo es obligatorio").max(200),
+  ticker: z.string().max(20).nullable().optional(),
+  isin: z.string().max(20).nullable().optional(),
+  asset_type: z.enum(ASSET_TYPES),
+  currency: z.string().min(1, "La moneda es obligatoria"),
+  direction: z.enum(["increase", "decrease"]),
+  quantity: z.number().positive("La cantidad debe ser mayor a 0"),
+  // Optional cost basis for increases (0 = pure adjustment, e.g. interés o airdrop).
+  cost_basis: z
+    .number()
+    .min(0, "El costo no puede ser negativo")
+    .optional()
+    .default(0),
+  adjustment_date: z.string().min(1, "La fecha es obligatoria"),
+  notes: z.string().max(500).nullable().optional(),
+});
+
 export const SellInvestmentSchema = z.object({
   account_id: z.string().uuid("Cuenta inválida"),
   asset_name: z.string().min(1, "El activo es obligatorio").max(200),
@@ -76,3 +95,6 @@ export type TransferInvestmentPositionInput = z.infer<
   typeof TransferInvestmentPositionSchema
 >;
 export type SellInvestmentInput = z.infer<typeof SellInvestmentSchema>;
+export type AdjustInvestmentPositionInput = z.infer<
+  typeof AdjustInvestmentPositionSchema
+>;
