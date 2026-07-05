@@ -158,6 +158,31 @@ export async function getSavingsGoals(): Promise<
 }
 
 // --- CREATE GOAL ---
+/**
+ * A goal linked to an account derives its progress from that account's
+ * balance IN THE ACCOUNT'S CURRENCY, so the goal must share it — otherwise
+ * `current/target` compares different units (ARS 12.000 marked a USD 10.000
+ * goal complete). Also validates ownership (FK alone doesn't).
+ */
+async function validateGoalAccount(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  accountId: string,
+  goalCurrency: string | undefined,
+): Promise<string | null> {
+  const { data: account } = await supabase
+    .from("accounts")
+    .select("id, currency")
+    .eq("id", accountId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!account) return "Cuenta no encontrada";
+  if (goalCurrency && account.currency !== goalCurrency) {
+    return `La cuenta está en ${account.currency} pero la meta en ${goalCurrency}. Usá la misma moneda para vincularlas.`;
+  }
+  return null;
+}
+
 export async function createSavingsGoal(
   input: unknown
 ): Promise<ActionResult<SavingsGoalWithRelations>> {
@@ -174,6 +199,16 @@ export async function createSavingsGoal(
       data: { user },
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
+
+    if (parsed.data.account_id) {
+      const accountError = await validateGoalAccount(
+        supabase,
+        user.id,
+        parsed.data.account_id,
+        parsed.data.currency,
+      );
+      if (accountError) return { error: accountError };
+    }
 
     const { data, error } = await supabase
       .from("savings_goals")
@@ -215,6 +250,26 @@ export async function updateSavingsGoal(
       data: { user },
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
+
+    if (updates.account_id) {
+      let effectiveCurrency = updates.currency;
+      if (!effectiveCurrency) {
+        const { data: existingGoal } = await supabase
+          .from("savings_goals")
+          .select("currency")
+          .eq("id", id)
+          .eq("user_id", user.id)
+          .maybeSingle();
+        effectiveCurrency = existingGoal?.currency;
+      }
+      const accountError = await validateGoalAccount(
+        supabase,
+        user.id,
+        updates.account_id,
+        effectiveCurrency,
+      );
+      if (accountError) return { error: accountError };
+    }
 
     const { data, error } = await supabase
       .from("savings_goals")

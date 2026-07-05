@@ -51,7 +51,7 @@ const INVESTMENT_ACCOUNT_TYPES = new Set([
   "crypto_wallet",
 ]);
 import { formatAmount, amountTone } from "@/lib/format";
-import { ASSET_TYPE_LABELS } from "@/types/investments";
+import { ASSET_TYPE_LABELS, holdingGroupKey } from "@/types/investments";
 import type { InvestmentWithAccount, HoldingPosition } from "@/types/investments";
 import { InvestmentDialog } from "./InvestmentDialog";
 import { SellInvestmentDialog } from "./SellInvestmentDialog";
@@ -116,12 +116,9 @@ export function InvestmentsTable() {
   const holdings = useMemo<HoldingPosition[]>(() => {
     if (!investments) return [];
 
-    const groupKey = (inv: InvestmentWithAccount) =>
-      `${inv.ticker ?? inv.asset_name}::${inv.account_id}`;
-
     const groups = new Map<string, InvestmentWithAccount[]>();
     for (const inv of investments) {
-      const key = groupKey(inv);
+      const key = holdingGroupKey(inv);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(inv);
     }
@@ -260,16 +257,33 @@ export function InvestmentsTable() {
     return Array.from(groups.values())
       .map((group) => {
         const cost = group.items.reduce((s, h) => s + h.total_cost, 0);
-        const allValued = group.items.every((h) => h.current_value !== null);
-        const current = allValued
-          ? group.items.reduce((s, h) => s + (h.current_value ?? 0), 0)
-          : null;
-        const gain = current !== null ? current - cost : null;
-        const gainPct = gain !== null && cost > 0 ? (gain / cost) * 100 : null;
+        // Unpriced holdings count at cost, same as the summary cards.
+        const current = group.items.reduce(
+          (s, h) => s + (h.current_value ?? h.total_cost),
+          0,
+        );
+        const gain = current - cost;
+        const gainPct = cost > 0 ? (gain / cost) * 100 : null;
         return { ...group, cost, current, gain, gainPct };
       })
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [viewMode, filteredHoldings]);
+
+  // Holdings without a live price are valued at cost (same fallback the
+  // server uses). One unpriced asset used to blank the whole summary.
+  const summaryTotals = useMemo(() => {
+    const invested = filteredHoldings.reduce((sum, h) => sum + h.total_cost, 0);
+    const current = filteredHoldings.reduce(
+      (sum, h) => sum + (h.current_value ?? h.total_cost),
+      0,
+    );
+    const gain = current - invested;
+    const gainPct = invested > 0 ? (gain / invested) * 100 : null;
+    const unpricedCount = filteredHoldings.filter(
+      (h) => h.current_value === null,
+    ).length;
+    return { invested, current, gain, gainPct, unpricedCount };
+  }, [filteredHoldings]);
 
   const hasActiveFilters =
     searchTerm.trim().length > 0 ||
@@ -313,7 +327,7 @@ export function InvestmentsTable() {
   }
 
   const renderHolding = (holding: HoldingPosition) => {
-    const key = `${holding.ticker}::${holding.account_id}`;
+    const key = holdingGroupKey(holding);
     return (
       <HoldingRows
         key={key}
@@ -431,31 +445,11 @@ export function InvestmentsTable() {
         holdingsCount={filteredHoldings.length}
         currencySymbol={currencySymbol}
         totalCashUninvested={totalCashUninvested}
-        totalInvested={filteredHoldings.reduce((sum, holding) => sum + holding.total_cost, 0)}
-        totalCurrentValue={
-          filteredHoldings.every((holding) => holding.current_value !== null)
-            ? filteredHoldings.reduce((sum, holding) => sum + (holding.current_value ?? 0), 0)
-            : null
-        }
-        totalGainLoss={
-          filteredHoldings.every((holding) => holding.current_value !== null)
-            ? filteredHoldings.reduce(
-                (sum, holding) => sum + ((holding.current_value ?? 0) - holding.total_cost),
-                0,
-              )
-            : null
-        }
-        totalGainLossPct={
-          filteredHoldings.every((holding) => holding.current_value !== null) &&
-          filteredHoldings.reduce((sum, holding) => sum + holding.total_cost, 0) > 0
-            ? (filteredHoldings.reduce(
-                (sum, holding) => sum + ((holding.current_value ?? 0) - holding.total_cost),
-                0,
-              ) /
-                filteredHoldings.reduce((sum, holding) => sum + holding.total_cost, 0)) *
-              100
-            : null
-        }
+        totalInvested={summaryTotals.invested}
+        totalCurrentValue={summaryTotals.current}
+        totalGainLoss={summaryTotals.gain}
+        totalGainLossPct={summaryTotals.gainPct}
+        unpricedCount={summaryTotals.unpricedCount}
       />
 
       <InvestmentAccountsBreakdown
@@ -633,6 +627,7 @@ const InvestmentsSummaryCards = React.memo(function InvestmentsSummaryCards({
   totalCurrentValue,
   totalGainLoss,
   totalGainLossPct,
+  unpricedCount,
 }: {
   holdingsCount: number;
   currencySymbol: string;
@@ -641,6 +636,7 @@ const InvestmentsSummaryCards = React.memo(function InvestmentsSummaryCards({
   totalCurrentValue: number | null;
   totalGainLoss: number | null;
   totalGainLossPct: number | null;
+  unpricedCount?: number;
 }) {
   if (holdingsCount === 0 && totalCashUninvested === 0) return null;
 
@@ -678,6 +674,12 @@ const InvestmentsSummaryCards = React.memo(function InvestmentsSummaryCards({
               ? `${currencySymbol} ${formatAmount(totalCurrentValue)}`
               : "—"}
           </p>
+          {(unpricedCount ?? 0) > 0 && (
+            <p className="text-muted-foreground mt-1 text-xs">
+              {unpricedCount} activo{unpricedCount === 1 ? "" : "s"} sin precio
+              (valuado{unpricedCount === 1 ? "" : "s"} al costo)
+            </p>
+          )}
         </CardContent>
       </Card>
 
@@ -789,7 +791,7 @@ const HoldingRows = React.memo(function HoldingRows({
   onEdit: (investment: InvestmentWithAccount) => void;
   onDelete: (investment: InvestmentWithAccount) => void;
 }) {
-  const holdingKey = `${holding.ticker}::${holding.account_id}`;
+  const holdingKey = holdingGroupKey(holding);
   const singleInv =
     holding.investments.length === 1
       ? (holding.investments[0] as InvestmentWithAccount)
