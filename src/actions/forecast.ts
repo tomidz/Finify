@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { getOrFetchFxRate } from "@/actions/fx";
 import type { ForecastPoint } from "@/types/forecast";
 
 type ActionResult<T> = { data: T } | { error: string };
@@ -72,20 +73,59 @@ export async function getForecast(
     // 2. Get recurring transactions for projections
     const { data: recurrings } = await supabase
       .from("recurring_transactions")
-      .select("type, amount, base_amount, recurrence")
+      .select("type, amount, base_amount, recurrence, currency, start_date, end_date")
       .eq("user_id", user.id)
       .eq("is_active", true);
+
+    const { data: prefsRow } = await supabase
+      .from("user_preferences")
+      .select("base_currency")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    const baseCurrency = prefsRow?.base_currency ?? "USD";
+
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    // Last day covered by the forecast horizon
+    let horizonYear = latestMonth.year;
+    let horizonMonth = latestMonth.month + monthsAhead;
+    horizonYear += Math.floor((horizonMonth - 1) / 12);
+    horizonMonth = ((horizonMonth - 1) % 12) + 1;
+    const horizonStr = `${horizonYear}-${String(horizonMonth).padStart(2, "0")}-31`;
+
+    // Only recurrings that overlap the forecast window count. (The model is a
+    // flat monthly average, so partial-window starts are approximated.)
+    const activeRecurrings = (recurrings ?? []).filter((rec) => {
+      if (rec.end_date && rec.end_date < todayStr) return false;
+      if (rec.start_date && rec.start_date > horizonStr) return false;
+      return true;
+    });
 
     // Calculate monthly income/expenses from recurrings
     let monthlyIncome = 0;
     let monthlyExpenses = 0;
 
-    if (recurrings && recurrings.length > 0) {
-      for (const rec of recurrings) {
-        const monthlyAmount = toMonthlyAmount(
-          Math.abs(Number(rec.base_amount ?? rec.amount)),
-          rec.recurrence
-        );
+    if (activeRecurrings.length > 0) {
+      for (const rec of activeRecurrings) {
+        // base_amount may be null: convert `amount` from the recurring's
+        // currency instead of booking raw foreign units as base currency.
+        let baseAmt =
+          rec.base_amount != null ? Math.abs(Number(rec.base_amount)) : null;
+        if (baseAmt == null) {
+          const rawAmt = Math.abs(Number(rec.amount));
+          if (rec.currency === baseCurrency) {
+            baseAmt = rawAmt;
+          } else {
+            const fx = await getOrFetchFxRate({
+              date: todayStr,
+              from: rec.currency,
+              to: baseCurrency,
+            });
+            if ("error" in fx) continue; // skip rather than project a wrong number
+            baseAmt = rawAmt * fx.data;
+          }
+        }
+        const monthlyAmount = toMonthlyAmount(baseAmt, rec.recurrence);
         if (rec.type === "income") {
           monthlyIncome += monthlyAmount;
         } else {
@@ -104,6 +144,9 @@ export async function getForecast(
 
       if (recentMonths && recentMonths.length > 0) {
         const monthIds = recentMonths.map((m) => m.id);
+        // Only real income/expense flows: `investment` cash deductions and
+        // `correction` adjustments are not spending and used to inflate the
+        // projected expenses (e.g. a $9k lot purchase → −$3k/month phantom).
         const { data: txData } = await supabase
           .from("transactions")
           .select(
@@ -112,7 +155,7 @@ export async function getForecast(
           .eq("user_id", user.id)
           .in("month_id", monthIds)
           .is("deleted_at", null)
-          .neq("transaction_type", "transfer");
+          .in("transaction_type", ["income", "expense"]);
 
         let totalIncome = 0;
         let totalExpenses = 0;
