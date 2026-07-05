@@ -45,13 +45,12 @@ import { useCurrencies } from "@/hooks/useAccounts";
 import { useAccountNetWorth } from "@/hooks/useNetWorth";
 import { ACCOUNT_TYPE_LABELS } from "@/types/accounts";
 
-const INVESTMENT_ACCOUNT_TYPES = new Set([
-  "investment_broker",
-  "crypto_exchange",
-  "crypto_wallet",
-]);
 import { formatAmount, amountTone } from "@/lib/format";
-import { ASSET_TYPE_LABELS, holdingGroupKey } from "@/types/investments";
+import {
+  ASSET_TYPE_LABELS,
+  INVESTMENT_ACCOUNT_TYPES,
+  holdingGroupKey,
+} from "@/types/investments";
 import type { InvestmentWithAccount, HoldingPosition } from "@/types/investments";
 import { InvestmentDialog } from "./InvestmentDialog";
 import { SellInvestmentDialog } from "./SellInvestmentDialog";

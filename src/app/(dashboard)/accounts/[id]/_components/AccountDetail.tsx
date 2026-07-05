@@ -25,23 +25,8 @@ import {
   useCurrencies,
 } from "@/hooks/useAccounts";
 import { useBaseCurrency } from "@/hooks/useTransactions";
-import { formatAmount, amountTone } from "@/lib/format";
+import { formatAmount, amountTone, MONTH_NAMES } from "@/lib/format";
 import { ACCOUNT_TYPE_LABELS } from "@/types/accounts";
-
-const MONTH_NAMES = [
-  "Enero",
-  "Febrero",
-  "Marzo",
-  "Abril",
-  "Mayo",
-  "Junio",
-  "Julio",
-  "Agosto",
-  "Septiembre",
-  "Octubre",
-  "Noviembre",
-  "Diciembre",
-];
 
 export function AccountDetail({ accountId }: { accountId: string }) {
   const { data: account, isLoading: loadingAccount } = useAccountById(accountId);

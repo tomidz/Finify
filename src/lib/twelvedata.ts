@@ -1,3 +1,4 @@
+import "server-only";
 type TwelveDataQuote = {
   symbol?: string;
   name?: string;

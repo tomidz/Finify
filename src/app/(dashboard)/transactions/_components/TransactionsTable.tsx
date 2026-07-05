@@ -93,7 +93,6 @@ type TableTransaction = TransactionWithRelations & {
   primaryAccountName: string;
   primaryAmount: number;
   primaryBaseAmount: number;
-  searchText: string;
 };
 
 const TYPE_BADGE_STYLES: Record<string, string> = {
@@ -252,14 +251,6 @@ export function TransactionsTable() {
         primaryAccountName,
         primaryAmount,
         primaryBaseAmount,
-        searchText: [
-          transaction.description,
-          transaction.category_name ?? "",
-          primaryAccountName,
-          TRANSACTION_TYPE_LABELS[transaction.transaction_type],
-        ]
-          .join(" ")
-          .toLowerCase(),
       };
     });
   }, [feedTransactions]);

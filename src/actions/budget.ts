@@ -682,7 +682,7 @@ export async function getBudgetSummaryVsActual(
     const supabase = await createClient();
     const { data, error } = await supabase.rpc("budget_summary_vs_actual", {
       p_month_id: monthId,
-      p_base_currency: null,
+      p_base_currency: undefined,
     });
 
     if (error) return { error: error.message };
@@ -741,7 +741,7 @@ export async function getBudgetSummaryVsActualForRange(
       {
         p_start_month_id: startMonthId,
         p_end_month_id: endMonthId,
-        p_base_currency: null,
+        p_base_currency: undefined,
       },
     );
 
