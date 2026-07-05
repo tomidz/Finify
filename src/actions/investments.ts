@@ -780,7 +780,6 @@ export async function transferInvestmentPosition(
       .select("*")
       .eq("user_id", userId)
       .eq("account_id", parsed.data.source_account_id)
-      .eq("asset_name", parsed.data.asset_name)
       .eq("asset_type", parsed.data.asset_type)
       .eq("currency", parsed.data.currency)
       .order("purchase_date", { ascending: true })
@@ -788,10 +787,8 @@ export async function transferInvestmentPosition(
 
     if (sourceError) return { error: sourceError.message };
 
-    const matchingLots = (sourceLots ?? []).filter(
-      (lot) =>
-        (lot.ticker ?? null) === (parsed.data.ticker ?? null) &&
-        (lot.isin ?? null) === (parsed.data.isin ?? null),
+    const matchingLots = (sourceLots ?? []).filter((lot) =>
+      lotMatchesHolding(lot, parsed.data.ticker, parsed.data.asset_name),
     );
 
     const availableQuantity = matchingLots.reduce(
@@ -1003,7 +1000,6 @@ export async function adjustInvestmentPosition(
       .select("*")
       .eq("user_id", userId)
       .eq("account_id", parsed.data.account_id)
-      .eq("asset_name", parsed.data.asset_name)
       .eq("asset_type", parsed.data.asset_type)
       .eq("currency", parsed.data.currency)
       .order("purchase_date", { ascending: true })
@@ -1011,10 +1007,8 @@ export async function adjustInvestmentPosition(
 
     if (lotsError) return { error: lotsError.message };
 
-    const matchingLots = (lots ?? []).filter(
-      (lot) =>
-        (lot.ticker ?? null) === (parsed.data.ticker ?? null) &&
-        (lot.isin ?? null) === (parsed.data.isin ?? null),
+    const matchingLots = (lots ?? []).filter((lot) =>
+      lotMatchesHolding(lot, parsed.data.ticker, parsed.data.asset_name),
     );
 
     const totalQuantity = matchingLots.reduce(
@@ -1069,6 +1063,21 @@ export async function adjustInvestmentPosition(
 
 const QTY_EPSILON = 0.00000001;
 
+// The UI groups lots into a holding by `ticker || asset_name` (see
+// InvestmentsTable). Server-side lot matching must use the same key, or
+// lots with inconsistent metadata (e.g. ticker null on one lot, set on
+// another) silently drop out of the position and sells/adjustments fail
+// with "no hay cantidad suficiente".
+function lotMatchesHolding(
+  lot: { ticker: string | null; asset_name: string },
+  ticker: string | null | undefined,
+  assetName: string,
+): boolean {
+  const lotKey = lot.ticker?.trim() || lot.asset_name.trim();
+  const inputKey = ticker?.trim() || assetName.trim();
+  return lotKey === inputKey;
+}
+
 export async function sellInvestment(
   input: unknown,
 ): Promise<ActionResult<InvestmentSale>> {
@@ -1100,7 +1109,6 @@ export async function sellInvestment(
       .select("*")
       .eq("user_id", userId)
       .eq("account_id", parsed.data.account_id)
-      .eq("asset_name", parsed.data.asset_name)
       .eq("asset_type", parsed.data.asset_type)
       .eq("currency", parsed.data.currency)
       .order("purchase_date", { ascending: true })
@@ -1108,10 +1116,8 @@ export async function sellInvestment(
 
     if (lotsError) return { error: lotsError.message };
 
-    const matchingLots = (lots ?? []).filter(
-      (lot) =>
-        (lot.ticker ?? null) === (parsed.data.ticker ?? null) &&
-        (lot.isin ?? null) === (parsed.data.isin ?? null),
+    const matchingLots = (lots ?? []).filter((lot) =>
+      lotMatchesHolding(lot, parsed.data.ticker, parsed.data.asset_name),
     );
 
     const totalQuantity = matchingLots.reduce(
