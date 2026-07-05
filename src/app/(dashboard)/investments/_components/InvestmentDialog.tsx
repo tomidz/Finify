@@ -36,6 +36,7 @@ import {
 } from "@/hooks/useInvestments";
 import { AccountCombobox } from "@/components/account-combobox";
 import { formatNumberInput, numberToInputString, parseNumberInput } from "@/lib/utils";
+import { formatAmount } from "@/lib/format";
 import {
   ASSET_TYPES,
   ASSET_TYPE_LABELS,
@@ -59,6 +60,8 @@ type InvestmentFormValues = {
   quantity: string;
   price_per_unit: string;
   total_cost: string;
+  fees: string;
+  tax: string;
   currency: string;
   purchase_date: string;
   notes: string;
@@ -82,6 +85,8 @@ export function InvestmentDialog({
       quantity: "",
       price_per_unit: "",
       total_cost: "",
+      fees: "",
+      tax: "",
       currency: "USD",
       purchase_date: new Date().toISOString().slice(0, 10),
       notes: "",
@@ -143,6 +148,16 @@ export function InvestmentDialog({
   const isCrypto = watchAssetType === "crypto";
   const maxDec = 7;
 
+  const watchTotalCost = useWatch({ control: form.control, name: "total_cost" });
+  const watchFees = useWatch({ control: form.control, name: "fees" });
+  const watchTax = useWatch({ control: form.control, name: "tax" });
+  const totalToDeduct = useMemo(() => {
+    const total = parseNumberInput(watchTotalCost) ?? 0;
+    const fees = parseNumberInput(watchFees) ?? 0;
+    const tax = parseNumberInput(watchTax) ?? 0;
+    return total + fees + tax;
+  }, [watchTotalCost, watchFees, watchTax]);
+
   useEffect(() => {
     if (!open) return;
     if (investment) {
@@ -155,6 +170,8 @@ export function InvestmentDialog({
         quantity: numberToInputString(investment.quantity),
         price_per_unit: numberToInputString(investment.price_per_unit),
         total_cost: numberToInputString(investment.total_cost),
+        fees: "",
+        tax: "",
         currency: investment.currency,
         purchase_date: investment.purchase_date,
         notes: investment.notes ?? "",
@@ -170,6 +187,8 @@ export function InvestmentDialog({
         quantity: "",
         price_per_unit: "",
         total_cost: "",
+        fees: "",
+        tax: "",
         currency: investmentAccounts[0]?.currency ?? "USD",
         purchase_date: new Date().toISOString().slice(0, 10),
         notes: "",
@@ -242,6 +261,8 @@ export function InvestmentDialog({
     const quantity = parseNumberInput(values.quantity);
     const pricePerUnit = parseNumberInput(values.price_per_unit);
     const totalCost = parseNumberInput(values.total_cost);
+    const fees = parseNumberInput(values.fees) ?? 0;
+    const tax = parseNumberInput(values.tax) ?? 0;
 
     if (!quantity || isNaN(quantity) || quantity <= 0) {
       form.setError("quantity", { message: "Cantidad inválida" });
@@ -282,6 +303,8 @@ export function InvestmentDialog({
           quantity,
           price_per_unit: pricePerUnit,
           total_cost: totalCost,
+          fees,
+          tax,
           currency: values.currency,
           purchase_date: values.purchase_date,
           notes: values.notes || null,
@@ -527,6 +550,62 @@ export function InvestmentDialog({
               />
             </div>
 
+            {!isEditing && (
+              <div className="grid grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="fees"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Comisiones</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="text"
+                          inputMode="decimal"
+                          placeholder="0,00"
+                          disabled={isPending}
+                          value={field.value}
+                          onChange={(e) =>
+                            form.setValue(
+                              "fees",
+                              formatNumberInput(e.target.value, 4)
+                            )
+                          }
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="tax"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Impuestos</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="text"
+                          inputMode="decimal"
+                          placeholder="0,00"
+                          disabled={isPending}
+                          value={field.value}
+                          onChange={(e) =>
+                            form.setValue(
+                              "tax",
+                              formatNumberInput(e.target.value, 4)
+                            )
+                          }
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+            )}
+
             {willAutoDeduct && !isEditing && (
               <div className="space-y-3">
                 <FormField
@@ -551,8 +630,12 @@ export function InvestmentDialog({
                   <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
                     <AlertCircle className="mt-0.5 size-4 shrink-0" />
                     <span>
-                      Se descontará el costo total del saldo de la cuenta
-                      automáticamente.
+                      Se descontará
+                      {totalToDeduct > 0
+                        ? ` ${formatAmount(totalToDeduct)} (costo + comisiones + impuestos)`
+                        : " el costo total (más comisiones e impuestos)"}{" "}
+                      del saldo de la cuenta automáticamente. Las comisiones e
+                      impuestos se suman al costo base del lote.
                     </span>
                   </div>
                 )}

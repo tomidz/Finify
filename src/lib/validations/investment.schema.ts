@@ -10,6 +10,10 @@ export const CreateInvestmentSchema = z.object({
   quantity: z.number().positive("La cantidad debe ser mayor a 0"),
   price_per_unit: z.number().positive("El precio debe ser mayor a 0"),
   total_cost: z.number().positive("El costo total debe ser mayor a 0"),
+  // Purchase fees/taxes: capitalized into the lot's cost basis and included
+  // in the cash deduction.
+  fees: z.number().min(0, "Las comisiones no pueden ser negativas").optional().default(0),
+  tax: z.number().min(0, "Los impuestos no pueden ser negativos").optional().default(0),
   currency: z.string().min(1, "La moneda es obligatoria"),
   purchase_date: z.string().min(1, "La fecha es obligatoria"),
   notes: z.string().max(500).nullable().optional(),
