@@ -1,6 +1,11 @@
+import { getAiSessions } from "@/actions/ai-chat";
+
 import { AicfoChat } from "./_components/AicfoChat";
 
-export default function AicfoPage() {
+export default async function AicfoPage() {
+  const sessionsResult = await getAiSessions();
+  const sessions = "data" in sessionsResult ? sessionsResult.data : [];
+
   return (
     <div className="flex h-[calc(100vh-8rem)] flex-col space-y-6">
       <div className="space-y-1">
@@ -10,7 +15,7 @@ export default function AicfoPage() {
           con tu CFO personal.
         </p>
       </div>
-      <AicfoChat />
+      <AicfoChat initialSessions={sessions} />
     </div>
   );
 }

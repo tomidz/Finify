@@ -168,12 +168,38 @@ Reglas:
 - Sé selectivo: mostrá los números que cambian la conclusión, no volcados completos de datos. Usá tablas Markdown solo para comparaciones cortas.`;
 }
 
-export function createAicfoAgent() {
+export type AgentUsageReport = {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  toolNames: string[];
+};
+
+export function createAicfoAgent(hooks?: {
+  onUsage?: (usage: AgentUsageReport) => Promise<void> | void;
+}) {
+  const onUsage = hooks?.onUsage;
   return new ToolLoopAgent({
     model: anthropic("claude-opus-4-8"),
     instructions: buildInstructions(),
     tools,
     stopWhen: isStepCount(15),
+    onEnd: onUsage
+      ? async ({ usage, steps }) => {
+          await onUsage({
+            inputTokens: usage.inputTokens ?? 0,
+            outputTokens: usage.outputTokens ?? 0,
+            cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens ?? 0,
+            toolNames: [
+              ...new Set(
+                steps.flatMap((step) =>
+                  step.toolCalls.map((call) => call.toolName),
+                ),
+              ),
+            ],
+          });
+        }
+      : undefined,
   });
 }
 
