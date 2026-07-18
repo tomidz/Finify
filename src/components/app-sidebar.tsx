@@ -16,6 +16,7 @@ import {
   CreditCard,
   TrendingUp,
   Repeat,
+  Sparkles,
   Target,
 } from "lucide-react";
 
@@ -40,6 +41,7 @@ type NavItem = {
 
 const PRIMARY_NAV: NavItem[] = [
   { href: "/", icon: Home, label: "Dashboard" },
+  { href: "/aicfo", icon: Sparkles, label: "AI CFO" },
   { href: "/transactions", icon: ArrowLeftRight, label: "Transacciones" },
   { href: "/budget", icon: CalendarDays, label: "Presupuesto" },
   { href: "/recurring", icon: Repeat, label: "Recurrentes" },
