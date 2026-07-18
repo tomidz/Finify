@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { format } from "date-fns";
 import {
@@ -35,6 +35,10 @@ import { useAccounts } from "@/hooks/useAccounts";
 import { useTransferInvestmentPosition } from "@/hooks/useInvestments";
 import type { HoldingPosition } from "@/types/investments";
 import { INVESTMENT_ACCOUNT_TYPES } from "@/types/investments";
+
+function holdingKeyOf(holding: HoldingPosition): string {
+  return `${holding.ticker}::${holding.account_id}`;
+}
 
 type FormValues = {
   holding_key: string;
@@ -73,12 +77,12 @@ export function TransferPositionDialog({
   const selectedHoldingKey = form.watch("holding_key");
 
   const resolvedHolding = useMemo(() => {
-    if (holding) return holding;
-    return (
-      holdings.find(
-        (item) => `${item.ticker}::${item.account_id}` === selectedHoldingKey,
-      ) ?? null
+    const byKey = holdings.find(
+      (item) => holdingKeyOf(item) === selectedHoldingKey,
     );
+    if (byKey) return byKey;
+    if (holding && holdingKeyOf(holding) === selectedHoldingKey) return holding;
+    return null;
   }, [holding, holdings, selectedHoldingKey]);
 
   const destinationAccounts = useMemo(
@@ -110,14 +114,30 @@ export function TransferPositionDialog({
     return Math.max(0, safeQty - safeFee);
   }, [watchQuantity, watchFeeQuantity]);
 
+  const firstDestinationIdFor = useCallback(
+    (sourceHolding: HoldingPosition | null) =>
+      (accounts ?? []).find(
+        (account) =>
+          account.is_active &&
+          INVESTMENT_ACCOUNT_TYPES.has(account.account_type) &&
+          account.id !== sourceHolding?.account_id,
+      )?.id ?? "",
+    [accounts],
+  );
+
+  // Reset only on the closed → open transition: resetting on dependency
+  // identity changes (accounts refetch, holdings re-render) used to snap
+  // holding_key back to holdings[0] right after the user picked another
+  // position in the dropdown.
+  const wasOpenRef = useRef(false);
   useEffect(() => {
-    if (!open) return;
+    const justOpened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (!justOpened) return;
     const targetHolding = holding ?? holdings[0] ?? null;
     form.reset({
-      holding_key: targetHolding
-        ? `${targetHolding.ticker}::${targetHolding.account_id}`
-        : "",
-      destination_account_id: destinationAccounts[0]?.id ?? "",
+      holding_key: targetHolding ? holdingKeyOf(targetHolding) : "",
+      destination_account_id: firstDestinationIdFor(targetHolding),
       quantity: targetHolding
         ? formatNumberInput(String(targetHolding.total_quantity).replace(".", ","))
         : "",
@@ -126,16 +146,7 @@ export function TransferPositionDialog({
       transfer_date: format(new Date(), "yyyy-MM-dd"),
       notes: "",
     });
-  }, [destinationAccounts, form, holding, holdings, open]);
-
-  useEffect(() => {
-    if (!resolvedHolding) return;
-    form.setValue(
-      "quantity",
-      formatNumberInput(String(resolvedHolding.total_quantity).replace(".", ",")),
-    );
-    form.setValue("destination_account_id", destinationAccounts[0]?.id ?? "");
-  }, [destinationAccounts, form, resolvedHolding]);
+  }, [firstDestinationIdFor, form, holding, holdings, open]);
 
   const onSubmit = async (values: FormValues) => {
     if (!resolvedHolding) return;
@@ -214,13 +225,33 @@ export function TransferPositionDialog({
                   <FormItem>
                     <FormLabel>Posición</FormLabel>
                     <FormControl>
-                      <Select value={field.value} onValueChange={field.onChange}>
+                      <Select
+                        value={field.value}
+                        onValueChange={(value) => {
+                          field.onChange(value);
+                          const next = holdings.find(
+                            (item) => holdingKeyOf(item) === value,
+                          );
+                          if (next) {
+                            form.setValue(
+                              "quantity",
+                              formatNumberInput(
+                                String(next.total_quantity).replace(".", ","),
+                              ),
+                            );
+                            form.setValue(
+                              "destination_account_id",
+                              firstDestinationIdFor(next),
+                            );
+                          }
+                        }}
+                      >
                         <SelectTrigger>
                           <SelectValue placeholder="Seleccionar posición" />
                         </SelectTrigger>
                         <SelectContent>
                           {holdings.map((item) => {
-                            const value = `${item.ticker}::${item.account_id}`;
+                            const value = holdingKeyOf(item);
                             return (
                               <SelectItem key={value} value={value}>
                                 {item.asset_name} - {item.account_name} - {formatAmount(item.total_quantity)} {item.currency}
