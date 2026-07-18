@@ -1,16 +1,38 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import type { InferAgentUIMessage } from "ai";
-import { Loader2, Send, Sparkles, Wrench } from "lucide-react";
+import {
+  History,
+  Loader2,
+  Plus,
+  Send,
+  Sparkles,
+  Trash2,
+  Wrench,
+} from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import {
+  deleteAiSession,
+  getAiSessions,
+  getAiSessionMessages,
+  type AiSessionSummary,
+} from "@/actions/ai-chat";
 import type { AicfoAgent } from "@/lib/ai/aicfo-agent";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -46,9 +68,144 @@ function toolLabel(partType: string): string | null {
   return TOOL_LABELS[name] ?? `Consultando ${name}`;
 }
 
-export function AicfoChat() {
+export function AicfoChat({
+  initialSessions,
+}: {
+  initialSessions: AiSessionSummary[];
+}) {
+  const [sessions, setSessions] = useState(initialSessions);
+  const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
+  const [initialMessages, setInitialMessages] = useState<AicfoUIMessage[]>([]);
+  const [loadingSession, setLoadingSession] = useState(false);
+
+  const refreshSessions = useCallback(async () => {
+    const result = await getAiSessions();
+    if ("data" in result) setSessions(result.data);
+  }, []);
+
+  const newChat = useCallback(() => {
+    setSessionId(crypto.randomUUID());
+    setInitialMessages([]);
+  }, []);
+
+  const openSession = useCallback(async (id: string) => {
+    setLoadingSession(true);
+    try {
+      const result = await getAiSessionMessages(id);
+      if ("data" in result) {
+        setInitialMessages(
+          result.data.map((row) => ({
+            id: row.id,
+            role: row.role,
+            parts: row.parts as AicfoUIMessage["parts"],
+          })),
+        );
+        setSessionId(id);
+      }
+    } finally {
+      setLoadingSession(false);
+    }
+  }, []);
+
+  const removeSession = useCallback(
+    async (id: string) => {
+      await deleteAiSession(id);
+      await refreshSessions();
+      if (id === sessionId) {
+        setSessionId(crypto.randomUUID());
+        setInitialMessages([]);
+      }
+    },
+    [refreshSessions, sessionId],
+  );
+
+  const hasCurrentSession = sessions.some((s) => s.id === sessionId);
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" disabled={loadingSession}>
+              {loadingSession ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <History className="size-4" />
+              )}
+              Historial
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-72">
+            <DropdownMenuLabel>Conversaciones</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            {sessions.length === 0 && (
+              <DropdownMenuItem disabled>
+                Todavía no hay conversaciones
+              </DropdownMenuItem>
+            )}
+            {sessions.map((session) => (
+              <DropdownMenuItem
+                key={session.id}
+                onSelect={() => void openSession(session.id)}
+                className={cn(
+                  "flex items-center justify-between gap-2",
+                  session.id === sessionId && "bg-accent",
+                )}
+              >
+                <span className="truncate">
+                  {session.title ?? "Sin título"}
+                </span>
+                <button
+                  type="button"
+                  aria-label="Borrar conversación"
+                  className="text-muted-foreground hover:text-destructive shrink-0"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    event.preventDefault();
+                    void removeSession(session.id);
+                  }}
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={newChat}
+          disabled={!hasCurrentSession && initialMessages.length === 0}
+        >
+          <Plus className="size-4" />
+          Nueva
+        </Button>
+      </div>
+
+      <ChatPanel
+        key={sessionId}
+        id={sessionId}
+        initialMessages={initialMessages}
+        onTurnFinished={refreshSessions}
+      />
+    </div>
+  );
+}
+
+function ChatPanel({
+  id,
+  initialMessages,
+  onTurnFinished,
+}: {
+  id: string;
+  initialMessages: AicfoUIMessage[];
+  onTurnFinished: () => Promise<void> | void;
+}) {
   const { messages, sendMessage, status, error } = useChat<AicfoUIMessage>({
+    id,
+    messages: initialMessages,
     transport: new DefaultChatTransport({ api: "/api/aicfo" }),
+    onFinish: () => void onTurnFinished(),
   });
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
