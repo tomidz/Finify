@@ -5,6 +5,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import type { InferAgentUIMessage } from "ai";
 import {
+  AlertTriangle,
   History,
   Loader2,
   Plus,
@@ -12,12 +13,14 @@ import {
   Sparkles,
   Trash2,
   Wrench,
+  Zap,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import {
   deleteAiSession,
+  extendAiQuota,
   getAiSessions,
   getAiSessionMessages,
   type AiSessionSummary,
@@ -61,6 +64,41 @@ const SUGGESTIONS = [
   "¿Cómo está rindiendo mi portafolio este año?",
   "¿Cuánto creció mi patrimonio neto este año?",
 ];
+
+type ApiErrorUsage = {
+  tokensToday: number;
+  dailyCap: number;
+  extensionsToday: number;
+  maxExtensions: number;
+};
+
+type ParsedChatError = {
+  message: string;
+  code?: string;
+  usage?: ApiErrorUsage;
+};
+
+// The transport surfaces the raw response body as error.message, so unwrap the
+// JSON payload instead of showing it verbatim.
+function parseChatError(error: Error): ParsedChatError {
+  const fallback = "Algo salió mal. Probá de nuevo.";
+  try {
+    const parsed = JSON.parse(error.message) as {
+      error?: string;
+      code?: string;
+      usage?: ApiErrorUsage;
+    };
+    return {
+      message: parsed.error || fallback,
+      code: parsed.code,
+      usage: parsed.usage,
+    };
+  } catch {
+    return { message: error.message || fallback };
+  }
+}
+
+const formatTokens = (value: number) => value.toLocaleString("es-AR");
 
 function toolLabel(partType: string): string | null {
   if (!partType.startsWith("tool-")) return null;
@@ -201,13 +239,16 @@ function ChatPanel({
   initialMessages: AicfoUIMessage[];
   onTurnFinished: () => Promise<void> | void;
 }) {
-  const { messages, sendMessage, status, error } = useChat<AicfoUIMessage>({
-    id,
-    messages: initialMessages,
-    transport: new DefaultChatTransport({ api: "/api/aicfo" }),
-    onFinish: () => void onTurnFinished(),
-  });
+  const { messages, sendMessage, status, error, clearError, regenerate } =
+    useChat<AicfoUIMessage>({
+      id,
+      messages: initialMessages,
+      transport: new DefaultChatTransport({ api: "/api/aicfo" }),
+      onFinish: () => void onTurnFinished(),
+    });
   const [input, setInput] = useState("");
+  const [extending, setExtending] = useState(false);
+  const [extendError, setExtendError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -221,6 +262,22 @@ function ChatPanel({
     if (!trimmed || busy) return;
     void sendMessage({ text: trimmed });
     setInput("");
+  }
+
+  async function extendQuota() {
+    setExtending(true);
+    setExtendError(null);
+    try {
+      const result = await extendAiQuota();
+      if ("error" in result) {
+        setExtendError(result.error);
+        return;
+      }
+      clearError();
+      await regenerate();
+    } finally {
+      setExtending(false);
+    }
   }
 
   return (
@@ -308,9 +365,16 @@ function ChatPanel({
         )}
 
         {error && (
-          <p className="text-destructive text-sm">
-            Error: {error.message || "algo salió mal, probá de nuevo."}
-          </p>
+          <ChatError
+            error={error}
+            extending={extending}
+            extendError={extendError}
+            onExtend={extendQuota}
+            onRetry={() => {
+              clearError();
+              void regenerate();
+            }}
+          />
         )}
 
         <div ref={bottomRef} />
@@ -339,5 +403,65 @@ function ChatPanel({
         </Button>
       </form>
     </Card>
+  );
+}
+
+function ChatError({
+  error,
+  extending,
+  extendError,
+  onExtend,
+  onRetry,
+}: {
+  error: Error;
+  extending: boolean;
+  extendError: string | null;
+  onExtend: () => Promise<void>;
+  onRetry: () => void;
+}) {
+  const { message, code, usage } = parseChatError(error);
+  const isQuota = code === "daily_token_cap";
+  const canExtend =
+    isQuota && !!usage && usage.extensionsToday < usage.maxExtensions;
+
+  return (
+    <div className="bg-muted/50 space-y-3 rounded-lg border p-3 text-sm">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="text-amber-500 mt-0.5 size-4 shrink-0" />
+        <div className="space-y-1">
+          <p className="font-medium">{message}</p>
+          {isQuota && usage && (
+            <p className="text-muted-foreground text-xs">
+              Usaste {formatTokens(usage.tokensToday)} de{" "}
+              {formatTokens(usage.dailyCap)} tokens hoy.
+              {canExtend &&
+                ` Podés sumar otra tanda igual (te quedan ${
+                  usage.maxExtensions - usage.extensionsToday
+                } de ${usage.maxExtensions} ampliaciones hoy).`}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {extendError && <p className="text-destructive text-xs">{extendError}</p>}
+
+      <div className="flex gap-2">
+        {canExtend && (
+          <Button size="sm" disabled={extending} onClick={() => void onExtend()}>
+            {extending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Zap className="size-4" />
+            )}
+            Ampliar límite y seguir
+          </Button>
+        )}
+        {!isQuota && (
+          <Button size="sm" variant="outline" onClick={onRetry}>
+            Reintentar
+          </Button>
+        )}
+      </div>
+    </div>
   );
 }
