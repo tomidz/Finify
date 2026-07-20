@@ -88,6 +88,30 @@ export type Database = {
           },
         ]
       }
+      ai_quota_extensions: {
+        Row: {
+          created_at: string
+          day: string
+          extra_tokens: number
+          id: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          day: string
+          extra_tokens: number
+          id?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          day?: string
+          extra_tokens?: number
+          id?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       ai_sessions: {
         Row: {
           created_at: string

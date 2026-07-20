@@ -7,6 +7,12 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 export const AI_MODEL = "claude-opus-4-8";
 export const AI_DAILY_TOKEN_CAP = 300_000;
 export const AI_HOURLY_MESSAGE_LIMIT = 30;
+// Each extension grants another AI_DAILY_TOKEN_CAP for the same UTC day.
+export const AI_MAX_DAILY_EXTENSIONS = 3;
+
+export function utcDayKey(date = new Date()): string {
+  return date.toISOString().slice(0, 10);
+}
 
 // USD per million tokens.
 const MODEL_PRICING: Record<
@@ -31,21 +37,39 @@ export function estimateCostUsd(usage: {
   );
 }
 
-export type LimitCheck =
-  | { ok: true }
-  | { ok: false; status: number; message: string };
+export type AiUsageStatus = {
+  tokensToday: number;
+  dailyCap: number;
+  messagesLastHour: number;
+  hourlyLimit: number;
+  extensionsToday: number;
+  maxExtensions: number;
+};
 
-// Fail-closed: any query error blocks the turn instead of letting spend
-// through unmetered.
-export async function checkAiLimits(
+export type AiLimitCode =
+  | "usage_check_failed"
+  | "hourly_message_limit"
+  | "daily_token_cap";
+
+export type LimitCheck =
+  | { ok: true; usage: AiUsageStatus }
+  | {
+      ok: false;
+      status: number;
+      code: AiLimitCode;
+      message: string;
+      usage?: AiUsageStatus;
+    };
+
+export async function getAiUsageStatus(
   supabase: SupabaseServerClient,
   userId: string,
-): Promise<LimitCheck> {
+): Promise<AiUsageStatus | null> {
   const hourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const dayStart = new Date();
   dayStart.setUTCHours(0, 0, 0, 0);
 
-  const [hourly, daily] = await Promise.all([
+  const [hourly, daily, extensions] = await Promise.all([
     supabase
       .from("ai_usage")
       .select("id", { count: "exact", head: true })
@@ -56,37 +80,72 @@ export async function checkAiLimits(
       .select("input_tokens, output_tokens")
       .eq("user_id", userId)
       .gte("created_at", dayStart.toISOString()),
+    supabase
+      .from("ai_quota_extensions")
+      .select("extra_tokens")
+      .eq("user_id", userId)
+      .eq("day", utcDayKey()),
   ]);
 
-  if (hourly.error || daily.error) {
+  if (hourly.error || daily.error || extensions.error) return null;
+
+  const extensionRows = extensions.data ?? [];
+  return {
+    tokensToday: (daily.data ?? []).reduce(
+      (sum, row) => sum + row.input_tokens + row.output_tokens,
+      0,
+    ),
+    dailyCap:
+      AI_DAILY_TOKEN_CAP +
+      extensionRows.reduce((sum, row) => sum + row.extra_tokens, 0),
+    messagesLastHour: hourly.count ?? 0,
+    hourlyLimit: AI_HOURLY_MESSAGE_LIMIT,
+    extensionsToday: extensionRows.length,
+    maxExtensions: AI_MAX_DAILY_EXTENSIONS,
+  };
+}
+
+// Fail-closed: any query error blocks the turn instead of letting spend
+// through unmetered.
+export async function checkAiLimits(
+  supabase: SupabaseServerClient,
+  userId: string,
+): Promise<LimitCheck> {
+  const usage = await getAiUsageStatus(supabase, userId);
+
+  if (!usage) {
     return {
       ok: false,
       status: 503,
+      code: "usage_check_failed",
       message: "No se pudo verificar el uso de IA. Probá de nuevo.",
     };
   }
 
-  if ((hourly.count ?? 0) >= AI_HOURLY_MESSAGE_LIMIT) {
+  if (usage.messagesLastHour >= usage.hourlyLimit) {
     return {
       ok: false,
       status: 429,
-      message: `Límite de ${AI_HOURLY_MESSAGE_LIMIT} mensajes por hora alcanzado. Esperá un rato.`,
+      code: "hourly_message_limit",
+      message: `Llegaste al límite de ${usage.hourlyLimit} mensajes por hora. Esperá un rato y seguí.`,
+      usage,
     };
   }
 
-  const tokensToday = (daily.data ?? []).reduce(
-    (sum, row) => sum + row.input_tokens + row.output_tokens,
-    0,
-  );
-  if (tokensToday >= AI_DAILY_TOKEN_CAP) {
+  if (usage.tokensToday >= usage.dailyCap) {
     return {
       ok: false,
       status: 429,
-      message: "Límite diario de tokens de IA alcanzado. Volvé mañana.",
+      code: "daily_token_cap",
+      message:
+        usage.extensionsToday >= usage.maxExtensions
+          ? "Alcanzaste el máximo de tokens de IA para hoy, incluidas las ampliaciones. Volvé mañana."
+          : "Alcanzaste tu límite diario de tokens de IA.",
+      usage,
     };
   }
 
-  return { ok: true };
+  return { ok: true, usage };
 }
 
 export async function ensureAiSession(

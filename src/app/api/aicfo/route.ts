@@ -54,7 +54,7 @@ export async function POST(req: Request) {
   const limits = await checkAiLimits(supabase, user.id);
   if (!limits.ok) {
     return Response.json(
-      { error: limits.message },
+      { error: limits.message, code: limits.code, usage: limits.usage },
       { status: limits.status },
     );
   }
