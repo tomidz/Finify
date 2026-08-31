@@ -1,5 +1,7 @@
 "use server";
 
+import { cache } from "react";
+
 import { createClient } from "@/lib/supabase/server";
 import { fetchExchangeRate } from "@/lib/frankfurter";
 
@@ -20,18 +22,25 @@ function localToday(): string {
   return `${y}-${m}-${d}`;
 }
 
-export async function getOrFetchFxRate(
-  input: FxInput,
+/**
+ * Resolves one (date, from, to, source) tuple at most once per request.
+ *
+ * getOrFetchFxRate is called from nine different actions and several of them
+ * iterate row by row — forecast.ts walks every recurring with no dedup at all
+ * — so a single render was asking for the same currency pair dozens of times,
+ * one Supabase round trip each. cache() collapses those into one.
+ *
+ * The arguments are primitives on purpose: cache() keys on argument identity,
+ * so passing the FxInput object through would allocate a fresh key on every
+ * call and never hit.
+ */
+const resolveRate = cache(async function resolveRate(
+  date: string,
+  from: string,
+  to: string,
+  source: string,
 ): Promise<ActionResult<number>> {
-  const { date, from, to } = input;
-
-  if (!date) return { error: "Fecha de FX requerida" };
-  if (!from || !to) return { error: "Monedas de FX requeridas" };
-  if (from === to) return { data: 1 };
-
   const involvesArs = from === "ARS" || to === "ARS";
-  // dolarapi only quotes the current rate, so ARS rows are tagged honestly.
-  const source = input.source ?? (involvesArs ? "dolarapi" : "frankfurter");
   const today = localToday();
   const isFuture = date > today;
 
@@ -90,4 +99,20 @@ export async function getOrFetchFxRate(
     console.error("getOrFetchFxRate:", e);
     return { error: "Error al obtener tipo de cambio histórico" };
   }
+});
+
+export async function getOrFetchFxRate(
+  input: FxInput,
+): Promise<ActionResult<number>> {
+  const { date, from, to } = input;
+
+  if (!date) return { error: "Fecha de FX requerida" };
+  if (!from || !to) return { error: "Monedas de FX requeridas" };
+  if (from === to) return { data: 1 };
+
+  // dolarapi only quotes the current rate, so ARS rows are tagged honestly.
+  const involvesArs = from === "ARS" || to === "ARS";
+  const source = input.source ?? (involvesArs ? "dolarapi" : "frankfurter");
+
+  return resolveRate(date, from, to, source);
 }
