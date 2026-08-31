@@ -11,13 +11,28 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-export default async function LoginPage() {
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ expired?: string }>;
+}) {
   const supabase = await createClient();
-  const { data } = await supabase.auth.getClaims();
+  // getUser() y no getClaims(): con una sesión revocada los claims del JWT
+  // siguen validando localmente, y esta página rebotaba a "/" para que el
+  // layout la mandara de vuelta acá.
+  let hasUser = false;
+  try {
+    const { data } = await supabase.auth.getUser();
+    hasUser = Boolean(data.user);
+  } catch {
+    hasUser = false;
+  }
 
-  if (data?.claims) {
+  if (hasUser) {
     redirect("/");
   }
+
+  const { expired } = await searchParams;
 
   return (
     <div className="w-full max-w-sm space-y-6">
@@ -32,6 +47,14 @@ export default async function LoginPage() {
           </p>
         </div>
       </div>
+      {expired === "1" && (
+        <div
+          role="status"
+          className="border-border bg-muted/50 text-muted-foreground rounded-md border px-3 py-2 text-center text-sm"
+        >
+          Tu sesión expiró. Ingresá de nuevo.
+        </div>
+      )}
       <Card>
         <CardHeader>
           <CardTitle>Iniciar sesión</CardTitle>
