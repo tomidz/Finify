@@ -116,7 +116,9 @@ jobs:
           status=0
           while IFS= read -r file; do
             [ -z "$file" ] && continue
-            if grep -Eiq '(drop[[:space:]]+(table|column|type|schema|view)|rename[[:space:]]+(to|column)|truncate[[:space:]]|alter[[:space:]]+column[^;]*[[:space:]]type[[:space:]]|set[[:space:]]+not[[:space:]]+null)' "$file" \
+            # Only statements count: rollback notes in `--` comments name DROPs.
+            statements=$(sed 's/--.*$//' "$file")
+            if grep -Eiq '(drop[[:space:]]+(table|column|type|schema|view)|rename[[:space:]]+(to|column)|truncate[[:space:]]|alter[[:space:]]+column[^;]*[[:space:]]type[[:space:]]|set[[:space:]]+not[[:space:]]+null)' <<< "$statements" \
               && ! grep -Eq -- '-- destructive-ok: .+' "$file"; then
               echo "::error file=$file::Destructive DDL found. Production has real data: split into additive steps, or add '-- destructive-ok: <reason>' after confirming it is safe."
               status=1
