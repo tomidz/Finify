@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { createTransaction, getBaseCurrency } from "@/actions/transactions";
-import { getOrFetchFxRate } from "@/actions/fx";
+import { getOrFetchFxRate } from "@/lib/server/fx";
 import {
   CreateRecurringSchema,
   UpdateRecurringSchema,

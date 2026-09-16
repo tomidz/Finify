@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState } from "react";
 import {
   Home,
   Landmark,
@@ -60,6 +61,28 @@ const CONFIG_NAV: NavItem[] = [
   { href: "/settings", icon: Settings, label: "Configuración" },
 ];
 
+/**
+ * The sidebar is on every page, and default prefetching fetched every dynamic
+ * route (each one re-running the auth-checking layout) on each load, in
+ * parallel with the page's own data. Prefetch only on hover instead.
+ */
+function HoverPrefetchLink({
+  onMouseEnter,
+  ...props
+}: React.ComponentProps<typeof Link>) {
+  const [active, setActive] = useState(false);
+  return (
+    <Link
+      {...props}
+      prefetch={active ? null : false}
+      onMouseEnter={(event) => {
+        setActive(true);
+        onMouseEnter?.(event);
+      }}
+    />
+  );
+}
+
 function isItemActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
   return pathname === href || pathname.startsWith(`${href}/`);
@@ -89,10 +112,10 @@ function NavSection({
                   isActive={active}
                   tooltip={item.label}
                 >
-                  <Link href={item.href}>
+                  <HoverPrefetchLink href={item.href}>
                     <Icon className="size-4" />
                     <span>{item.label}</span>
-                  </Link>
+                  </HoverPrefetchLink>
                 </SidebarMenuButton>
               </SidebarMenuItem>
             );
@@ -117,7 +140,7 @@ export function AppSidebar({ userEmail }: { userEmail?: string }) {
               tooltip="Finify"
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
             >
-              <Link href="/">
+              <HoverPrefetchLink href="/">
                 <div className="bg-primary text-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
                   <Wallet className="size-4" />
                 </div>
@@ -127,7 +150,7 @@ export function AppSidebar({ userEmail }: { userEmail?: string }) {
                     Finanzas personales
                   </span>
                 </div>
-              </Link>
+              </HoverPrefetchLink>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

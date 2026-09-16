@@ -1,7 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { getOrFetchFxRate } from "@/actions/fx";
+import { getOrFetchFxRate } from "@/lib/server/fx";
 import type { ForecastPoint } from "@/types/forecast";
 
 type ActionResult<T> = { data: T } | { error: string };

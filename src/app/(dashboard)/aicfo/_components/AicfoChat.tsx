@@ -15,7 +15,7 @@ import {
   Wrench,
   Zap,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import {
@@ -38,6 +38,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+
+// Model output never loads remote images: a markdown image is a GET to any
+// URL, which can leak whatever the model was steered into putting in it.
+const MARKDOWN_COMPONENTS: Components = {
+  img: ({ alt }) => (alt ? <span>{alt}</span> : null),
+};
 
 type AicfoUIMessage = InferAgentUIMessage<AicfoAgent>;
 
@@ -333,7 +339,10 @@ function ChatPanel({
                       key={index}
                       className="prose prose-sm dark:prose-invert max-w-none [&_table]:my-2 [&_table]:w-full [&_td]:px-2 [&_td]:py-1 [&_th]:px-2 [&_th]:py-1"
                     >
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={MARKDOWN_COMPONENTS}
+                      >
                         {part.text}
                       </ReactMarkdown>
                     </div>

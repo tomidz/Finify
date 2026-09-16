@@ -6,7 +6,7 @@ import {
   CreateTransferSchema,
   UpdateTransactionSchema,
 } from "@/lib/validations/transaction.schema";
-import { getOrFetchFxRate } from "@/actions/fx";
+import { getOrFetchFxRate } from "@/lib/server/fx";
 import type {
   Transaction,
   TransactionFeedFilters,
@@ -14,12 +14,11 @@ import type {
   TransactionWithRelations,
   TransactionAmountWithRelations,
 } from "@/types/transactions";
+import { createMonth, getMonthsInRange } from "@/actions/months";
 import {
-  createMonth,
-  getMonthsInRange,
   pickEarliestMonthId,
   recalculateOpeningBalances,
-} from "@/actions/months";
+} from "@/lib/server/opening-balances";
 
 type ActionResult<T> = { data: T } | { error: string };
 

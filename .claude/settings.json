@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(supabase db push:*)",
+      "Bash(supabase link:*)",
+      "Bash(supabase unlink:*)",
+      "Bash(supabase migration repair:*)",
+      "Bash(supabase db dump --linked:*)",
+      "Bash(supabase db reset --linked:*)",
+      "Bash(supabase db reset --db-url:*)",
+      "Bash(supabase gen types typescript --linked:*)",
+      "Bash(supabase secrets set:*)",
+      "Bash(vercel env:*)",
+      "Bash(vercel --prod:*)",
+      "Bash(gh workflow run db-deploy.yml:*)"
+    ],
+    "ask": [
+      "Bash(supabase db reset:*)",
+      "Bash(git push:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr merge:*)"
+    ]
+  }
+}

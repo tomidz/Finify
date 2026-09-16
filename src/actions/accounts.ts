@@ -5,8 +5,9 @@ import {
   CreateAccountSchema,
   UpdateAccountSchema,
 } from "@/lib/validations/account.schema";
-import { getOrFetchFxRate } from "@/actions/fx";
-import { createMonth, recalculateOpeningBalances } from "@/actions/months";
+import { getOrFetchFxRate } from "@/lib/server/fx";
+import { createMonth } from "@/actions/months";
+import { recalculateOpeningBalances } from "@/lib/server/opening-balances";
 import type { Account, Currency } from "@/types/accounts";
 
 /** Devuelve el opening_base_amount correcto usando FX si es necesario. */

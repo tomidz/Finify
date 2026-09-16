@@ -6,8 +6,9 @@ import {
   RecordDebtAdjustmentSchema,
 } from "@/lib/validations/debt-activity.schema";
 import { createTransaction } from "@/actions/transactions";
-import { getDebtCurrentBalance, upsertNwSnapshot } from "@/actions/net-worth";
-import { getOrFetchFxRate } from "@/actions/fx";
+import { upsertNwSnapshot } from "@/actions/net-worth";
+import { getDebtCurrentBalance } from "@/lib/server/debts";
+import { getOrFetchFxRate } from "@/lib/server/fx";
 import type { DebtActivity } from "@/types/net-worth";
 
 async function resolveBaseCurrency(supabase: Awaited<ReturnType<typeof createClient>>, userId: string): Promise<string> {
