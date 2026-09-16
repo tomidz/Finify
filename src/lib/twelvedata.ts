@@ -1,4 +1,9 @@
 import "server-only";
+
+import { forEachLimited } from "@/lib/concurrency";
+
+const TWELVEDATA_CONCURRENCY = 4;
+
 type TwelveDataQuote = {
   symbol?: string;
   name?: string;
@@ -245,7 +250,9 @@ export async function fetchTwelveDataPrices(
 ): Promise<TwelveDataPriceResult> {
   const results: TwelveDataPriceResult = {};
 
-  for (const request of requests) {
+  // Instruments are independent: resolve them in parallel (capped, the free
+  // tier is rate limited) instead of one after another.
+  await forEachLimited(requests, TWELVEDATA_CONCURRENCY, async (request) => {
     const attempts = [request.symbol?.trim(), request.isin?.trim()].filter(Boolean) as string[];
     for (const attempt of attempts) {
       const resolved = await searchSymbol(attempt);
@@ -257,10 +264,10 @@ export async function fetchTwelveDataPrices(
       }
       if (quote) {
         results[request.key] = quote;
-        break;
+        return;
       }
     }
-  }
+  });
 
   return results;
 }

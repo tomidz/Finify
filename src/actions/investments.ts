@@ -3,11 +3,18 @@
 import { createClient } from "@/lib/supabase/server";
 import type { TablesUpdate } from "@/types/database.types";
 import { getOrFetchFxRate } from "@/lib/server/fx";
+import { resolveFxRates } from "@/lib/server/fx-range";
 import { createMonth } from "@/actions/months";
 import {
   pickEarliestMonthId,
   recalculateOpeningBalances,
 } from "@/lib/server/opening-balances";
+import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
+import {
+  loadInvestmentValuation,
+  type ValuationByAccount,
+  type ValuationByMonth,
+} from "@/lib/server/investment-valuation";
 import { resolveCurrentPrices } from "@/lib/server/prices";
 import {
   AdjustInvestmentPositionSchema,
@@ -498,126 +505,16 @@ export async function deleteInvestment(
 }
 
 export async function getCurrentInvestmentValuesByAccount(): Promise<
-  ActionResult<Record<string, { current: number; cost: number }>>
+  ActionResult<ValuationByAccount>
 > {
   try {
-    const userId = await getUserId();
-    if (!userId) return { error: "No autenticado" };
-
-    const supabase = await createClient();
-
-    const { data: prefs } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    const baseCurrency = prefs?.base_currency ?? "USD";
-
-    const investmentsResult = await getInvestments();
-    if ("error" in investmentsResult) return investmentsResult;
-
-    const investments = investmentsResult.data;
-    if (investments.length === 0) return { data: {} };
-
-    const grouped = new Map<
-      string,
-      {
-        key: string;
-        price_key: string;
-        account_id: string;
-        asset_type: string;
-        currency: string;
-        ticker: string;
-        isin: string | null;
-        quantity: number;
-        total_cost: number;
-      }
-    >();
-
-    for (const investment of investments) {
-      const ticker = (investment.ticker ?? investment.asset_name).trim();
-      const key = `${investment.account_id}::${ticker}`;
-      const current = grouped.get(key) ?? {
-        key,
-        price_key: investment.ticker?.trim() || investment.isin?.trim() || investment.asset_name.trim(),
-        account_id: investment.account_id,
-        asset_type: investment.asset_type,
-        currency: investment.currency,
-        ticker,
-        isin: investment.isin,
-        quantity: 0,
-        total_cost: 0,
-      };
-      current.quantity += investment.quantity;
-      current.total_cost += investment.total_cost;
-      grouped.set(key, current);
-    }
-
-    const priceMapResult = await resolveCurrentPrices(
-      Array.from(
-        new Map(
-          Array.from(grouped.values()).map((holding) => [holding.price_key, {
-            key: holding.price_key,
-            ticker: holding.ticker,
-            isin: holding.isin,
-            assetType: holding.asset_type,
-          }]),
-        ).values(),
-      ),
-      baseCurrency,
-    );
-
-    if ("error" in priceMapResult) return priceMapResult;
-
-    const prices = priceMapResult.data;
-    const today = new Date().toISOString().slice(0, 10);
-    const fxCache = new Map<string, number>();
-    const totalsByAccount: Record<string, { current: number; cost: number }> = {};
-
-    const add = (accountId: string, current: number, cost: number) => {
-      const entry = totalsByAccount[accountId] ?? { current: 0, cost: 0 };
-      entry.current += current;
-      entry.cost += cost;
-      totalsByAccount[accountId] = entry;
-    };
-
-    for (const holding of grouped.values()) {
-      const marketPrice = prices[holding.price_key];
-
-      if (marketPrice == null) {
-        // No live price — treat current value as the cost basis (flat).
-        add(holding.account_id, holding.total_cost, holding.total_cost);
-        continue;
-      }
-
-      // Convert both the current value and the cost basis with the same factor
-      // so they share a currency and the gain/loss % is meaningful.
-      let factor = 1;
-      if (holding.asset_type !== "crypto" && holding.currency !== baseCurrency) {
-        const key = `${today}:${holding.currency}:${baseCurrency}`;
-        let fxRate = fxCache.get(key);
-        if (fxRate == null) {
-          const fxResult = await getOrFetchFxRate({
-            date: today,
-            from: holding.currency,
-            to: baseCurrency,
-          });
-          if ("error" in fxResult) return fxResult;
-          fxRate = fxResult.data;
-          fxCache.set(key, fxRate);
-        }
-        factor = fxRate;
-      }
-
-      add(
-        holding.account_id,
-        holding.quantity * marketPrice * factor,
-        holding.total_cost * factor,
-      );
-    }
-
-    return { data: totalsByAccount };
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
+    const baseCurrency = await loadBaseCurrency(ctx);
+    if ("error" in baseCurrency) return baseCurrency;
+    const valuation = await loadInvestmentValuation(ctx, baseCurrency.data, null);
+    if ("error" in valuation) return valuation;
+    return { data: valuation.data.byAccount };
   } catch {
     return { error: "Error al obtener valor actual de inversiones" };
   }
@@ -625,103 +522,15 @@ export async function getCurrentInvestmentValuesByAccount(): Promise<
 
 export async function getCurrentInvestmentValuesByMonth(
   year: number,
-): Promise<ActionResult<Record<number, { currentValue: number; costBasis: number }>>> {
+): Promise<ActionResult<ValuationByMonth>> {
   try {
-    const userId = await getUserId();
-    if (!userId) return { error: "No autenticado" };
-
-    const supabase = await createClient();
-    const { data: prefs } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    const baseCurrency = prefs?.base_currency ?? "USD";
-    const investmentsResult = await getInvestments();
-    if ("error" in investmentsResult) return investmentsResult;
-
-    const investments = investmentsResult.data;
-    if (investments.length === 0) return { data: {} };
-
-    const priceMapResult = await resolveCurrentPrices(
-      Array.from(
-        new Map(
-          investments.map((investment) => {
-            const key = investment.ticker?.trim() || investment.isin?.trim() || investment.asset_name.trim();
-            return [key, {
-              key,
-              ticker: investment.ticker,
-              isin: investment.isin,
-              assetType: investment.asset_type,
-            }];
-          }),
-        ).values(),
-      ),
-      baseCurrency,
-    );
-    if ("error" in priceMapResult) return priceMapResult;
-
-    const prices = priceMapResult.data;
-    const totalsByMonth: Record<number, { currentValue: number; costBasis: number }> = {};
-    const today = new Date().toISOString().slice(0, 10);
-    const fxCache = new Map<string, number>();
-
-    const monthSet = new Set<number>();
-    for (const investment of investments) {
-      const purchaseDate = new Date(`${investment.purchase_date}T00:00:00`);
-      const purchaseYear = purchaseDate.getFullYear();
-      const purchaseMonth = purchaseDate.getMonth() + 1;
-      if (purchaseYear > year) continue;
-      for (let month = purchaseYear < year ? 1 : purchaseMonth; month <= 12; month += 1) {
-        monthSet.add(month);
-      }
-    }
-
-    for (const month of monthSet) {
-      totalsByMonth[month] = { currentValue: 0, costBasis: 0 };
-    }
-
-    for (const investment of investments) {
-      const purchaseDate = new Date(`${investment.purchase_date}T00:00:00`);
-      const purchaseYear = purchaseDate.getFullYear();
-      const purchaseMonth = purchaseDate.getMonth() + 1;
-      if (purchaseYear > year) continue;
-
-      const priceKey = investment.ticker?.trim() || investment.isin?.trim() || investment.asset_name.trim();
-      const price = prices[priceKey];
-
-      let currentValue = price != null ? investment.quantity * price : investment.total_cost;
-      let costBasis = investment.total_cost;
-
-      if (investment.asset_type !== "crypto" && investment.currency !== baseCurrency) {
-        const fxKey = `${today}:${investment.currency}:${baseCurrency}`;
-        let fxRate = fxCache.get(fxKey);
-        if (fxRate == null) {
-          const fxResult = await getOrFetchFxRate({
-            date: today,
-            from: investment.currency,
-            to: baseCurrency,
-          });
-          if ("error" in fxResult) return fxResult;
-          fxRate = fxResult.data;
-          fxCache.set(fxKey, fxRate);
-        }
-        // Both legs must be in base currency or the delta (gain/loss) is wrong.
-        currentValue *= fxRate;
-        costBasis *= fxRate;
-      }
-
-      const startMonth = purchaseYear < year ? 1 : purchaseMonth;
-      for (let month = startMonth; month <= 12; month += 1) {
-        totalsByMonth[month] = {
-          currentValue: (totalsByMonth[month]?.currentValue ?? 0) + currentValue,
-          costBasis: (totalsByMonth[month]?.costBasis ?? 0) + costBasis,
-        };
-      }
-    }
-
-    return { data: totalsByMonth };
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
+    const baseCurrency = await loadBaseCurrency(ctx);
+    if ("error" in baseCurrency) return baseCurrency;
+    const valuation = await loadInvestmentValuation(ctx, baseCurrency.data, year);
+    if ("error" in valuation) return valuation;
+    return { data: valuation.data.byMonth ?? {} };
   } catch {
     return { error: "Error al obtener valores actuales por mes" };
   }
@@ -1284,24 +1093,14 @@ export async function getInvestmentSales(): Promise<
       .maybeSingle();
     const baseCurrency = prefsRow?.base_currency ?? "USD";
 
-    // Resolve FX per unique (currency, sale_date) pair. Sales are usually few
-    // and FX rates are cached in fx_rates, so this is cheap.
-    const fxKey = (currency: string, date: string) => `${currency}|${date}`;
-    const fxCache = new Map<string, number>();
-    for (const row of data ?? []) {
-      const key = fxKey(row.currency as string, row.sale_date as string);
-      if (fxCache.has(key)) continue;
-      if (row.currency === baseCurrency) {
-        fxCache.set(key, 1);
-        continue;
-      }
-      const fx = await getOrFetchFxRate({
+    const fxAt = await resolveFxRates(
+      supabase,
+      (data ?? []).map((row) => ({
         date: row.sale_date as string,
         from: row.currency as string,
-        to: baseCurrency,
-      });
-      fxCache.set(key, "error" in fx ? 1 : fx.data);
-    }
+      })),
+      baseCurrency,
+    );
 
     const mapped = (data ?? []).map((row) => {
       const accountRaw = row.accounts;
@@ -1311,7 +1110,7 @@ export async function getInvestmentSales(): Promise<
         ? currencyRaw[0]
         : currencyRaw;
 
-      const rate = fxCache.get(fxKey(row.currency as string, row.sale_date as string)) ?? 1;
+      const rate = fxAt(row.sale_date as string, row.currency as string) ?? 1;
       const toBase = (n: number) => Number((n * rate).toFixed(4));
 
       return {
@@ -1440,9 +1239,10 @@ export async function deleteInvestmentSale(
 
 export async function fetchCurrentPrices(
   tickers: { key: string; ticker?: string | null; isin?: string | null; assetType: string }[],
-  baseCurrency: string
+  baseCurrency: string,
+  fresh = false,
 ): Promise<ActionResult<Record<string, number>>> {
-  const userId = await getUserId();
-  if (!userId) return { error: "No autenticado" };
-  return resolveCurrentPrices(tickers, baseCurrency);
+  const ctx = await getServerContext();
+  if (!ctx) return { error: "No autenticado" };
+  return resolveCurrentPrices(tickers, baseCurrency, ctx, { fresh: fresh === true });
 }

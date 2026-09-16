@@ -12,7 +12,6 @@ import {
   getBudgetYears,
   getBudgetLines,
   getBudgetSummaryVsActual,
-  getBudgetSummaryVsActualForRange,
   getOrCreateBudgetYear,
   ensureBudgetSeed,
   getBudgetCategories,
@@ -36,6 +35,7 @@ import type {
   UpdateBudgetLineInput,
   UpdateCategoryInput,
 } from "@/lib/validations/budget.schema";
+import { invalidateBudgetPlan, invalidateLedger } from "@/lib/query-keys";
 import { toast } from "sonner";
 
 export const BUDGET_KEYS = {
@@ -43,8 +43,6 @@ export const BUDGET_KEYS = {
   categories: ["budget", "categories"] as const,
   lines: (monthId: string) => ["budget", "lines", monthId] as const,
   summary: (monthId: string) => ["budget", "summary", monthId] as const,
-  summaryRange: (startMonthId: string, endMonthId: string) =>
-    ["budget", "summary-range", startMonthId, endMonthId] as const,
 };
 
 export function useBudgetYears() {
@@ -195,6 +193,7 @@ export function useUpdateCategory() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.categories });
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -229,6 +228,7 @@ export function useDeleteCategory() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.categories });
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -281,14 +281,7 @@ export function useCreateBudgetLine(monthId: string | null) {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.categories });
-      if (monthId) {
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.lines(monthId),
-        });
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.summary(monthId),
-        });
-      }
+      invalidateBudgetPlan(queryClient);
     },
   });
 }
@@ -315,14 +308,7 @@ export function useUpdateBudgetLine(monthId: string | null) {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.categories });
-      if (monthId) {
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.lines(monthId),
-        });
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.summary(monthId),
-        });
-      }
+      invalidateBudgetPlan(queryClient);
     },
   });
 }
@@ -360,19 +346,12 @@ export function useDeleteBudgetLine(monthId: string | null) {
       toast.success("Línea eliminada");
     },
     onSettled: () => {
-      if (monthId) {
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.lines(monthId),
-        });
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.summary(monthId),
-        });
-      }
+      invalidateBudgetPlan(queryClient);
     },
   });
 }
 
-export function useUpsertBudgetMonthPlan(monthId: string | null) {
+export function useUpsertBudgetMonthPlan() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: UpsertBudgetMonthPlanInput) => {
@@ -464,21 +443,8 @@ export function useUpsertBudgetMonthPlan(monthId: string | null) {
     onSuccess: () => {
       toast.success("Plan mensual actualizado");
     },
-    onSettled: (_, __, vars) => {
-      queryClient.invalidateQueries({
-        queryKey: BUDGET_KEYS.lines(vars.month_id),
-      });
-      queryClient.invalidateQueries({
-        queryKey: BUDGET_KEYS.summary(vars.month_id),
-      });
-      if (monthId && monthId !== vars.month_id) {
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.lines(monthId),
-        });
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.summary(monthId),
-        });
-      }
+    onSettled: () => {
+      invalidateBudgetPlan(queryClient);
     },
   });
 }
@@ -496,13 +462,8 @@ export function useCreateBudgetNextMonthFromSource(monthId: string | null) {
       return result.data;
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["months"] });
-      if (monthId) {
-        queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.lines(monthId) });
-        queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.summary(monthId) });
-      }
-      queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.lines(data.month_id) });
-      queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.summary(data.month_id) });
+      // Creates the month itself: balances carry over as well as the plan.
+      invalidateLedger(queryClient);
       toast.success(
         `Presupuesto ${data.month}/${data.year} creado desde el mes actual`
       );
@@ -544,28 +505,3 @@ export function useSuspenseBudgetSummary(monthId: string) {
   });
 }
 
-export function useBudgetSummaryForRange(
-  startMonthId: string | null,
-  endMonthId: string | null
-) {
-  return useQuery<BudgetSummaryVsActual>({
-    queryKey: BUDGET_KEYS.summaryRange(startMonthId ?? "", endMonthId ?? ""),
-    enabled: !!startMonthId && !!endMonthId,
-    queryFn: async () => {
-      if (!startMonthId || !endMonthId) {
-        return {
-          totals: { planned: 0, actual: 0, variance: 0 },
-          categories: [],
-        };
-      }
-      const result = await getBudgetSummaryVsActualForRange(
-        startMonthId,
-        endMonthId,
-      );
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
-    staleTime: 60_000,
-    gcTime: 10 * 60_000,
-  });
-}

@@ -19,16 +19,14 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { formatAmount } from "@/lib/format";
-import { useForecast } from "@/hooks/useForecast";
-import { Skeleton } from "@/components/ui/skeleton";
+import type { ForecastPoint } from "@/types/forecast";
 
 interface ForecastChartProps {
+  forecast: ForecastPoint[] | null;
   currencySymbol: string;
 }
 
-export function ForecastChart({ currencySymbol }: ForecastChartProps) {
-  const { data: forecast, isLoading, isError } = useForecast(6);
-
+export function ForecastChart({ forecast, currencySymbol }: ForecastChartProps) {
   const chartData = useMemo(
     () =>
       (forecast ?? []).map((point) => ({
@@ -39,11 +37,7 @@ export function ForecastChart({ currencySymbol }: ForecastChartProps) {
     [forecast]
   );
 
-  if (isLoading) {
-    return <Skeleton className="h-64 w-full" />;
-  }
-
-  if (isError || !chartData.length) return null;
+  if (!chartData.length) return null;
 
   // Find the index where projections start (after actual data)
   const actualCount = chartData.filter((d) => d.isActual).length;

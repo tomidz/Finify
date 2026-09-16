@@ -107,7 +107,7 @@ export function InvestmentsTable() {
 
   const {
     data: prices,
-    refetch: refetchPrices,
+    refresh: refetchPrices,
     isFetching: fetchingPrices,
   } = useCurrentPrices(tickersForPricing, baseCurrency ?? "USD");
 

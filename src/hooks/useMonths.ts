@@ -13,6 +13,7 @@ import {
   getOrCreateCurrentMonth,
   previewNextMonthFromLatest,
 } from "@/actions/months";
+import { invalidateLedger } from "@/lib/query-keys";
 import { toast } from "sonner";
 
 export const MONTH_KEYS = {
@@ -53,7 +54,7 @@ export function useEnsureCurrentMonth() {
       return result.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: MONTH_KEYS.all });
+      invalidateLedger(queryClient);
     },
     onError: (error: Error) => toast.error(error.message),
   });
@@ -68,7 +69,7 @@ export function useCreateNextMonth() {
       return result.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: MONTH_KEYS.all });
+      invalidateLedger(queryClient);
       toast.success("Mes creado y saldos arrastrados correctamente");
     },
     onError: (error: Error) => toast.error(error.message),

@@ -12,9 +12,11 @@ import type {
   TransactionFeedFilters,
   TransactionFeedPage,
   TransactionWithRelations,
-  TransactionAmountWithRelations,
 } from "@/types/transactions";
-import { createMonth, getMonthsInRange } from "@/actions/months";
+import { createMonth } from "@/actions/months";
+import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
+import { loadMonthsInRange } from "@/lib/server/months";
+import { loadTransactionsForMonths } from "@/lib/server/transactions";
 import {
   pickEarliestMonthId,
   recalculateOpeningBalances,
@@ -177,19 +179,9 @@ async function resolveMonthIdFromDate(
 // --- GET BASE CURRENCY ---
 export async function getBaseCurrency(): Promise<ActionResult<string>> {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return { error: "No autenticado" };
-
-    const { data } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", user.id)
-      .single();
-
-    return { data: data?.base_currency ?? "USD" };
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
+    return await loadBaseCurrency(ctx);
   } catch (e) {
     console.error("getBaseCurrency:", e);
     return { error: "Error al obtener la moneda base" };
@@ -239,110 +231,11 @@ export async function getTransactions(
   monthId: string
 ): Promise<ActionResult<TransactionWithRelations[]>> {
   try {
-    const baseCurrencyResult = await getBaseCurrency();
-    if ("error" in baseCurrencyResult) return baseCurrencyResult;
-    const baseCurrency = baseCurrencyResult.data;
-
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return { error: "No autenticado" };
-
-    const { data, error } = await supabase
-      .from("transactions")
-      .select(
-        `
-        *,
-        budget_categories ( name, category_type ),
-        transaction_amounts (
-          id,
-          transaction_id,
-          account_id,
-          amount,
-          original_currency,
-          exchange_rate,
-          base_amount,
-          created_at,
-          accounts ( name, currency ),
-          currencies!original_currency ( symbol )
-        )
-      `
-      )
-      .eq("user_id", user.id)
-      .eq("month_id", monthId)
-      .is("deleted_at", null)
-      .order("date", { ascending: false })
-      .order("created_at", { ascending: false });
-
-    if (error) return { error: error.message };
-
-    const fxCache = new Map<string, number>();
-
-    const getRate = async (date: string, from: string): Promise<number> => {
-      if (from === baseCurrency) return 1;
-      const key = `${date}:${from}:${baseCurrency}`;
-      const cached = fxCache.get(key);
-      if (cached != null) return cached;
-      const result = await getOrFetchFxRate({ date, from, to: baseCurrency });
-      if ("error" in result) {
-        throw new Error(result.error);
-      }
-      fxCache.set(key, result.data);
-      return result.data;
-    };
-
-    const mapped: TransactionWithRelations[] = [];
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for (const row of (data ?? []) as any[]) {
-      const txDate = row.date as string;
-      const amounts: TransactionAmountWithRelations[] = [];
-
-      for (const line of row.transaction_amounts ?? []) {
-        const amount = Number(line.amount);
-        const originalCurrency = line.original_currency as string;
-        let currentBaseAmount: number | undefined;
-        if (txDate && originalCurrency && amount) {
-          const rate = await getRate(txDate, originalCurrency);
-          currentBaseAmount = amount * rate;
-        }
-
-        amounts.push({
-          id: line.id,
-          transaction_id: line.transaction_id,
-          account_id: line.account_id,
-          amount,
-          original_currency: originalCurrency,
-          exchange_rate: Number(line.exchange_rate),
-          base_amount: Number(line.base_amount),
-          created_at: line.created_at,
-          account_name: line.accounts?.name ?? "",
-          account_currency_symbol:
-            line.currencies?.symbol ?? line.original_currency,
-          current_base_amount: currentBaseAmount,
-        });
-      }
-
-      mapped.push({
-        id: row.id,
-        user_id: row.user_id,
-        month_id: row.month_id,
-        category_id: row.category_id,
-        transaction_type: row.transaction_type,
-        date: row.date,
-        description: row.description,
-        notes: row.notes,
-        fee: Number(row.fee ?? 0),
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-        category_name: row.budget_categories?.name ?? null,
-        category_type: row.budget_categories?.category_type ?? null,
-        amounts,
-      });
-    }
-
-    return { data: mapped };
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
+    const baseCurrency = await loadBaseCurrency(ctx);
+    if ("error" in baseCurrency) return baseCurrency;
+    return await loadTransactionsForMonths(ctx, [monthId], baseCurrency.data);
   } catch (e) {
     console.error("getTransactions:", e);
     return { error: "Error al obtener las transacciones" };
@@ -393,118 +286,20 @@ export async function getTransactionsForRange(
   startMonthId: string,
   endMonthId: string
 ): Promise<ActionResult<TransactionWithRelations[]>> {
-  const monthsResult = await getMonthsInRange(startMonthId, endMonthId);
-  if ("error" in monthsResult) return monthsResult;
-  const monthIds = monthsResult.data.map((m) => m.id);
-  if (monthIds.length === 0) return { data: [] };
-
   try {
-    const baseCurrencyResult = await getBaseCurrency();
-    if ("error" in baseCurrencyResult) return baseCurrencyResult;
-    const baseCurrency = baseCurrencyResult.data;
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
 
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return { error: "No autenticado" };
+    const monthsResult = await loadMonthsInRange(ctx, startMonthId, endMonthId);
+    if ("error" in monthsResult) return monthsResult;
 
-    const { data, error } = await supabase
-      .from("transactions")
-      .select(
-        `
-        *,
-        budget_categories ( name, category_type ),
-        transaction_amounts (
-          id,
-          transaction_id,
-          account_id,
-          amount,
-          original_currency,
-          exchange_rate,
-          base_amount,
-          created_at,
-          accounts ( name, currency ),
-          currencies!original_currency ( symbol )
-        )
-      `
-      )
-      .eq("user_id", user.id)
-      .in("month_id", monthIds)
-      .is("deleted_at", null)
-      .order("date", { ascending: false })
-      .order("created_at", { ascending: false });
-
-    if (error) return { error: error.message };
-
-    const fxCache = new Map<string, number>();
-
-    const getRate = async (date: string, from: string): Promise<number> => {
-      if (from === baseCurrency) return 1;
-      const key = `${date}:${from}:${baseCurrency}`;
-      const cached = fxCache.get(key);
-      if (cached != null) return cached;
-      const result = await getOrFetchFxRate({ date, from, to: baseCurrency });
-      if ("error" in result) {
-        throw new Error(result.error);
-      }
-      fxCache.set(key, result.data);
-      return result.data;
-    };
-
-    const mapped: TransactionWithRelations[] = [];
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for (const row of (data ?? []) as any[]) {
-      const cat = row.budget_categories;
-      const category = Array.isArray(cat) ? cat[0] : cat;
-      const txDate = row.date as string;
-      const amounts: TransactionAmountWithRelations[] = [];
-
-      for (const line of row.transaction_amounts ?? []) {
-        const amount = Number(line.amount);
-        const originalCurrency = line.original_currency as string;
-        let currentBaseAmount: number | undefined;
-        if (txDate && originalCurrency && amount) {
-          const rate = await getRate(txDate, originalCurrency);
-          currentBaseAmount = amount * rate;
-        }
-
-        amounts.push({
-          id: line.id,
-          transaction_id: line.transaction_id,
-          account_id: line.account_id,
-          amount,
-          original_currency: originalCurrency,
-          exchange_rate: Number(line.exchange_rate),
-          base_amount: Number(line.base_amount),
-          created_at: line.created_at,
-          account_name: line.accounts?.name ?? "",
-          account_currency_symbol:
-            line.currencies?.symbol ?? line.original_currency,
-          current_base_amount: currentBaseAmount,
-        });
-      }
-
-      mapped.push({
-        id: row.id,
-        user_id: row.user_id,
-        month_id: row.month_id,
-        category_id: row.category_id,
-        transaction_type: row.transaction_type,
-        date: row.date,
-        description: row.description,
-        notes: row.notes,
-        fee: Number(row.fee ?? 0),
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-        category_name: category?.name ?? null,
-        category_type: category?.category_type ?? null,
-        amounts,
-      });
-    }
-
-    return { data: mapped };
+    const baseCurrency = await loadBaseCurrency(ctx);
+    if ("error" in baseCurrency) return baseCurrency;
+    return await loadTransactionsForMonths(
+      ctx,
+      monthsResult.data.map((m) => m.id),
+      baseCurrency.data,
+    );
   } catch (e) {
     console.error("getTransactionsForRange:", e);
     return { error: "Error al obtener las transacciones" };
@@ -528,17 +323,19 @@ export async function createTransaction(
       data: { user },
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
-    const resolvedMonth = await resolveMonthIdFromDate(parsed.data.date);
-    if ("error" in resolvedMonth) return { error: resolvedMonth.error };
 
     const amountLines = parsed.data.amounts;
     const accountIds = [...new Set(amountLines.map((line) => line.account_id))];
-    const { data: accounts, error: accountError } = await supabase
-      .from("accounts")
-      .select("id, currency")
-      .in("id", accountIds)
-      .eq("user_id", user.id)
-      .returns<{ id: string; currency: string }[]>();
+    const [resolvedMonth, { data: accounts, error: accountError }] = await Promise.all([
+      resolveMonthIdFromDate(parsed.data.date),
+      supabase
+        .from("accounts")
+        .select("id, currency")
+        .in("id", accountIds)
+        .eq("user_id", user.id)
+        .returns<{ id: string; currency: string }[]>(),
+    ]);
+    if ("error" in resolvedMonth) return { error: resolvedMonth.error };
 
     if (accountError) return { error: accountError.message };
     if (!accounts || accounts.length !== accountIds.length) {
@@ -639,25 +436,23 @@ export async function createTransfer(
       data: { user },
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
-    const resolvedMonth = await resolveMonthIdFromDate(parsed.data.date);
-    if ("error" in resolvedMonth) return { error: resolvedMonth.error };
 
     // Lookup both accounts and currencies (maybeSingle avoids throwing on 0 rows)
-    const { data: sourceAccount } = await supabase
-      .from("accounts")
-      .select("id, currency")
-      .eq("id", parsed.data.source_account_id)
-      .eq("user_id", user.id)
-      .maybeSingle();
+    const accountById = (id: string) =>
+      supabase
+        .from("accounts")
+        .select("id, currency")
+        .eq("id", id)
+        .eq("user_id", user.id)
+        .maybeSingle();
+    const [resolvedMonth, { data: sourceAccount }, { data: destAccount }] = await Promise.all([
+      resolveMonthIdFromDate(parsed.data.date),
+      accountById(parsed.data.source_account_id),
+      accountById(parsed.data.destination_account_id),
+    ]);
+    if ("error" in resolvedMonth) return { error: resolvedMonth.error };
 
     if (!sourceAccount) return { error: "Cuenta origen no encontrada" };
-
-    const { data: destAccount } = await supabase
-      .from("accounts")
-      .select("id, currency")
-      .eq("id", parsed.data.destination_account_id)
-      .eq("user_id", user.id)
-      .maybeSingle();
 
     if (!destAccount) return { error: "Cuenta destino no encontrada" };
 

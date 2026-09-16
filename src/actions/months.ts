@@ -3,7 +3,12 @@
 import { createClient } from "@/lib/supabase/server";
 import { getOrFetchFxRate } from "@/lib/server/fx";
 import { toYearMonthCode } from "@/lib/months";
-import { recalculateOpeningBalances } from "@/lib/server/opening-balances";
+import { getServerContext } from "@/lib/server/context";
+import { loadMonthsInRange } from "@/lib/server/months";
+import {
+  loadOpeningBalances,
+  recalculateOpeningBalances,
+} from "@/lib/server/opening-balances";
 import type {
   Month,
   OpeningBalance,
@@ -427,47 +432,9 @@ export async function getMonthsInRange(
   endMonthId: string
 ): Promise<ActionResult<Month[]>> {
   try {
-    const userId = await getUserId();
-    if (!userId) return { error: "No autenticado" };
-
-    const supabase = await createClient();
-    const { data: startRow, error: startErr } = await supabase
-      .from("months")
-      .select("year, month")
-      .eq("id", startMonthId)
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (startErr) return { error: startErr.message };
-    if (!startRow) return { error: "Mes inicial no encontrado" };
-
-    const { data: endRow, error: endErr } = await supabase
-      .from("months")
-      .select("year, month")
-      .eq("id", endMonthId)
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (endErr) return { error: endErr.message };
-    if (!endRow) return { error: "Mes final no encontrado" };
-
-    const startCode = toYearMonthCode(startRow.year, startRow.month);
-    const endCode = toYearMonthCode(endRow.year, endRow.month);
-    if (startCode > endCode) return { error: "El mes inicial debe ser anterior al final" };
-
-    const { data, error } = await supabase
-      .from("months")
-      .select("*")
-      .eq("user_id", userId)
-      .order("year", { ascending: true })
-      .order("month", { ascending: true });
-
-    if (error) return { error: error.message };
-
-    const filtered = (data ?? []).filter((m) => {
-      const code = toYearMonthCode(m.year, m.month);
-      return code >= startCode && code <= endCode;
-    });
-
-    return { data: filtered as Month[] };
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
+    return await loadMonthsInRange(ctx, startMonthId, endMonthId);
   } catch {
     return { error: "Error al obtener meses del rango" };
   }
@@ -476,51 +443,7 @@ export async function getMonthsInRange(
 export async function getOpeningBalances(
   monthId: string
 ): Promise<ActionResult<OpeningBalance[]>> {
-  try {
-    const userId = await getUserId();
-    if (!userId) return { error: "No autenticado" };
-
-    const supabase = await createClient();
-
-    const { data, error } = await supabase.rpc(
-      "opening_balances_with_current_base",
-      {
-        p_month_id: monthId,
-        p_base_currency: undefined,
-      },
-    );
-
-    if (error) return { error: error.message };
-
-    return {
-      data: ((data ?? []) as Array<{
-        id: string;
-        month_id: string;
-        account_id: string;
-        opening_amount: number | string;
-        opening_base_amount: number | string;
-        created_at: string;
-        account_name: string;
-        account_currency: string;
-        account_currency_symbol: string;
-        current_opening_base_amount: number | string | null;
-      }>).map((row) => ({
-        id: row.id,
-        month_id: row.month_id,
-        account_id: row.account_id,
-        opening_amount: Number(row.opening_amount),
-        opening_base_amount: Number(row.opening_base_amount),
-        created_at: row.created_at,
-        account_name: row.account_name,
-        account_currency: row.account_currency,
-        account_currency_symbol: row.account_currency_symbol,
-        current_opening_base_amount:
-          row.current_opening_base_amount != null
-            ? Number(row.current_opening_base_amount)
-            : undefined,
-      })),
-    };
-  } catch {
-    return { error: "Error al obtener saldos iniciales" };
-  }
+  const ctx = await getServerContext();
+  if (!ctx) return { error: "No autenticado" };
+  return loadOpeningBalances(ctx, monthId);
 }

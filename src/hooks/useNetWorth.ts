@@ -16,9 +16,7 @@ import {
   getNwSnapshotsForYear,
   upsertNwSnapshot,
   getAccountNetWorth,
-  getLiabilitiesForYear,
   getLiabilitiesForMonth,
-  getNetWorthEvolution,
 } from "@/actions/net-worth";
 import {
   recordDebtPayment,
@@ -35,6 +33,7 @@ import type {
   RecordDebtAdjustmentInput,
 } from "@/lib/validations/debt-activity.schema";
 import type { NwItemWithRelations } from "@/types/net-worth";
+import { invalidateLedger } from "@/lib/query-keys";
 import { toast } from "sonner";
 
 const NW_KEYS = {
@@ -43,8 +42,6 @@ const NW_KEYS = {
     ["net-worth", "month", year, month] as const,
   year: (year: number) => ["net-worth", "year", year] as const,
   accounts: (year: number) => ["net-worth", "accounts", year] as const,
-  liabilities: (year: number) => ["net-worth", "liabilities", year] as const,
-  evolution: (year: number) => ["net-worth", "evolution", year] as const,
 };
 
 export function useNwItems() {
@@ -76,7 +73,7 @@ export function useCreateNwItem() {
       toast.success("Ítem de patrimonio creado");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: NW_KEYS.items });
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -111,7 +108,7 @@ export function useUpdateNwItem() {
       toast.success("Ítem actualizado");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: NW_KEYS.items });
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -142,7 +139,7 @@ export function useDeleteNwItem() {
       toast.success("Ítem eliminado");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: NW_KEYS.items });
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -191,14 +188,8 @@ export function useUpsertNwSnapshot(year: number) {
     onSuccess: () => {
       toast.success("Valor guardado");
     },
-    onSettled: (_, __, input) => {
-      queryClient.invalidateQueries({ queryKey: NW_KEYS.items });
-      queryClient.invalidateQueries({ queryKey: NW_KEYS.year(year) });
-      queryClient.invalidateQueries({
-        queryKey: NW_KEYS.month(input.year, input.month),
-      });
-      queryClient.invalidateQueries({ queryKey: NW_KEYS.evolution(year) });
-      queryClient.invalidateQueries({ queryKey: NW_KEYS.liabilities(year) });
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
     },
   });
 }
@@ -259,68 +250,10 @@ export function useCreateDebt() {
       toast.success("Deuda creada");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: NW_KEYS.items });
+      invalidateLedger(queryClient);
     },
   });
 }
-
-export function useLiabilitiesForYear(year: number) {
-  return useQuery({
-    queryKey: NW_KEYS.liabilities(year),
-    enabled: year > 0,
-    queryFn: async () => {
-      const result = await getLiabilitiesForYear(year);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
-    staleTime: 5 * 60_000,
-    gcTime: 15 * 60_000,
-  });
-}
-
-export function useSuspenseLiabilitiesForYear(year: number) {
-  return useSuspenseQuery({
-    queryKey: NW_KEYS.liabilities(year),
-    queryFn: async () => {
-      const result = await getLiabilitiesForYear(year);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
-    staleTime: 5 * 60_000,
-    gcTime: 15 * 60_000,
-  });
-}
-
-export function useNetWorthEvolution(year: number) {
-  return useQuery({
-    queryKey: NW_KEYS.evolution(year),
-    enabled: year > 0,
-    queryFn: async () => {
-      const result = await getNetWorthEvolution(year);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
-    staleTime: 5 * 60_000,
-    gcTime: 15 * 60_000,
-  });
-}
-
-export function useSuspenseNetWorthEvolution(year: number) {
-  return useSuspenseQuery({
-    queryKey: NW_KEYS.evolution(year),
-    queryFn: async () => {
-      const result = await getNetWorthEvolution(year);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
-    staleTime: 5 * 60_000,
-    gcTime: 15 * 60_000,
-  });
-}
-
-/* ------------------------------------------------------------------ */
-/* Hooks para Deudas — mes específico + actividades                    */
-/* ------------------------------------------------------------------ */
 
 export function useLiabilitiesForMonth(year: number, month: number) {
   return useQuery({
@@ -361,9 +294,7 @@ export function useRecordDebtPayment() {
       toast.success("Pago registrado");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
-      queryClient.invalidateQueries({ queryKey: ["debt-activities"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -381,8 +312,7 @@ export function useRecordDebtAdjustment() {
       toast.success("Ajuste registrado");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
-      queryClient.invalidateQueries({ queryKey: ["debt-activities"] });
+      invalidateLedger(queryClient);
     },
   });
 }

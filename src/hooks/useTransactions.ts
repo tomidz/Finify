@@ -10,7 +10,6 @@ import {
 import {
   getTransactions,
   getTransactionsPage,
-  getTransactionsForRange,
   getBaseCurrency,
   getUsageCounts,
   createTransaction,
@@ -21,6 +20,7 @@ import {
 } from "@/actions/transactions";
 import type { CreateTransactionInput, CreateTransferInput, UpdateTransactionInput } from "@/lib/validations/transaction.schema";
 import type { TransactionFeedFilters } from "@/types/transactions";
+import { invalidateLedger } from "@/lib/query-keys";
 import { toast } from "sonner";
 
 export const TRANSACTION_KEYS = {
@@ -28,27 +28,10 @@ export const TRANSACTION_KEYS = {
   list: (monthId: string) => ["transactions", "month", monthId] as const,
   feed: (monthId: string, filters: TransactionFeedFilters) =>
     ["transactions", "month", monthId, "feed", filters] as const,
-  range: (start: string, end: string) =>
-    ["transactions", "range", start, end] as const,
   usageCounts: ["transactions", "usage-counts"] as const,
   baseCurrency: ["preferences", "base-currency"] as const,
 };
 
-async function invalidateFinancialQueries(queryClient: ReturnType<typeof useQueryClient>) {
-  await Promise.all([
-    queryClient.invalidateQueries({ queryKey: TRANSACTION_KEYS.all }),
-    queryClient.invalidateQueries({ queryKey: ["months"] }),
-    queryClient.invalidateQueries({ queryKey: ["opening-balances"] }),
-    queryClient.invalidateQueries({ queryKey: ["budget", "summary"] }),
-    queryClient.invalidateQueries({ queryKey: ["budget", "summary-range"] }),
-    queryClient.invalidateQueries({ queryKey: ["net-worth"] }),
-    queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
-    queryClient.invalidateQueries({ queryKey: ["forecast"] }),
-    // Per-account balance/history queries — the balance-adjustment dialog
-    // computes deltas from these; stale values produce wrong corrections.
-    queryClient.invalidateQueries({ queryKey: ["account"] }),
-  ]);
-}
 
 export function useBaseCurrency() {
   return useQuery({
@@ -134,25 +117,6 @@ export function useInfiniteTransactions(
   });
 }
 
-export function useTransactionsForRange(
-  startMonthId: string | null,
-  endMonthId: string | null
-) {
-  return useQuery({
-    queryKey: TRANSACTION_KEYS.range(startMonthId ?? "", endMonthId ?? ""),
-    enabled: !!startMonthId && !!endMonthId,
-    queryFn: async () => {
-      if (!startMonthId || !endMonthId) return [];
-      const result = await getTransactionsForRange(startMonthId, endMonthId);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
-    staleTime: 30_000,
-    gcTime: 10 * 60_000,
-    refetchOnWindowFocus: false,
-  });
-}
-
 export function useCreateTransaction() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -170,8 +134,10 @@ export function useCreateTransaction() {
     onSuccess: () => {
       toast.success("Transacción creada correctamente");
     },
-    onSettled: async () => {
-      await invalidateFinancialQueries(queryClient);
+    // Not awaited: the dialog closes as soon as the write lands and the
+    // figures refresh behind it.
+    onSettled: () => {
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -193,8 +159,10 @@ export function useCreateTransfer() {
     onSuccess: () => {
       toast.success("Transferencia creada correctamente");
     },
-    onSettled: async () => {
-      await invalidateFinancialQueries(queryClient);
+    // Not awaited: the dialog closes as soon as the write lands and the
+    // figures refresh behind it.
+    onSettled: () => {
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -216,8 +184,10 @@ export function useUpdateTransaction() {
     onSuccess: () => {
       toast.success("Transacción actualizada correctamente");
     },
-    onSettled: async () => {
-      await invalidateFinancialQueries(queryClient);
+    // Not awaited: the dialog closes as soon as the write lands and the
+    // figures refresh behind it.
+    onSettled: () => {
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -264,8 +234,10 @@ export function useDeleteTransaction() {
         duration: 8000,
       });
     },
-    onSettled: async () => {
-      await invalidateFinancialQueries(queryClient);
+    // Not awaited: the dialog closes as soon as the write lands and the
+    // figures refresh behind it.
+    onSettled: () => {
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -287,8 +259,10 @@ export function useRestoreTransaction() {
     onSuccess: () => {
       toast.success("Transacción restaurada");
     },
-    onSettled: async () => {
-      await invalidateFinancialQueries(queryClient);
+    // Not awaited: the dialog closes as soon as the write lands and the
+    // figures refresh behind it.
+    onSettled: () => {
+      invalidateLedger(queryClient);
     },
   });
 }

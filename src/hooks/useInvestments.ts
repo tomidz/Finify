@@ -1,5 +1,6 @@
 "use client";
 
+import { useCallback, useRef } from "react";
 import {
   useQuery,
   useMutation,
@@ -15,8 +16,6 @@ import {
   deleteInvestment,
   deleteInvestmentSale,
   fetchCurrentPrices,
-  getCurrentInvestmentValuesByAccount,
-  getCurrentInvestmentValuesByMonth,
   lookupInvestmentInstrument,
   sellInvestment,
   transferInvestmentPosition,
@@ -28,17 +27,31 @@ import type {
   TransferInvestmentPositionInput,
   UpdateInvestmentInput,
 } from "@/lib/validations/investment.schema";
+import type { InvestmentValuation } from "@/lib/server/investment-valuation";
 import type { InvestmentWithAccount } from "@/types/investments";
+import { invalidateLedger } from "@/lib/query-keys";
 import { toast } from "sonner";
 
 export const INVESTMENT_KEYS = {
   all: ["investments"] as const,
   sales: ["investments", "sales"] as const,
-  currentValuesByAccount: ["investments", "current-values-by-account"] as const,
-  currentValuesByMonth: (year: number) => ["investments", "current-values-by-month", year] as const,
+  valuationAll: ["investments", "valuation"] as const,
+  valuation: (year: number | null) =>
+    ["investments", "valuation", year ?? "current"] as const,
   prices: (baseCurrency: string, tickersKey: string) =>
     ["investments", "prices", baseCurrency, tickersKey] as const,
 };
+
+// Positions feed the ledger (purchases and sales are movements) and the
+// valuation. Quotes are keyed by ticker and stay cached.
+function invalidateInvestmentWrite(queryClient: ReturnType<typeof useQueryClient>) {
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.all, exact: true }),
+    queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.sales }),
+    queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.valuationAll }),
+    invalidateLedger(queryClient),
+  ]);
+}
 
 export function useInvestments() {
   return useQuery({
@@ -66,31 +79,38 @@ export function useSuspenseInvestments() {
   });
 }
 
-export function useCurrentInvestmentValuesByAccount() {
+async function fetchInvestmentValuation(
+  year: number | null,
+): Promise<InvestmentValuation> {
+  const response = await fetch(
+    `/api/investments/valuation${year ? `?year=${year}` : ""}`,
+    { cache: "no-store" },
+  );
+  const body = await response.json().catch(() => null);
+  if (!response.ok || !body) {
+    throw new Error(body?.error ?? "Error al obtener valor actual de inversiones");
+  }
+  return body as InvestmentValuation;
+}
+
+/**
+ * Market value vs cost per account and, when a year is given, per month.
+ * Fetched from a route handler (not a server action) so the price lookups it
+ * waits on never block the page's other reads.
+ */
+export function useInvestmentValuation(year: number | null) {
   return useQuery({
-    queryKey: INVESTMENT_KEYS.currentValuesByAccount,
-    queryFn: async () => {
-      const result = await getCurrentInvestmentValuesByAccount();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryKey: INVESTMENT_KEYS.valuation(year),
+    enabled: year === null || year > 0,
+    queryFn: () => fetchInvestmentValuation(year),
     staleTime: 60_000,
     gcTime: 10 * 60_000,
   });
 }
 
-export function useCurrentInvestmentValuesByMonth(year: number) {
-  return useQuery({
-    queryKey: INVESTMENT_KEYS.currentValuesByMonth(year),
-    enabled: year > 0,
-    queryFn: async () => {
-      const result = await getCurrentInvestmentValuesByMonth(year);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
-    staleTime: 60_000,
-    gcTime: 10 * 60_000,
-  });
+export function useCurrentInvestmentValuesByAccount() {
+  const query = useInvestmentValuation(null);
+  return { ...query, data: query.data?.byAccount };
 }
 
 export function useLookupInvestmentInstrument() {
@@ -156,11 +176,7 @@ export function useCreateInvestment() {
       toast.success("Inversión registrada");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
-      queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+      invalidateInvestmentWrite(queryClient);
     },
   });
 }
@@ -199,11 +215,7 @@ export function useUpdateInvestment() {
       toast.success("Inversión actualizada");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
-      queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
-      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      invalidateInvestmentWrite(queryClient);
     },
   });
 }
@@ -237,11 +249,7 @@ export function useDeleteInvestment() {
       toast.success("Inversión eliminada");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
-      queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
-      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      invalidateInvestmentWrite(queryClient);
     },
   });
 }
@@ -270,12 +278,7 @@ export function useDeleteInvestmentSale() {
     onError: (err: Error) => toast.error(err.message),
     onSuccess: () => toast.success("Venta eliminada"),
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.sales });
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
-      queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+      invalidateInvestmentWrite(queryClient);
     },
   });
 }
@@ -295,12 +298,7 @@ export function useSellInvestment() {
       toast.success("Venta registrada");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.sales });
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
-      queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+      invalidateInvestmentWrite(queryClient);
     },
   });
 }
@@ -320,10 +318,7 @@ export function useAdjustInvestmentPosition() {
       toast.success("Posición ajustada");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
-      queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
-      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+      invalidateInvestmentWrite(queryClient);
     },
   });
 }
@@ -343,13 +338,7 @@ export function useTransferInvestmentPosition() {
       toast.success("Posicion transferida");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.currentValuesByAccount });
-      queryClient.invalidateQueries({ queryKey: ["investments", "current-values-by-month"] });
-      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["opening-balances"] });
-      queryClient.invalidateQueries({ queryKey: ["months"] });
+      invalidateInvestmentWrite(queryClient);
     },
   });
 }
@@ -358,17 +347,31 @@ export function useCurrentPrices(
   tickers: { key: string; ticker?: string | null; isin?: string | null; assetType: string }[],
   baseCurrency: string
 ) {
+  const queryClient = useQueryClient();
   const tickerKeys = tickers.map((t) => t.key).sort();
   const tickersKey = tickerKeys.join("|");
-  return useQuery({
+  // Set by refresh(): the next fetch bypasses the server-side price cache.
+  const freshRef = useRef(false);
+  const query = useQuery({
     queryKey: INVESTMENT_KEYS.prices(baseCurrency, tickersKey),
     enabled: tickers.length > 0 && !!baseCurrency,
-    staleTime: 60_000,
-    gcTime: 5 * 60_000,
+    // Matches the server-side price cache TTL.
+    staleTime: 15 * 60_000,
+    gcTime: 20 * 60_000,
     queryFn: async () => {
-      const result = await fetchCurrentPrices(tickers, baseCurrency);
+      const fresh = freshRef.current;
+      freshRef.current = false;
+      const result = await fetchCurrentPrices(tickers, baseCurrency, fresh);
       if ("error" in result) throw new Error(result.error);
       return result.data;
     },
   });
+  const { refetch } = query;
+  const refresh = useCallback(async () => {
+    freshRef.current = true;
+    const result = await refetch();
+    queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.valuationAll });
+    return result;
+  }, [refetch, queryClient]);
+  return { ...query, refresh };
 }

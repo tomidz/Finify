@@ -168,7 +168,9 @@ export function TransactionDialog({
   const isCorrection = watchTransactionType === "correction";
   const isBalanceAdjustment = isCorrection && !isEditing;
 
-  const { data: currentBalance, isLoading: isBalanceLoading } =
+  // A save refreshes balances in the background: until that lands the cached
+  // balance predates it, and a correction computed from it would repeat it.
+  const { data: currentBalance, isFetching: isBalanceLoading } =
     useAccountCurrentBalance(
       isBalanceAdjustment ? watchAccountId || undefined : undefined,
     );
@@ -885,7 +887,7 @@ export function TransactionDialog({
             >
               Cancelar
             </Button>
-            <Button type="submit" disabled={isPending}>
+            <Button type="submit" disabled={isPending || (isBalanceAdjustment && isBalanceLoading)}>
               {isPending
                 ? "Guardando..."
                 : isEditing

@@ -14,7 +14,8 @@ const ACTIONS_DIR = path.resolve(__dirname, "../src/actions");
 // Public on purpose: the currency catalog and the login form itself.
 const PUBLIC_ACTIONS = new Set(["getCurrencies", "loginWithPassword"]);
 
-const AUTH_CHECK = /\bauth\.getUser\(|\bgetUserId\(|\brequireUser\(/;
+const AUTH_CHECK =
+  /\bauth\.getUser\(|\bgetUserId\(|\brequireUser\(|\bgetServerContext\(/;
 
 const TOP_LEVEL =
   /^(export |async function |function |const |let |type |interface |import |\/\*)/;

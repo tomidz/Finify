@@ -19,6 +19,7 @@ import {
 } from "@/actions/accounts";
 import type { CreateAccountInput, UpdateAccountInput } from "@/lib/validations/account.schema";
 import type { Account } from "@/types/accounts";
+import { invalidateLedger } from "@/lib/query-keys";
 import { toast } from "sonner";
 
 export function useAccounts() {
@@ -106,8 +107,7 @@ export function useCreateAccount() {
       toast.success("Cuenta creada correctamente");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["accounts"] });
-      queryClient.invalidateQueries({ queryKey: ["opening-balances"] });
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -142,9 +142,7 @@ export function useUpdateAccount() {
       toast.success("Cuenta actualizada correctamente");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["accounts"] });
-      queryClient.invalidateQueries({ queryKey: ["opening-balances"] });
-      queryClient.invalidateQueries({ queryKey: ["accountInitialBalance"] });
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -231,7 +229,7 @@ export function useDeleteAccount() {
       toast.success("Cuenta eliminada correctamente");
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      invalidateLedger(queryClient);
     },
   });
 }

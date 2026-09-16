@@ -549,6 +549,30 @@ export type Database = {
           },
         ]
       }
+      instrument_prices: {
+        Row: {
+          fetched_at: string
+          price: number
+          price_key: string
+          source: string
+          user_id: string
+        }
+        Insert: {
+          fetched_at?: string
+          price: number
+          price_key: string
+          source: string
+          user_id: string
+        }
+        Update: {
+          fetched_at?: string
+          price?: number
+          price_key?: string
+          source?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       investment_sales: {
         Row: {
           account_id: string

@@ -14,6 +14,7 @@ import type {
   UpdateRecurringInput,
 } from "@/lib/validations/recurring.schema";
 import type { RecurringWithRelations } from "@/types/recurring";
+import { invalidateForecast, invalidateLedger } from "@/lib/query-keys";
 import { toast } from "sonner";
 
 const RECURRING_KEYS = {
@@ -60,15 +61,7 @@ export function useRegisterRecurringOccurrence() {
     onSettled: () => {
       // It creates a real transaction: refresh everything financial.
       queryClient.invalidateQueries({ queryKey: RECURRING_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: ["recurring", "pending"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["months"] });
-      queryClient.invalidateQueries({ queryKey: ["opening-balances"] });
-      queryClient.invalidateQueries({ queryKey: ["budget", "summary"] });
-      queryClient.invalidateQueries({ queryKey: ["budget", "summary-range"] });
-      queryClient.invalidateQueries({ queryKey: ["net-worth"] });
-      queryClient.invalidateQueries({ queryKey: ["forecast"] });
-      queryClient.invalidateQueries({ queryKey: ["account"] });
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -90,7 +83,7 @@ export function useCreateRecurring() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: RECURRING_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: ["forecast"] });
+      invalidateForecast(queryClient);
     },
   });
 }
@@ -130,7 +123,7 @@ export function useUpdateRecurring() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: RECURRING_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: ["forecast"] });
+      invalidateForecast(queryClient);
     },
   });
 }
@@ -165,7 +158,7 @@ export function useDeleteRecurring() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: RECURRING_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: ["forecast"] });
+      invalidateForecast(queryClient);
     },
   });
 }

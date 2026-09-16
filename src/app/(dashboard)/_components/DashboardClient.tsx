@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Select,
   SelectContent,
@@ -9,19 +9,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  useMonths,
-  useEnsureCurrentMonth,
-  useOpeningBalances,
-} from "@/hooks/useMonths";
-import {
-  useTransactionsForRange,
-  useBaseCurrency,
-} from "@/hooks/useTransactions";
-import { useCurrencies } from "@/hooks/useAccounts";
-import { useBudgetSummaryForRange } from "@/hooks/useBudget";
+import { useEnsureCurrentMonth } from "@/hooks/useMonths";
+import { useDashboardData } from "@/hooks/useScreens";
 import { useMonthSummary } from "@/hooks/useMonthSummary";
 import { MONTH_NAMES } from "@/lib/format";
+import type { ForecastPoint } from "@/types/forecast";
 import type { Month } from "@/types/months";
 
 import { SummaryCards } from "./SummaryCards";
@@ -32,16 +24,26 @@ import { ExpenseBreakdownChart } from "./ExpenseBreakdownChart";
 import { BudgetExecutionChart } from "./BudgetExecutionChart";
 import { ForecastChart } from "./ForecastChart";
 
-function monthOrder(a: Month, b: Month): number {
-  return a.year * 100 + a.month - (b.year * 100 + b.month);
-}
-
 export function DashboardClient() {
-  const [fromMonthId, setFromMonthId] = useState<string | null>(null);
-  const [toMonthId, setToMonthId] = useState<string | null>(null);
+  // Requested range; the server resolves defaults (latest month) and order.
+  const [requestedRange, setRequestedRange] = useState<{
+    from: string | null;
+    to: string | null;
+  }>({ from: null, to: null });
 
-  const { data: months } = useMonths();
+  const { data, isPending, isPlaceholderData, error } = useDashboardData(
+    requestedRange.from,
+    requestedRange.to,
+  );
   const ensureCurrentMonth = useEnsureCurrentMonth();
+  const months = data?.months;
+
+  useEffect(() => {
+    if (!months || months.length > 0 || ensureCurrentMonth.isPending) return;
+    ensureCurrentMonth.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [months]);
+
   const sortedMonths = useMemo(
     () => [...(months ?? [])].sort((a, b) => (b.year * 100 + b.month) - (a.year * 100 + a.month)),
     [months]
@@ -58,64 +60,38 @@ export function DashboardClient() {
       })),
     [sortedMonths],
   );
+
+  // The figures belong to the range the server resolved; while another range
+  // loads, the selects already show what the user picked.
+  const fromMonthId = data?.startMonthId ?? null;
+  const toMonthId = data?.endMonthId ?? null;
   const fromMonth = (fromMonthId ? monthById.get(fromMonthId) : null) ?? null;
   const toMonth = (toMonthId ? monthById.get(toMonthId) : null) ?? null;
+  const selectedFromId = (isPlaceholderData ? requestedRange.from : null) ?? fromMonthId;
+  const selectedToId = (isPlaceholderData ? requestedRange.to : null) ?? toMonthId;
 
-  useEffect(() => {
-    if (!months || months.length > 0 || ensureCurrentMonth.isPending) return;
-    ensureCurrentMonth.mutate();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [months]);
-
-  useEffect(() => {
-    if (!sortedMonths.length) return;
-    const latestId = sortedMonths[0].id;
-    if (!fromMonthId || !sortedMonths.some((m) => m.id === fromMonthId)) {
-      setFromMonthId(latestId);
-    }
-    if (!toMonthId || !sortedMonths.some((m) => m.id === toMonthId)) {
-      setToMonthId(latestId);
-    }
-  }, [fromMonthId, toMonthId, sortedMonths]);
-
-  useEffect(() => {
-    if (!fromMonth || !toMonth) return;
-    if (monthOrder(fromMonth, toMonth) > 0) {
-      setFromMonthId(toMonthId);
-    }
-  }, [toMonthId, fromMonth, toMonth]);
-
-  const startMonthId =
-    fromMonth && toMonth && monthOrder(fromMonth, toMonth) <= 0
-      ? fromMonthId
-      : toMonthId;
-  const endMonthId =
-    fromMonth && toMonth && monthOrder(fromMonth, toMonth) <= 0
-      ? toMonthId
-      : fromMonthId;
-
-  const { data: transactions, isLoading: txLoading } =
-    useTransactionsForRange(startMonthId, endMonthId);
-  const { data: openingBalances } = useOpeningBalances(startMonthId);
-  const { data: budgetSummary, isLoading: budgetLoading } =
-    useBudgetSummaryForRange(startMonthId, endMonthId);
-  const { data: baseCurrency } = useBaseCurrency();
-  const { data: currencies } = useCurrencies();
-
-  const currencySymbol = useMemo(() => {
-    if (!baseCurrency) return "$";
-    const found = currencies?.find((c) => c.code === baseCurrency);
-    return found?.symbol ?? baseCurrency;
-  }, [baseCurrency, currencies]);
-
-  const { monthSummary, accountMonthlyBalances } = useMonthSummary(
-    transactions,
-    openingBalances,
+  const onFromMonthChange = useCallback(
+    (id: string) => setRequestedRange({ from: id, to: selectedToId }),
+    [selectedToId],
+  );
+  const onToMonthChange = useCallback(
+    (id: string) => setRequestedRange({ from: selectedFromId, to: id }),
+    [selectedFromId],
   );
 
-  const isLoading = txLoading || budgetLoading;
+  const baseCurrency = data?.baseCurrency ?? null;
+  const currencySymbol = useMemo(() => {
+    if (!baseCurrency) return "$";
+    const found = data?.currencies.find((c) => c.code === baseCurrency);
+    return found?.symbol ?? baseCurrency;
+  }, [baseCurrency, data?.currencies]);
 
-  if (isLoading && !startMonthId) {
+  const { monthSummary, accountMonthlyBalances } = useMonthSummary(
+    data?.transactions,
+    data?.openingBalances,
+  );
+
+  if (isPending) {
     return (
       <div className="space-y-4">
         <Skeleton className="h-10 w-64" />
@@ -125,6 +101,16 @@ export function DashboardClient() {
           ))}
         </div>
         <Skeleton className="h-64 w-full" />
+      </div>
+    );
+  }
+
+  // A failed background refetch keeps showing the last figures.
+  if (!data) {
+    return (
+      <div className="rounded-md border border-destructive/40 p-4 text-sm">
+        <p className="font-medium">No se pudo cargar el dashboard.</p>
+        <p className="text-muted-foreground text-xs">{error?.message}</p>
       </div>
     );
   }
@@ -145,24 +131,27 @@ export function DashboardClient() {
       </div>
 
       <DashboardRangeSelector
-        fromMonthId={fromMonthId}
-        toMonthId={toMonthId}
+        fromMonthId={selectedFromId}
+        toMonthId={selectedToId}
         monthOptions={monthOptions}
         disabled={ensureCurrentMonth.isPending}
-        onFromMonthChange={setFromMonthId}
-        onToMonthChange={setToMonthId}
+        onFromMonthChange={onFromMonthChange}
+        onToMonthChange={onToMonthChange}
       />
 
-      <DashboardContent
-        isRange={isRange}
-        monthSummary={monthSummary}
-        budgetSummary={budgetSummary}
-        currencySymbol={currencySymbol}
-        accountMonthlyBalances={accountMonthlyBalances}
-        fromMonth={fromMonth}
-        toMonth={toMonth}
-        baseCurrency={baseCurrency ?? null}
-      />
+      <div className={isPlaceholderData ? "space-y-6 opacity-60" : "space-y-6"}>
+        <DashboardContent
+          isRange={isRange}
+          monthSummary={monthSummary}
+          budgetSummary={data.budgetSummary ?? undefined}
+          forecast={data.forecast}
+          currencySymbol={currencySymbol}
+          accountMonthlyBalances={accountMonthlyBalances}
+          fromMonth={fromMonth}
+          toMonth={toMonth}
+          baseCurrency={baseCurrency}
+        />
+      </div>
     </div>
   );
 }
@@ -222,6 +211,7 @@ const DashboardContent = memo(function DashboardContent({
   isRange,
   monthSummary,
   budgetSummary,
+  forecast,
   currencySymbol,
   accountMonthlyBalances,
   fromMonth,
@@ -231,6 +221,7 @@ const DashboardContent = memo(function DashboardContent({
   isRange: boolean;
   monthSummary: Parameters<typeof SummaryCards>[0]["summary"];
   budgetSummary: Parameters<typeof BudgetExecutionChart>[0]["budgetSummary"];
+  forecast: ForecastPoint[] | null;
   currencySymbol: string;
   accountMonthlyBalances: Parameters<typeof AccountBalances>[0]["balances"];
   fromMonth: Month | null;
@@ -265,7 +256,7 @@ const DashboardContent = memo(function DashboardContent({
         currencySymbol={currencySymbol}
       />
 
-      {!isRange && <ForecastChart currencySymbol={currencySymbol} />}
+      {!isRange && <ForecastChart forecast={forecast} currencySymbol={currencySymbol} />}
 
       <AccountBalances
         balances={accountMonthlyBalances}

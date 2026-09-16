@@ -108,7 +108,7 @@ export default function BudgetPage() {
   const createNextBudgetFromCurrent = useCreateBudgetNextMonthFromSource(
     selectedMonthId,
   );
-  const upsertPlan = useUpsertBudgetMonthPlan(selectedMonthId);
+  const upsertPlan = useUpsertBudgetMonthPlan();
 
   const ensureLineForCategory = async (category: BudgetCategory) => {
     const existing = queryClient
