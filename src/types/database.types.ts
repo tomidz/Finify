@@ -1380,10 +1380,7 @@ export type Database = {
         Args: { p_cash_rate?: number; p_lot: Json }
         Returns: string
       }
-      delete_investment: {
-        Args: { p_id: string }
-        Returns: undefined
-      }
+      delete_investment: { Args: { p_id: string }; Returns: undefined }
       delete_investment_sale: {
         Args: { p_sale_id: string }
         Returns: undefined
@@ -1486,12 +1483,12 @@ export type Database = {
         }
         Returns: number
       }
-      resolve_base_currency: {
-        Args: { p_base_currency?: string }
-        Returns: string
-      }
       register_recurring_occurrence: {
         Args: { p_leg: Json; p_occurrence_date: string; p_recurring_id: string }
+        Returns: string
+      }
+      resolve_base_currency: {
+        Args: { p_base_currency?: string }
         Returns: string
       }
       reverse_debt_activity: {
