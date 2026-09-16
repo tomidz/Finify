@@ -38,11 +38,43 @@ backup en local.
    ```
 
 3. Levantá una base local limpia con todas las migraciones (`supabase start` en un checkout de
-   `main`) y cargá los datos:
+   `main`) y cargá los datos.
+
+   Algunas tablas tienen `CHECK … NOT VALID`: valen para filas nuevas, no para el historial. El
+   dump inserta de a muchas filas por sentencia, así que una sola fila vieja que no cumpla hace
+   fallar la tabla entera. Por eso se sacan antes de cargar y se vuelven a poner después, en la
+   misma sesión de `psql`. Guardá esto como `restore-pre.sql`:
+
+   ```sql
+   CREATE TEMP TABLE not_valid_checks AS
+     SELECT conrelid::regclass::text AS tbl, conname, pg_get_constraintdef(oid) AS def
+     FROM pg_constraint
+     WHERE contype = 'c' AND NOT convalidated AND connamespace = 'public'::regnamespace;
+
+   DO $$ DECLARE r record; BEGIN
+     FOR r IN SELECT * FROM not_valid_checks LOOP
+       EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', r.tbl, r.conname);
+     END LOOP;
+   END $$;
+   ```
+
+   Y esto como `restore-post.sql`:
+
+   ```sql
+   DO $$ DECLARE r record; BEGIN
+     FOR r IN SELECT * FROM not_valid_checks LOOP
+       EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I %s', r.tbl, r.conname, r.def);
+     END LOOP;
+   END $$;
+   ```
 
    ```bash
-   psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -f finify-backup-data.sql
+   psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -v ON_ERROR_STOP=1 \
+     -f restore-pre.sql -f finify-backup-data.sql -f restore-post.sql
    ```
+
+   `ON_ERROR_STOP` corta en el primer error: si corta, la base local quedó a medias, se arregla la
+   causa y se vuelve a empezar desde una base limpia.
 
 4. Verificá: cantidad de filas de `accounts`, `transactions`, `transaction_amounts`,
    `investments`, y que los saldos de apertura cuadren con los movimientos.

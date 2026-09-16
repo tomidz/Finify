@@ -8,6 +8,8 @@ export const AI_MODEL = "claude-opus-4-8";
 export const AI_DAILY_TOKEN_CAP = 300_000;
 export const AI_HOURLY_MESSAGE_LIMIT = 30;
 // Each extension grants another AI_DAILY_TOKEN_CAP for the same UTC day.
+// The database enforces this cap and count on ai_quota_extensions
+// (migration 0041): raising either one needs a migration too.
 export const AI_MAX_DAILY_EXTENSIONS = 3;
 
 export function utcDayKey(date = new Date()): string {
@@ -195,18 +197,25 @@ export async function logAiUsage(
     toolNames: string[];
   },
 ): Promise<void> {
+  const row = {
+    user_id: input.userId,
+    session_id: input.sessionId,
+    model: AI_MODEL,
+    input_tokens: input.inputTokens,
+    output_tokens: input.outputTokens,
+    cached_input_tokens: input.cachedInputTokens,
+    cost_usd: estimateCostUsd(input),
+    tool_names: input.toolNames,
+  };
   try {
-    await supabase.from("ai_usage").insert({
-      user_id: input.userId,
-      session_id: input.sessionId,
-      model: AI_MODEL,
-      input_tokens: input.inputTokens,
-      output_tokens: input.outputTokens,
-      cached_input_tokens: input.cachedInputTokens,
-      cost_usd: estimateCostUsd(input),
-      tool_names: input.toolNames,
-    });
-  } catch {
-    // swallow — metering is observability, not control flow
+    let { error } = await supabase.from("ai_usage").insert(row);
+    // A session deleted before the turn ends still owes its usage to the
+    // limits: keep the row without the session.
+    if (error?.code === "23503") {
+      ({ error } = await supabase.from("ai_usage").insert({ ...row, session_id: null }));
+    }
+    if (error) console.error("logAiUsage: insert failed:", error.code, error.message);
+  } catch (e) {
+    console.error("logAiUsage:", e);
   }
 }

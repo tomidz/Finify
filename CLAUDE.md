@@ -61,6 +61,10 @@ correspondiente en `node_modules/next/dist/docs/`.
 - RLS: políticas para las 4 operaciones con `WITH CHECK`; validar el dueño de cada FK referenciada;
   `REVOKE` nombrando `anon` y `authenticated`; `SECURITY DEFINER` solo con `search_path` fijo y
   tomando la identidad de `auth.uid()`, nunca de un parámetro.
+- Funciones: desde 0042 una función nueva no tiene `EXECUTE` para `PUBLIC` ni `anon`. En `public`,
+  `authenticated` lo recibe por los defaults de Supabase; en otro esquema hace falta un `GRANT`
+  explícito.
+- `CHECK` sobre tablas con historial: `NOT VALID`. El runbook de restore ya los saca y los repone.
 - Después de migrar: regenerar `src/types/database.types.ts` y commitearlo.
 
 ## Producción

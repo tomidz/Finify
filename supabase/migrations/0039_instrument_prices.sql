@@ -4,8 +4,8 @@
 -- one instrument after another and twice per net-worth render. Prices are
 -- now read through this cache with a short TTL enforced by the app.
 --
--- Per user on purpose: a shared table writable by any authenticated user
--- would let one account change the prices another account sees.
+-- Rows belong to the user whose request fetched them, like the rest of the
+-- user data.
 --
 -- Rollback: DROP TABLE public.instrument_prices;
 
