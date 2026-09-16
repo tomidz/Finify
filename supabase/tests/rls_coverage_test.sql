@@ -34,7 +34,7 @@ select is_empty(
 
 select results_eq(
   $$
-    select p.proname::text
+    select p.proname::text collate "default"
     from pg_catalog.pg_proc p
     join pg_catalog.pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public'
