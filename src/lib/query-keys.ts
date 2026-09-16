@@ -21,6 +21,7 @@ export const LEDGER_DERIVED_KEYS: readonly QueryKey[] = [
   ["debt-activities"],
   ["recurring", "pending"],
   ["dashboard"],
+  ["ledger-drift"],
 ];
 
 /** Reads that compare the budget plan with actuals. */

@@ -409,20 +409,20 @@ export async function recalculateAllOpeningBalances(): Promise<ActionResult<null
     if (!userId) return { error: "No autenticado" };
 
     const supabase = await createClient();
-    const { data: allMonths } = await supabase
+    const { data: allMonths, error } = await supabase
       .from("months")
       .select("id, year, month")
       .eq("user_id", userId)
       .order("year", { ascending: true })
       .order("month", { ascending: true });
+    if (error) return { error: error.message };
 
     if (!allMonths || allMonths.length < 2) return { data: null };
 
     // Recalculate from the first month
-    await recalculateOpeningBalances(allMonths[0].id);
-
-    return { data: null };
-  } catch {
+    return await recalculateOpeningBalances(allMonths[0].id);
+  } catch (e) {
+    console.error("recalculateAllOpeningBalances:", e);
     return { error: "Error al recalcular saldos" };
   }
 }

@@ -19,8 +19,12 @@ pnpm install
 pnpm typecheck && pnpm lint && pnpm test   # siempre, antes de dar algo por terminado
 pnpm build                                 # si tocaste rutas, config o dependencias
 pnpm db:types:generate                     # después de una migración (requiere supabase start)
-pnpm db:types:check                        # lo que corre el CI
+pnpm db:types:check                        # tipos generados = commiteados (también en CI)
+pnpm db:test                               # pgTAP de supabase/tests (requiere supabase start)
 ```
+
+Una migración que toca RLS, grants o funciones lleva su test en `supabase/tests/*_test.sql`. El job
+`Database` del CI aplica todas las migraciones y corre pgTAP, `supabase db lint` y los tipos.
 
 Next 16 cambió APIs respecto de versiones anteriores: antes de usar una API de Next, leé la guía
 correspondiente en `node_modules/next/dist/docs/`.

@@ -30,6 +30,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useUserPreferences, useUpdateUserPreferences } from "@/hooks/useUserPreferences";
 import { useCurrencies } from "@/hooks/useAccounts";
+import { LedgerDiagnosticsSection } from "./_components/LedgerDiagnosticsSection";
 import { TransactionRulesSection } from "./_components/TransactionRulesSection";
 
 const SettingsFormSchema = z.object({
@@ -170,6 +171,8 @@ export default function SettingsPage() {
       </Form>
 
       <TransactionRulesSection />
+
+      <LedgerDiagnosticsSection />
     </div>
   );
 }

@@ -7,6 +7,12 @@ import {
   UpdateTransactionSchema,
 } from "@/lib/validations/transaction.schema";
 import { getOrFetchFxRate } from "@/lib/server/fx";
+import { normalizeSignedAmount } from "@/lib/ledger/sign";
+import {
+  buildTransferLines,
+  transferRatesNeeded,
+  type LedgerLine,
+} from "@/lib/ledger/transfer";
 import type {
   Transaction,
   TransactionFeedFilters,
@@ -24,12 +30,7 @@ import {
 
 type ActionResult<T> = { data: T } | { error: string };
 
-type TransactionAmountInput = {
-  account_id: string;
-  amount: number;
-  exchange_rate: number;
-  base_amount: number;
-};
+type TransactionAmountInput = LedgerLine;
 
 type TransactionFeedInput = {
   monthId: string;
@@ -75,7 +76,7 @@ function mapTransactionRows(
   }));
 }
 
-async function buildTransferLines({
+async function resolveTransferLines({
   date,
   sourceAccount,
   destAccount,
@@ -94,71 +95,37 @@ async function buildTransferLines({
 }): Promise<ActionResult<TransactionAmountInput[]>> {
   const baseCurrencyResult = await getBaseCurrency();
   if ("error" in baseCurrencyResult) return baseCurrencyResult;
-
   const baseCurrency = baseCurrencyResult.data;
-  // Source debit (gross) = transfer amount + fee, in source currency.
-  // Destination credit = converted transfer amount, in dest currency.
-  const transferAbsolute = Math.abs(sourceAmount);
-  const feeAbsolute = Math.max(0, fee);
-  const sourceDebit = transferAbsolute + feeAbsolute;
-  const destinationAbsolute = Math.abs(destinationAmount);
 
-  // base_amount is per-leg in user's base currency.
-  let sourceBase: number;
-  let destBase: number;
-
-  if (sourceAccount.currency === baseCurrency) {
-    sourceBase = sourceDebit;
-  } else {
-    const fxResult = await getOrFetchFxRate({
-      date,
-      from: sourceAccount.currency,
-      to: baseCurrency,
-    });
+  const needed = transferRatesNeeded({
+    source: sourceAccount,
+    destination: destAccount,
+    baseCurrency,
+  });
+  const rates: { source?: number; destination?: number } = {};
+  if (needed.source) {
+    const fxResult = await getOrFetchFxRate({ date, from: sourceAccount.currency, to: baseCurrency });
     if ("error" in fxResult) return fxResult;
-    sourceBase = sourceDebit * fxResult.data;
+    rates.source = fxResult.data;
   }
-
-  if (destAccount.currency === baseCurrency) {
-    destBase = destinationAbsolute;
-  } else if (destAccount.currency === sourceAccount.currency) {
-    // Same currency on both sides: dest in base = transferAbsolute converted using same rate as source
-    destBase = (sourceBase * transferAbsolute) / sourceDebit;
-  } else {
-    const fxResult = await getOrFetchFxRate({
-      date,
-      from: destAccount.currency,
-      to: baseCurrency,
-    });
+  if (needed.destination) {
+    const fxResult = await getOrFetchFxRate({ date, from: destAccount.currency, to: baseCurrency });
     if ("error" in fxResult) return fxResult;
-    destBase = destinationAbsolute * fxResult.data;
+    rates.destination = fxResult.data;
   }
 
   return {
-    data: [
-      {
-        account_id: sourceAccount.id,
-        amount: -sourceDebit,
-        exchange_rate: exchangeRate,
-        base_amount: -Math.abs(sourceBase),
-      },
-      {
-        account_id: destAccount.id,
-        amount: destinationAbsolute,
-        exchange_rate: exchangeRate,
-        base_amount: Math.abs(destBase),
-      },
-    ],
+    data: buildTransferLines({
+      source: sourceAccount,
+      destination: destAccount,
+      baseCurrency,
+      sourceAmount,
+      destinationAmount,
+      exchangeRate,
+      fee,
+      rates,
+    }),
   };
-}
-
-function normalizeSignedAmount(
-  transactionType: "income" | "expense" | "correction",
-  value: number
-): number {
-  if (transactionType === "income") return Math.abs(value);
-  if (transactionType === "expense") return -Math.abs(value);
-  return value;
 }
 
 async function resolveMonthIdFromDate(
@@ -459,7 +426,7 @@ export async function createTransfer(
     // Build the legs BEFORE inserting the header: an FX failure here used to
     // leave an orphan 0-leg transfer visible in the feed but invisible to
     // balances (happened in production with future-dated transfers).
-    const transferLinesResult = await buildTransferLines({
+    const transferLinesResult = await resolveTransferLines({
       date: parsed.data.date,
       sourceAccount,
       destAccount,
@@ -707,7 +674,7 @@ export async function updateTransaction(
         0,
         Math.abs(sourceLine?.amount ?? 0) - existingFee,
       );
-      const transferLinesResult = await buildTransferLines({
+      const transferLinesResult = await resolveTransferLines({
         date: updates.date ?? existing.date,
         sourceAccount,
         destAccount,

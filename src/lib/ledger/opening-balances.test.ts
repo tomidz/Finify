@@ -1,3 +1,4 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -5,8 +6,8 @@ import {
   type ChainMonth,
   type ChainMovement,
   type ChainOpening,
-} from "./opening-balance-chain";
-import { roundLikeNumeric } from "./decimal";
+} from "./opening-balances";
+import { roundLikeNumeric } from "@/lib/decimal";
 
 // What the database keeps for a written opening (see decimal.test.ts).
 const toStored = (value: number) => roundLikeNumeric(value, 8);
@@ -151,5 +152,66 @@ describe("chainOpeningBalances", () => {
       const actual = chainOpeningBalances({ months, baseMonthId: base.id, baseOpenings, movements, activeAccountIds });
       expect(actual, `run ${run}`).toEqual(expected);
     }
+  });
+  it("opens each later month with the base opening plus every movement since the base", () => {
+    const cents = fc.integer({ min: -10_000_000, max: 10_000_000 }).map((c) => c / 100);
+    const ledger = fc
+      .record({
+        monthCount: fc.integer({ min: 2, max: 18 }),
+        accounts: fc.uniqueArray(fc.constantFrom("a", "b", "c"), { minLength: 1 }),
+        baseIndexSeed: fc.nat(),
+        baseOpening: cents,
+        movements: fc.array(
+          fc.record({ monthSeed: fc.nat(), account: fc.constantFrom("a", "b", "c"), amount: cents }),
+          { maxLength: 40 },
+        ),
+      })
+      .map(({ monthCount, accounts, baseIndexSeed, baseOpening, movements }) => {
+        const months: ChainMonth[] = Array.from({ length: monthCount }, (_, i) => ({
+          id: `m${i}`,
+          year: 2024 + Math.floor(i / 12),
+          month: (i % 12) + 1,
+        }));
+        return {
+          months,
+          baseIndex: baseIndexSeed % (monthCount - 1),
+          accounts,
+          baseOpening,
+          movements: movements.map((m) => ({
+            month_id: months[m.monthSeed % monthCount].id,
+            account_id: m.account,
+            amount: m.amount,
+            base_amount: m.amount,
+          })),
+        };
+      });
+
+    fc.assert(
+      fc.property(ledger, ({ months, baseIndex, accounts, baseOpening, movements }) => {
+        const rows = chainOpeningBalances({
+          months,
+          baseMonthId: months[baseIndex].id,
+          baseOpenings: accounts.map((account_id) => ({
+            account_id,
+            opening_amount: baseOpening,
+            opening_base_amount: baseOpening,
+          })),
+          movements,
+          activeAccountIds: accounts,
+        });
+
+        for (const row of rows) {
+          const index = months.findIndex((m) => m.id === row.month_id);
+          const fed = new Set(months.slice(baseIndex, index).map((m) => m.id));
+          const expected =
+            baseOpening +
+            movements
+              .filter((m) => m.account_id === row.account_id && fed.has(m.month_id))
+              .reduce((sum, m) => sum + m.amount, 0);
+          expect(row.opening_amount).toBeCloseTo(expected, 6);
+        }
+        expect(rows).toHaveLength((months.length - 1 - baseIndex) * accounts.length);
+      }),
+    );
   });
 });

@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { createTransaction, getBaseCurrency } from "@/actions/transactions";
 import { getOrFetchFxRate } from "@/lib/server/fx";
+import { getExpectedDatesInMonth } from "@/lib/recurrence";
 import {
   CreateRecurringSchema,
   UpdateRecurringSchema,
@@ -346,85 +347,6 @@ export async function getPendingRecurring(
     console.error("getPendingRecurring:", e);
     return { error: "Error al obtener las recurrentes pendientes" };
   }
-}
-
-// --- Helper: calculate expected dates for a recurring in a given month ---
-function getExpectedDatesInMonth(
-  recurrence: string,
-  dayOfMonth: number | null,
-  dayOfWeek: number | null,
-  year: number,
-  month: number,
-  startDate: Date
-): string[] {
-  const dates: string[] = [];
-  const lastDay = new Date(year, month, 0).getDate();
-
-  switch (recurrence) {
-    case "monthly": {
-      const day = Math.min(dayOfMonth ?? startDate.getDate(), lastDay);
-      dates.push(
-        `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
-      );
-      break;
-    }
-    case "weekly": {
-      const dow = dayOfWeek ?? startDate.getDay();
-      // Find all occurrences of this day-of-week in the month
-      for (let d = 1; d <= lastDay; d++) {
-        const date = new Date(year, month - 1, d);
-        if (date.getDay() === dow) {
-          dates.push(
-            `${year}-${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}`
-          );
-        }
-      }
-      break;
-    }
-    case "biweekly": {
-      // True 14-day cycle anchored on start_date (not "every other weekday in
-      // the calendar month", which drifts across month boundaries).
-      const monthStart = new Date(year, month - 1, 1);
-      const cursor = new Date(startDate);
-      while (cursor < monthStart) {
-        cursor.setDate(cursor.getDate() + 14);
-      }
-      while (cursor.getFullYear() === year && cursor.getMonth() === month - 1) {
-        dates.push(
-          `${year}-${String(month).padStart(2, "0")}-${String(
-            cursor.getDate()
-          ).padStart(2, "0")}`
-        );
-        cursor.setDate(cursor.getDate() + 14);
-      }
-      break;
-    }
-    case "quarterly": {
-      // Recur every 3 months from the start month
-      const startM = startDate.getMonth() + 1; // 1-based
-      const quarterMonths: number[] = [];
-      for (let m = startM; m <= 12; m += 3) quarterMonths.push(m);
-      for (let m = startM - 3; m >= 1; m -= 3) quarterMonths.push(m);
-      if (quarterMonths.includes(month)) {
-        const day = Math.min(dayOfMonth ?? startDate.getDate(), lastDay);
-        dates.push(
-          `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
-        );
-      }
-      break;
-    }
-    case "yearly": {
-      if (startDate.getMonth() + 1 === month) {
-        const day = Math.min(dayOfMonth ?? startDate.getDate(), lastDay);
-        dates.push(
-          `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
-        );
-      }
-      break;
-    }
-  }
-
-  return dates;
 }
 
 // --- REGISTER A PENDING OCCURRENCE AS A REAL TRANSACTION ---

@@ -1,9 +1,8 @@
-name: DB types drift
+name: Database
 
-# Runs on every PR so this required check always reports a status.
-# Branch protection treats path-filtered workflows as permanently pending
-# on PRs that don't touch the filtered paths, blocking the merge. We do
-# the path filter inside the job and short-circuit when irrelevant.
+# Applies every migration to a local Supabase, then runs the pgTAP suite,
+# plpgsql lint and the generated-types comparison. Runs on every PR and skips
+# its steps inside the job when nothing database-related changed.
 on:
   pull_request:
     branches: [main]
@@ -16,10 +15,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  drift:
-    name: Regenerate types and diff
+  database:
+    name: Migrations, pgTAP, lint and types
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -36,12 +35,23 @@ jobs:
           # instead of silently reporting "no relevant changes".
           changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
           if printf '%s\n' "$changed" \
-            | grep -Eq '^(supabase/migrations/|src/types/database\.types\.ts$|scripts/db-types.*\.sh$|\.github/workflows/db-types-check\.yml$)'; then
+            | grep -Eq '^(supabase/|src/types/database\.types\.ts$|scripts/db-types.*\.sh$|\.github/workflows/db\.yml$)'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "relevant=false" >> "$GITHUB_OUTPUT"
-            echo "No relevant changes — skipping types drift check."
+            echo "No database changes — skipping."
           fi
+
+      - name: The pgTAP suite is not empty
+        if: steps.changes.outputs.relevant == 'true'
+        run: |
+          set -euo pipefail
+          count=$(find supabase/tests -name '*_test.sql' | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::supabase/tests has no *_test.sql files."
+            exit 1
+          fi
+          echo "$count test files"
 
       - name: Setup Supabase CLI
         if: steps.changes.outputs.relevant == 'true'
@@ -53,8 +63,18 @@ jobs:
         if: steps.changes.outputs.relevant == 'true'
         run: supabase start
 
-      - name: Check types drift
+      - name: pgTAP
         if: steps.changes.outputs.relevant == 'true'
+        run: supabase test db
+
+      - name: plpgsql lint
+        # Also after a pgTAP failure, so one run reports every problem.
+        if: ${{ !cancelled() && steps.changes.outputs.relevant == 'true' }}
+        run: supabase db lint --schema public --level error --fail-on error
+
+      - name: Check types drift
+        # Also after a pgTAP failure, so one run reports every problem.
+        if: ${{ !cancelled() && steps.changes.outputs.relevant == 'true' }}
         run: bash scripts/db-types-check.sh
 
       - name: Stop Supabase

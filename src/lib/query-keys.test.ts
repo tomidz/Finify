@@ -25,6 +25,7 @@ describe("invalidateLedger", () => {
     ["budget", "summary", "m1"],
     ["debt-activities", "d1"],
     ["recurring", "pending", 2026, 9],
+    ["ledger-drift"],
   ];
   const untouched: QueryKey[] = [
     ["currencies"],

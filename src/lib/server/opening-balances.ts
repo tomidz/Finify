@@ -5,7 +5,7 @@ import { toYearMonthCode } from "@/lib/months";
 import {
   chainOpeningBalances,
   type ChainMovement,
-} from "@/lib/opening-balance-chain";
+} from "@/lib/ledger/opening-balances";
 import type { ServerContext } from "@/lib/server/context";
 import { chunk, IN_LIST_CHUNK, readAllRows } from "@/lib/server/paginate";
 import type { OpeningBalance } from "@/types/months";

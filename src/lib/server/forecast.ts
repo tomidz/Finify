@@ -2,6 +2,7 @@ import "server-only";
 
 import type { ServerContext } from "@/lib/server/context";
 import { resolveFxRates } from "@/lib/server/fx-range";
+import { toMonthlyAmount } from "@/lib/recurrence";
 import type { ForecastPoint } from "@/types/forecast";
 
 type Result<T> = { data: T } | { error: string };
@@ -226,23 +227,5 @@ export async function loadForecast(
   } catch (e) {
     console.error("getForecast:", e);
     return { error: "Error al generar el forecast" };
-  }
-}
-
-/** Convert any recurrence to a monthly equivalent */
-function toMonthlyAmount(amount: number, recurrence: string): number {
-  switch (recurrence) {
-    case "weekly":
-      return amount * (52 / 12); // ~4.33 weeks per month
-    case "biweekly":
-      return amount * (26 / 12); // ~2.17 times per month
-    case "monthly":
-      return amount;
-    case "quarterly":
-      return amount / 3;
-    case "yearly":
-      return amount / 12;
-    default:
-      return amount;
   }
 }

@@ -1324,6 +1324,20 @@ export type Database = {
         }
         Returns: number
       }
+      ledger_drift: {
+        Args: never
+        Returns: {
+          account_id: string
+          account_name: string
+          derived_opening: number
+          derived_opening_base: number
+          month: number
+          month_id: string
+          stored_opening: number
+          stored_opening_base: number
+          year: number
+        }[]
+      }
       liabilities_year: {
         Args: { p_base_currency?: string; p_year: number }
         Returns: {
