@@ -23,6 +23,8 @@ describe("safeRedirectPath", () => {
     ["relative path", "budget"],
     ["tab-prefixed", "/\t/example.com"],
     ["newline", "/\nexample.com"],
+    ["NUL", "/budget\u0000"],
+    ["DEL", "/budget\u007f"],
   ])("falls back for %s", (_label, raw) => {
     expect(safeRedirectPath(raw)).toBe("/");
   });
