@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import type { TablesUpdate } from "@/types/database.types";
+import { today as appToday } from "@/lib/dates";
 import {
   CreateNwItemSchema,
   UpdateNwItemSchema,
@@ -54,8 +55,7 @@ async function buildFxMap(
   const nonBase = [...new Set(currencies.filter((c) => c !== baseCurrency))];
   if (nonBase.length === 0) return fxMap;
 
-  const now = new Date();
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const today = appToday();
 
   await Promise.all(
     nonBase.map(async (currency) => {

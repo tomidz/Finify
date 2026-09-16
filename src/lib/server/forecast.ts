@@ -4,6 +4,7 @@ import type { ServerContext } from "@/lib/server/context";
 import { resolveFxRates } from "@/lib/server/fx-range";
 import { toMonthlyAmount } from "@/lib/recurrence";
 import type { ForecastPoint } from "@/types/forecast";
+import { today } from "@/lib/dates";
 
 type Result<T> = { data: T } | { error: string };
 
@@ -75,8 +76,7 @@ export async function loadForecast(
       .eq("user_id", userId)
       .eq("is_active", true);
 
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const todayStr = today();
     // Last day covered by the forecast horizon
     let horizonYear = latestMonth.year;
     let horizonMonth = latestMonth.month + monthsAhead;

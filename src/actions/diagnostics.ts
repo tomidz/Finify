@@ -17,7 +17,7 @@ export type LedgerDriftRow = {
   derived_opening_base: number;
 };
 
-/** Months whose stored opening balance breaks the chain (see ledger_drift). */
+/** Months whose stored opening balance differs from the expected one (see ledger_drift). */
 export async function getLedgerDrift(): Promise<ActionResult<LedgerDriftRow[]>> {
   try {
     const ctx = await getServerContext();

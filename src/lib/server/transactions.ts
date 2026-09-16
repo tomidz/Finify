@@ -2,6 +2,7 @@ import "server-only";
 
 import type { ServerContext } from "@/lib/server/context";
 import { resolveFxRates } from "@/lib/server/fx-range";
+import { chunk, IN_LIST_CHUNK, readAllRows } from "@/lib/server/paginate";
 import type {
   TransactionAmountWithRelations,
   TransactionWithRelations,
@@ -98,18 +99,37 @@ export async function loadTransactionsForMonths(
 ): Promise<Result<TransactionWithRelations[]>> {
   if (monthIds.length === 0) return { data: [] };
 
-  const { data, error } = await ctx.supabase
-    .from("transactions")
-    .select(TRANSACTION_WITH_LEGS)
-    .eq("user_id", ctx.userId)
-    .in("month_id", monthIds)
-    .is("deleted_at", null)
-    .order("date", { ascending: false })
-    .order("created_at", { ascending: false });
+  // Every page of every chunk of months; id breaks ties so pages never
+  // overlap, and the merged list keeps the same order.
+  const reads = await Promise.all(
+    chunk(monthIds, IN_LIST_CHUNK).map((ids) =>
+      readAllRows(({ from, to, count }) =>
+        ctx.supabase
+          .from("transactions")
+          .select(TRANSACTION_WITH_LEGS, { count })
+          .eq("user_id", ctx.userId)
+          .in("month_id", ids)
+          .is("deleted_at", null)
+          .order("date", { ascending: false })
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+          .range(from, to),
+      ),
+    ),
+  );
+  const failed = reads.find((read) => "error" in read);
+  if (failed && "error" in failed) return { error: failed.error.message };
 
-  if (error) return { error: error.message };
+  const rows = reads
+    .flatMap((read) => ("data" in read ? read.data : []))
+    .sort(
+      (a, b) =>
+        b.date.localeCompare(a.date) ||
+        b.created_at.localeCompare(a.created_at) ||
+        b.id.localeCompare(a.id),
+    );
 
   return {
-    data: await withCurrentBaseAmounts(ctx, data ?? [], baseCurrency),
+    data: await withCurrentBaseAmounts(ctx, rows, baseCurrency),
   };
 }

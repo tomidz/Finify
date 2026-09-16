@@ -22,6 +22,9 @@ import {
   type BudgetCategory,
   type BudgetCategoryType,
 } from "@/types/budget";
+import { filterByKeywords } from "@/components/command-filter";
+
+const EMPTY_VALUE = "__none__";
 
 interface CategoryComboboxProps {
   categories: BudgetCategory[];
@@ -94,14 +97,15 @@ export function CategoryCombobox({
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start" portal={false}>
-          <Command>
+          <Command filter={filterByKeywords}>
             <CommandInput placeholder="Buscar categoría..." />
             <CommandList>
               <CommandEmpty>No se encontraron categorías.</CommandEmpty>
               {allowEmpty && (
                 <CommandGroup>
                   <CommandItem
-                    value={emptyLabel}
+                    value={EMPTY_VALUE}
+                    keywords={[emptyLabel]}
                     onSelect={() => {
                       onValueChange("");
                       setOpen(false);
@@ -122,7 +126,8 @@ export function CategoryCombobox({
                   {cats.map((cat) => (
                     <CommandItem
                       key={cat.id}
-                      value={cat.name}
+                      value={cat.id}
+                      keywords={[cat.name, BUDGET_CATEGORY_LABELS[cat.category_type]]}
                       onSelect={() => {
                         onValueChange(cat.id);
                         setOpen(false);
@@ -161,13 +166,14 @@ export function CategoryCombobox({
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
-        <Command>
+        <Command filter={filterByKeywords}>
           <CommandInput placeholder="Buscar categoría..." />
           <CommandList>
             <CommandEmpty>No se encontraron categorías.</CommandEmpty>
             {allowEmpty && (
               <CommandItem
-                value={emptyLabel}
+                value={EMPTY_VALUE}
+                keywords={[emptyLabel]}
                 onSelect={() => {
                   onValueChange("");
                   setOpen(false);
@@ -185,7 +191,8 @@ export function CategoryCombobox({
             {sortByUsage(categories, usageCounts).map((cat) => (
               <CommandItem
                 key={cat.id}
-                value={cat.name}
+                value={cat.id}
+                keywords={[cat.name, BUDGET_CATEGORY_LABELS[cat.category_type]]}
                 onSelect={() => {
                   onValueChange(cat.id);
                   setOpen(false);

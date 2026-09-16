@@ -4,6 +4,7 @@ import { forEachLimited } from "@/lib/concurrency";
 import { getOrFetchFxRate } from "@/lib/server/fx";
 import { readAllRows } from "@/lib/server/paginate";
 import type { createClient } from "@/lib/supabase/server";
+import { today as appToday } from "@/lib/dates";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -11,11 +12,6 @@ export type FxRequest = { date: string; from: string };
 export type FxLookup = (date: string, from: string) => number | null;
 
 const PROVIDER_CONCURRENCY = 4;
-
-function localToday(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-}
 
 /**
  * Resolves many (date, currency) → `to` conversions with one paginated read of
@@ -39,7 +35,7 @@ export async function resolveFxRates(
   const pending = requests.filter((r) => r.date && r.from && r.from !== to);
   if (pending.length === 0) return lookup;
 
-  const today = localToday();
+  const today = appToday();
   const cacheDate = (date: string) => (date > today ? today : date);
   const sourceFor = (from: string) =>
     from === "ARS" || to === "ARS" ? "dolarapi" : "frankfurter";

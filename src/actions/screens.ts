@@ -1,6 +1,7 @@
 "use server";
 
-import { toYearMonthCode } from "@/lib/months";
+import { currentYearMonth } from "@/lib/dates";
+import { defaultMonth, toYearMonthCode } from "@/lib/months";
 import { loadBudgetSummaryRange } from "@/lib/server/budget";
 import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
 import { loadCurrencies } from "@/lib/server/currencies";
@@ -89,11 +90,12 @@ export async function getDashboardData(input: {
     };
     if (months.length === 0) return { data: empty };
 
-    // Months come newest first; unknown ids fall back to the latest month, and
-    // a start after the end collapses the range to the end month.
+    // Unknown ids fall back to the current month (see defaultMonth), and a
+    // start after the end collapses the range to the end month.
     const byId = new Map(months.map((m) => [m.id, m]));
-    const end = byId.get(input.endMonthId ?? "") ?? months[0];
-    let start = byId.get(input.startMonthId ?? "") ?? months[0];
+    const fallback = defaultMonth(months, currentYearMonth()) ?? months[0];
+    const end = byId.get(input.endMonthId ?? "") ?? fallback;
+    let start = byId.get(input.startMonthId ?? "") ?? fallback;
     if (toYearMonthCode(start.year, start.month) > toYearMonthCode(end.year, end.month)) {
       start = end;
     }

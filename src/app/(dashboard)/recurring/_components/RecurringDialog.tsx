@@ -165,7 +165,7 @@ export function RecurringDialog({
       category_id: values.category_id || null,
       account_id: values.account_id,
       amount,
-      currency: values.currency,
+      currency: accounts?.find((a) => a.id === values.account_id)?.currency ?? values.currency,
       recurrence: values.recurrence as "weekly" | "biweekly" | "monthly" | "quarterly" | "yearly",
       day_of_month: values.day_of_month ? parseInt(values.day_of_month, 10) : null,
       day_of_week: null,
@@ -206,6 +206,10 @@ export function RecurringDialog({
   );
 
   const watchType = useWatch({ control: form.control, name: "type" });
+  // A template is in its account's currency: that is what its transactions
+  // are recorded in.
+  const watchAccountId = useWatch({ control: form.control, name: "account_id" });
+  const accountCurrency = accounts?.find((a) => a.id === watchAccountId)?.currency;
   const relevantCategories =
     watchType === "income" ? incomeCategories : expenseCategories;
 
@@ -339,9 +343,9 @@ export function RecurringDialog({
                     <FormLabel>Moneda</FormLabel>
                     <FormControl>
                       <Select
-                        value={field.value}
+                        value={accountCurrency ?? field.value}
                         onValueChange={field.onChange}
-                        disabled={isPending}
+                        disabled
                       >
                         <SelectTrigger className="w-full">
                           <SelectValue />
@@ -370,6 +374,14 @@ export function RecurringDialog({
                         </SelectContent>
                       </Select>
                     </FormControl>
+                    {isEditing &&
+                      accountCurrency &&
+                      recurring.currency !== accountCurrency && (
+                        <p className="text-muted-foreground text-xs">
+                          Estaba en {recurring.currency}: se guarda en {accountCurrency}, la
+                          moneda de la cuenta. Revisá el monto.
+                        </p>
+                      )}
                     <FormMessage />
                   </FormItem>
                 )}

@@ -2,10 +2,10 @@ import type { QueryClient, QueryKey } from "@tanstack/react-query";
 
 /**
  * Cached reads computed from the ledger: movements, balances, budget actuals,
- * net worth and the screens that bundle them. Any write to the ledger (or to
- * the accounts, months, categories and debts those reads embed) stales all of
- * them. Catalogs (currencies, rules, goals) and market prices are not derived
- * from the ledger and stay cached.
+ * net worth, goals linked to an account and the screens that bundle them. Any
+ * write to the ledger (or to the accounts, months, categories and debts those
+ * reads embed) stales all of them. Catalogs (currencies, rules) and market
+ * prices are not derived from the ledger and stay cached.
  */
 export const LEDGER_DERIVED_KEYS: readonly QueryKey[] = [
   ["transactions"],
@@ -22,6 +22,7 @@ export const LEDGER_DERIVED_KEYS: readonly QueryKey[] = [
   ["recurring", "pending"],
   ["dashboard"],
   ["ledger-drift"],
+  ["savings-goals"],
 ];
 
 /** Reads that compare the budget plan with actuals. */

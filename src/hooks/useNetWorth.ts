@@ -21,6 +21,7 @@ import {
 import {
   recordDebtPayment,
   recordDebtAdjustment,
+  reverseDebtActivity,
   getDebtActivities,
 } from "@/actions/debt-activities";
 import type {
@@ -292,6 +293,24 @@ export function useRecordDebtPayment() {
     onError: (err: Error) => toast.error(err.message),
     onSuccess: () => {
       toast.success("Pago registrado");
+    },
+    onSettled: () => {
+      invalidateLedger(queryClient);
+    },
+  });
+}
+
+export function useReverseDebtActivity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (activityId: string) => {
+      const result = await reverseDebtActivity(activityId);
+      if ("error" in result) throw new Error(result.error);
+      return result.data;
+    },
+    onError: (err: Error) => toast.error(err.message),
+    onSuccess: () => {
+      toast.success("Movimiento revertido");
     },
     onSettled: () => {
       invalidateLedger(queryClient);

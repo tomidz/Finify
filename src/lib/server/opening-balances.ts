@@ -1,145 +1,33 @@
 import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
-import { toYearMonthCode } from "@/lib/months";
-import {
-  chainOpeningBalances,
-  type ChainMovement,
-} from "@/lib/ledger/opening-balances";
 import type { ServerContext } from "@/lib/server/context";
-import { chunk, IN_LIST_CHUNK, readAllRows } from "@/lib/server/paginate";
 import type { OpeningBalance } from "@/types/months";
 
 type ActionResult<T> = { data: T } | { error: string };
 
-const UPSERT_BATCH = 500;
+/** For an action whose write succeeded but whose recalculation did not. */
+export const RECALCULATION_FAILED =
+  "Guardado, pero no se pudieron recalcular los saldos. Revisalos en Configuración → Diagnóstico de saldos.";
 
 /**
- * Recalculate opening balances for all months after the given monthId.
- * Call this after creating/updating/deleting transactions in a past month.
- *
- * Reads everything the chain needs in a few queries, computes every later
- * month in memory (chainOpeningBalances) and writes the result at once, instead
- * of three round trips per later month. A failed read writes nothing; the
- * error is reported to the caller.
+ * Rebuild the opening balances of every month from `monthId` on (every month
+ * when null) with rebuild_opening_balances (0044): each account's initial
+ * balance plus the non-deleted legs of all earlier months, in one statement.
  */
 export async function recalculateOpeningBalances(
-  monthId: string
+  monthId: string | null,
 ): Promise<ActionResult<null>> {
   try {
     const supabase = await createClient();
-    const { data: baseMonth, error: baseError } = await supabase
-      .from("months")
-      .select("id, year, month, user_id")
-      .eq("id", monthId)
-      .single();
-
-    if (baseError) return { error: baseError.message };
-    if (!baseMonth) return { data: null };
-
-    const [monthsResult, accountsResult, baseOpeningsResult] = await Promise.all([
-      supabase
-        .from("months")
-        .select("id, year, month")
-        .eq("user_id", baseMonth.user_id)
-        .order("year", { ascending: true })
-        .order("month", { ascending: true }),
-      supabase
-        .from("accounts")
-        .select("id")
-        .eq("user_id", baseMonth.user_id)
-        .eq("is_active", true),
-      supabase
-        .from("opening_balances")
-        .select("account_id, opening_amount, opening_base_amount")
-        .eq("month_id", baseMonth.id),
-    ]);
-
-    if (monthsResult.error) return { error: monthsResult.error.message };
-    if (accountsResult.error) return { error: accountsResult.error.message };
-    if (baseOpeningsResult.error) return { error: baseOpeningsResult.error.message };
-
-    const allMonths = monthsResult.data ?? [];
-    const activeAccountIds = (accountsResult.data ?? []).map((a) => a.id);
-    const baseCode = toYearMonthCode(baseMonth.year, baseMonth.month);
-    const baseIndex = allMonths.findIndex((m) => m.id === baseMonth.id);
-    const later = allMonths.filter((m) => toYearMonthCode(m.year, m.month) > baseCode);
-    if (baseIndex < 0 || later.length === 0 || activeAccountIds.length === 0) {
-      return { data: null };
-    }
-
-    // Movements that feed a later opening: the base month and every later
-    // month except the last.
-    const feedingMonthIds = allMonths
-      .slice(baseIndex, allMonths.length - 1)
-      .map((m) => m.id);
-    const movementReads = await Promise.all(
-      chunk(feedingMonthIds, IN_LIST_CHUNK).map((monthIds) =>
-        readAllRows(({ from, to, count }) =>
-          supabase
-            .from("transaction_amounts")
-            .select("id, account_id, amount, base_amount, transactions!inner(month_id, deleted_at)", { count })
-            .in("transactions.month_id", monthIds)
-            .is("transactions.deleted_at", null)
-            .order("id", { ascending: true })
-            .range(from, to),
-        ),
-      ),
+    const { error } = await supabase.rpc(
+      "rebuild_opening_balances",
+      monthId ? { p_from_month_id: monthId } : {},
     );
-    const movements: ChainMovement[] = [];
-    for (const read of movementReads) {
-      if ("error" in read) {
-        console.error("recalculateOpeningBalances: movements read failed, nothing written:", read.error);
-        return { error: read.error.message };
-      }
-      for (const row of read.data) {
-        const tx = Array.isArray(row.transactions) ? row.transactions[0] : row.transactions;
-        if (!tx) continue;
-        movements.push({
-          month_id: tx.month_id,
-          account_id: row.account_id,
-          amount: Number(row.amount),
-          base_amount: Number(row.base_amount),
-        });
-      }
+    if (error) {
+      console.error("recalculateOpeningBalances:", error.code, error.message);
+      return { error: error.message };
     }
-
-    const rows = chainOpeningBalances({
-      months: allMonths,
-      baseMonthId: baseMonth.id,
-      baseOpenings: (baseOpeningsResult.data ?? []).map((row) => ({
-        account_id: row.account_id,
-        opening_amount: Number(row.opening_amount),
-        opening_base_amount: Number(row.opening_base_amount),
-      })),
-      movements,
-      activeAccountIds,
-    });
-
-    // Rows come month by month; a batch only closes between months, so a failed
-    // write never leaves a month with some accounts updated and others not.
-    const batches: typeof rows[] = [];
-    for (let start = 0; start < rows.length; ) {
-      let end = start;
-      while (end < rows.length && rows[end].month_id === rows[start].month_id) end++;
-      const last = batches[batches.length - 1];
-      if (last && last.length + (end - start) <= UPSERT_BATCH) {
-        last.push(...rows.slice(start, end));
-      } else {
-        batches.push(rows.slice(start, end));
-      }
-      start = end;
-    }
-    for (const batch of batches) {
-      const { error: upsertError } = await supabase
-        .from("opening_balances")
-        .upsert(batch, { onConflict: "month_id,account_id" });
-      if (upsertError) {
-        console.error("recalculateOpeningBalances: write failed:", upsertError);
-        return { error: upsertError.message };
-      }
-    }
-
     return { data: null };
   } catch (e) {
     console.error("recalculateOpeningBalances:", e);

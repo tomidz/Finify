@@ -87,6 +87,8 @@ import { parseISO, format } from "date-fns";
 import type { Month, NextMonthPreview } from "@/types/months";
 import { MONTH_NAMES, formatAmount, amountTone } from "@/lib/format";
 import { useMonthSummary, getPrimaryLine } from "@/hooks/useMonthSummary";
+import { currentYearMonth } from "@/lib/dates";
+import { defaultMonth } from "@/lib/months";
 
 type TableTransaction = TransactionWithRelations & {
   primaryLine: NonNullable<ReturnType<typeof getPrimaryLine>> | null;
@@ -152,7 +154,9 @@ export function TransactionsTable() {
       !selectedMonthId ||
       !sortedMonths.some((month) => month.id === selectedMonthId)
     ) {
-      setSelectedMonthId(sortedMonths[0].id);
+      setSelectedMonthId(
+        (defaultMonth(sortedMonths, currentYearMonth()) ?? sortedMonths[0]).id,
+      );
     }
   }, [selectedMonthId, sortedMonths]);
 

@@ -36,50 +36,21 @@ function mapGoal(row: any, override?: GoalOverride): SavingsGoalWithRelations {
   };
 }
 
-// Current balance of an account in its own currency:
-// initial opening (earliest month) + sum of all non-deleted movement legs.
+// Current balance of each account in its own currency (account_balances,
+// 0048): initial balance plus every non-deleted leg.
 async function getLinkedAccountBalances(
   supabase: Awaited<ReturnType<typeof createClient>>,
-  userId: string,
   accountIds: string[],
-): Promise<Map<string, number>> {
+): Promise<{ data: Map<string, number> } | { error: string }> {
   const balances = new Map<string, number>();
-  if (accountIds.length === 0) return balances;
-  for (const id of accountIds) balances.set(id, 0);
+  if (accountIds.length === 0) return { data: balances };
 
-  const { data: earliestMonth } = await supabase
-    .from("months")
-    .select("id")
-    .eq("user_id", userId)
-    .order("year", { ascending: true })
-    .order("month", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (earliestMonth) {
-    const { data: openings } = await supabase
-      .from("opening_balances")
-      .select("account_id, opening_amount")
-      .eq("month_id", earliestMonth.id)
-      .in("account_id", accountIds);
-    for (const o of openings ?? []) {
-      balances.set(o.account_id as string, Number(o.opening_amount));
-    }
-  }
-
-  const { data: movements } = await supabase
-    .from("transaction_amounts")
-    .select("account_id, amount, transactions!inner(user_id, deleted_at)")
-    .in("account_id", accountIds)
-    .eq("transactions.user_id", userId)
-    .is("transactions.deleted_at", null);
-
-  for (const m of movements ?? []) {
-    const id = m.account_id as string;
-    balances.set(id, (balances.get(id) ?? 0) + Number(m.amount));
-  }
-
-  return balances;
+  const { data, error } = await supabase.rpc("account_balances", {
+    p_account_ids: accountIds,
+  });
+  if (error) return { error: error.message };
+  for (const row of data ?? []) balances.set(row.account_id, Number(row.amount));
+  return { data: balances };
 }
 
 // --- GET ALL GOALS ---
@@ -121,11 +92,9 @@ export async function getSavingsGoals(): Promise<
       ),
     ];
 
-    const balances = await getLinkedAccountBalances(
-      supabase,
-      user.id,
-      accountIds,
-    );
+    const linked = await getLinkedAccountBalances(supabase, accountIds);
+    if ("error" in linked) return linked;
+    const balances = linked.data;
 
     const symbolByCode = new Map<string, string>();
     if (accountIds.length > 0) {

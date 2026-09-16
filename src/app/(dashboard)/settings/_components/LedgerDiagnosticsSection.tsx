@@ -42,7 +42,8 @@ export function LedgerDiagnosticsSection() {
       <CardHeader>
         <CardTitle>Diagnóstico de saldos</CardTitle>
         <CardDescription>
-          Cada saldo inicial debe ser el del mes anterior más sus movimientos.
+          Cada saldo de inicio de mes debe ser el saldo inicial de la cuenta más los movimientos
+          de los meses anteriores.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -107,8 +108,9 @@ export function LedgerDiagnosticsSection() {
           <DialogHeader>
             <DialogTitle>Recalcular todos los saldos</DialogTitle>
             <DialogDescription>
-              Reescribe los saldos iniciales de todos los meses a partir de los del primer mes.
-              Si los del primer mes están mal, corregilos antes desde Cuentas.
+              Reescribe los saldos de inicio de todos los meses a partir del saldo inicial de cada
+              cuenta y sus movimientos. Si el saldo inicial de una cuenta está mal, corregilo antes
+              desde Cuentas.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2 sm:gap-0">

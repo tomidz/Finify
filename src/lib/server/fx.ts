@@ -4,6 +4,7 @@ import { cache } from "react";
 
 import { createClient } from "@/lib/supabase/server";
 import { fetchExchangeRate } from "@/lib/frankfurter";
+import { today as appToday } from "@/lib/dates";
 
 type ActionResult<T> = { data: T } | { error: string };
 
@@ -12,14 +13,6 @@ interface FxInput {
   from: string;
   to: string;
   source?: string;
-}
-
-function localToday(): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
 }
 
 /**
@@ -41,7 +34,7 @@ const resolveRate = cache(async function resolveRate(
   source: string,
 ): Promise<ActionResult<number>> {
   const involvesArs = from === "ARS" || to === "ARS";
-  const today = localToday();
+  const today = appToday();
   const isFuture = date > today;
 
   try {

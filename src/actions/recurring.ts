@@ -1,8 +1,9 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { createTransaction, getBaseCurrency } from "@/actions/transactions";
+import { getBaseCurrency } from "@/actions/transactions";
 import { getOrFetchFxRate } from "@/lib/server/fx";
+import { ledgerRpcError } from "@/lib/server/ledger-rpc";
 import { getExpectedDatesInMonth } from "@/lib/recurrence";
 import {
   CreateRecurringSchema,
@@ -17,6 +18,27 @@ type ActionResult<T> = { data: T } | { error: string };
 
 /** Tolerance for matching recurring amounts against existing transactions (15%) */
 const RECURRING_AMOUNT_TOLERANCE = 0.15;
+
+/** A template's amount is in its account's currency; null when it is. */
+async function recurringCurrencyError(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  accountId: string,
+  currency: string,
+): Promise<string | null> {
+  const { data: account, error } = await supabase
+    .from("accounts")
+    .select("currency")
+    .eq("id", accountId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) return error.message;
+  if (!account) return "Cuenta no encontrada";
+  if (account.currency !== currency) {
+    return `La cuenta está en ${account.currency}: la recurrente tiene que estar en la misma moneda.`;
+  }
+  return null;
+}
 
 // --- GET ALL RECURRING ---
 export async function getRecurringTransactions(): Promise<
@@ -83,6 +105,14 @@ export async function createRecurring(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
+    const currencyError = await recurringCurrencyError(
+      supabase,
+      user.id,
+      parsed.data.account_id,
+      parsed.data.currency,
+    );
+    if (currencyError) return { error: currencyError };
+
     const { data, error } = await supabase
       .from("recurring_transactions")
       .insert({ ...parsed.data, user_id: user.id })
@@ -136,6 +166,24 @@ export async function updateRecurring(
       data: { user },
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
+
+    if (updates.account_id !== undefined || updates.currency !== undefined) {
+      const { data: current, error: currentError } = await supabase
+        .from("recurring_transactions")
+        .select("account_id, currency")
+        .eq("id", id)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (currentError) return { error: currentError.message };
+      if (!current) return { error: "Recurrente no encontrada" };
+      const currencyError = await recurringCurrencyError(
+        supabase,
+        user.id,
+        updates.account_id ?? current.account_id,
+        updates.currency ?? current.currency,
+      );
+      if (currencyError) return { error: currencyError };
+    }
 
     const { data, error } = await supabase
       .from("recurring_transactions")
@@ -237,19 +285,43 @@ export async function getPendingRecurring(
       .eq("month", month)
       .maybeSingle();
 
+    // 3. For each recurring, calculate expected dates and check if already registered
+    const monthStart = new Date(year, month - 1, 1);
+    const monthEnd = new Date(year, month, 0); // last day of month
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const firstDay = `${year}-${pad(month)}-01`;
+    const lastDay = `${year}-${pad(month)}-${pad(monthEnd.getDate())}`;
+
+    // Occurrences registered from a template, wherever their transaction's
+    // date ended up.
+    const { data: linkedData, error: linkedError } = await supabase
+      .from("transactions")
+      .select("recurring_id, occurrence_date")
+      .eq("user_id", user.id)
+      .not("recurring_id", "is", null)
+      .gte("occurrence_date", firstDay)
+      .lte("occurrence_date", lastDay)
+      .is("deleted_at", null);
+    if (linkedError) return { error: linkedError.message };
+    const linked = new Set(
+      (linkedData ?? []).map((tx) => `${tx.recurring_id}:${tx.occurrence_date}`),
+    );
+
+    // Transactions entered by hand, matched approximately.
     let existingTxs: {
       description: string;
       account_id: string;
-      base_amount: number;
       amount: number;
     }[] = [];
     if (monthRow) {
-      const { data: txData } = await supabase
+      const { data: txData, error: txError } = await supabase
         .from("transactions")
-        .select("description, transaction_amounts ( account_id, base_amount, amount )")
+        .select("description, transaction_amounts ( account_id, amount )")
         .eq("user_id", user.id)
         .eq("month_id", monthRow.id)
+        .is("recurring_id", null)
         .is("deleted_at", null);
+      if (txError) return { error: txError.message };
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       existingTxs = (txData ?? []).map((tx: any) => {
@@ -259,15 +331,10 @@ export async function getPendingRecurring(
         return {
           description: (tx.description ?? "").toLowerCase().trim(),
           account_id: firstLine?.account_id ?? "",
-          base_amount: Math.abs(Number(firstLine?.base_amount ?? 0)),
           amount: Math.abs(Number(firstLine?.amount ?? 0)),
         };
       });
     }
-
-    // 3. For each recurring, calculate expected dates and check if already registered
-    const monthStart = new Date(year, month - 1, 1);
-    const monthEnd = new Date(year, month, 0); // last day of month
     const results: PendingRecurring[] = [];
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -306,21 +373,23 @@ export async function getPendingRecurring(
       };
 
       for (const expectedDate of expectedDates) {
+        if (linked.has(`${rec.id}:${expectedDate}`)) {
+          results.push({ recurring: mapped, expected_date: expectedDate, is_registered: true });
+          continue;
+        }
+
         // A matching transaction covers exactly ONE occurrence: consume it so
         // a single payment doesn't mark every weekly date as registered.
-        // Foreign-currency recurrings with no stored base_amount compare in
-        // the account currency (they could never match in base).
+        // The comparison is in the account's currency, which is the
+        // template's: a base amount fixed when the template was created
+        // drifts with the exchange rate.
         const descLower = rec.description.toLowerCase().trim();
-        const compareInBase = rec.base_amount != null;
-        const recAmount = Math.abs(
-          Number(compareInBase ? rec.base_amount : rec.amount),
-        );
+        const recAmount = Math.abs(Number(rec.amount));
         const matchIndex = existingTxs.findIndex((tx) => {
           if (tx.description !== descLower) return false;
           if (tx.account_id !== rec.account_id) return false;
-          const txAmount = compareInBase ? tx.base_amount : tx.amount;
           return (
-            Math.abs(txAmount - recAmount) / (recAmount || 1) <
+            Math.abs(tx.amount - recAmount) / (recAmount || 1) <
             RECURRING_AMOUNT_TOLERANCE
           );
         });
@@ -395,24 +464,23 @@ export async function registerRecurringOccurrence(input: {
       baseAmount = Number((rawAmount * fx.data).toFixed(4));
     }
 
+    // The transaction is created and linked to its occurrence together; an
+    // occurrence already registered (another tab, a double click) is not
+    // registered again.
     const sign = rec.type === "expense" ? -1 : 1;
-    const txResult = await createTransaction({
-      date: input.date,
-      transaction_type: rec.type,
-      category_id: rec.category_id,
-      description: rec.description,
-      amounts: [
-        {
-          account_id: rec.account_id,
-          amount: sign * rawAmount,
-          exchange_rate: exchangeRate,
-          base_amount: sign * baseAmount,
-        },
-      ],
-      notes: rec.notes,
+    const { error } = await supabase.rpc("register_recurring_occurrence", {
+      p_recurring_id: rec.id,
+      p_occurrence_date: input.date,
+      p_leg: {
+        account_id: rec.account_id,
+        amount: sign * rawAmount,
+        exchange_rate: exchangeRate,
+        base_amount: sign * baseAmount,
+      },
     });
-
-    if ("error" in txResult) return { error: txResult.error };
+    if (error) {
+      return ledgerRpcError("register_recurring_occurrence", error, "Error al registrar la recurrente");
+    }
     return { data: null };
   } catch (e) {
     console.error("registerRecurringOccurrence:", e);

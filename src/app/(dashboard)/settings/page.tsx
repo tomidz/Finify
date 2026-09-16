@@ -107,7 +107,7 @@ export default function SettingsPage() {
                       <Select
                         value={field.value}
                         onValueChange={field.onChange}
-                        disabled={updatePrefs.isPending}
+                        disabled={updatePrefs.isPending || prefs?.base_currency_locked}
                       >
                         <SelectTrigger className="w-48">
                           <SelectValue />
@@ -121,6 +121,12 @@ export default function SettingsPage() {
                         </SelectContent>
                       </Select>
                     </FormControl>
+                    {prefs?.base_currency_locked && (
+                      <p className="text-muted-foreground text-xs">
+                        No se puede cambiar: tus cuentas y presupuestos ya
+                        guardan montos en esta moneda.
+                      </p>
+                    )}
                     <FormMessage />
                   </FormItem>
                 )}

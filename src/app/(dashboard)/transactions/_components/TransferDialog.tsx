@@ -125,6 +125,18 @@ export function TransferDialog({
   const sourceAccount = activeAccounts.find((a) => a.id === watchSourceId);
   const destAccount = activeAccounts.find((a) => a.id === watchDestId);
   const destinationCurrency = destAccount?.currency ?? "";
+  // Same currency: the destination receives exactly the amount, with no rate.
+  const sameCurrency =
+    !!sourceAccount && !!destAccount && sourceAccount.currency === destAccount.currency;
+  // Converted amounts keep the destination currency's precision (crypto: 8).
+  const destinationDecimals =
+    currencies?.find((c) => c.code === destinationCurrency)?.decimals ?? 2;
+  const destinationDecimalsRef = useRef(destinationDecimals);
+  destinationDecimalsRef.current = destinationDecimals;
+  const toDestination = useCallback(
+    (value: number) => Number(value.toFixed(destinationDecimalsRef.current)),
+    [],
+  );
 
   const destinationManuallyEdited = useRef(false);
   const amountRef = useRef(form.getValues("amount"));
@@ -170,7 +182,7 @@ export function TransferDialog({
         destinationManuallyEdited.current = false;
         const amt = parseNumberInput(amountRef.current);
         if (!isNaN(amt) && amt > 0) {
-          const base = Math.round(amt * rate * 100) / 100;
+          const base = toDestination(amt * rate);
           form.setValue(
             "destination_amount",
             formatNumberInput(String(base).replace(".", ","))
@@ -191,6 +203,7 @@ export function TransferDialog({
     watchSourceId,
     watchDestId,
     form,
+    toDestination,
   ]);
 
   useEffect(() => {
@@ -269,14 +282,14 @@ export function TransferDialog({
     } else {
       const rate = parseNumberInput(form.getValues("exchange_rate"));
       if (!isNaN(amt) && amt > 0 && !isNaN(rate) && rate > 0) {
-        const newBase = Math.round(amt * rate * 100) / 100;
+        const newBase = toDestination(amt * rate);
         form.setValue(
           "destination_amount",
           formatNumberInput(String(newBase).replace(".", ","))
         );
       }
     }
-  }, [form]);
+  }, [form, toDestination]);
 
   const handleRateChange = useCallback((val: string) => {
     const formatted = formatNumberInput(val);
@@ -285,13 +298,13 @@ export function TransferDialog({
     const amt = parseNumberInput(form.getValues("amount"));
     const rate = parseNumberInput(formatted);
     if (!isNaN(amt) && amt > 0 && !isNaN(rate) && rate > 0) {
-      const newBase = Math.round(amt * rate * 100) / 100;
+      const newBase = toDestination(amt * rate);
       form.setValue(
         "destination_amount",
         formatNumberInput(String(newBase).replace(".", ","))
       );
     }
-  }, [form]);
+  }, [form, toDestination]);
 
   const handleDestinationAmountChange = useCallback((val: string) => {
     destinationManuallyEdited.current = true;
@@ -312,8 +325,8 @@ export function TransferDialog({
     form.clearErrors();
 
     const amountNum = parseNumberInput(values.amount);
-    const rateNum = parseNumberInput(values.exchange_rate);
-    const destinationNum = parseNumberInput(values.destination_amount);
+    const rateNum = sameCurrency ? 1 : parseNumberInput(values.exchange_rate);
+    const destinationNum = sameCurrency ? amountNum : parseNumberInput(values.destination_amount);
     const feeRaw = parseNumberInput(values.fee);
     const feeNum = isNaN(feeRaw) ? 0 : Math.max(0, feeRaw);
 
@@ -475,7 +488,7 @@ export function TransferDialog({
               )}
             />
 
-            <div className="grid grid-cols-3 gap-4">
+            <div className={`grid gap-4 ${sameCurrency ? "grid-cols-1" : "grid-cols-3"}`}>
               <FormField
                 control={form.control}
                 name="amount"
@@ -498,6 +511,8 @@ export function TransferDialog({
                   </FormItem>
                 )}
               />
+              {!sameCurrency && (
+              <>
               <FormField
                 control={form.control}
                 name="exchange_rate"
@@ -551,6 +566,8 @@ export function TransferDialog({
                   </FormItem>
                 )}
               />
+              </>
+              )}
             </div>
 
             <FormField

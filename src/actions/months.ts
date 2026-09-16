@@ -1,12 +1,13 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { currentYearMonth } from "@/lib/dates";
 import { getOrFetchFxRate } from "@/lib/server/fx";
-import { toYearMonthCode } from "@/lib/months";
 import { getServerContext } from "@/lib/server/context";
 import { loadMonthsInRange } from "@/lib/server/months";
 import {
   loadOpeningBalances,
+  RECALCULATION_FAILED,
   recalculateOpeningBalances,
 } from "@/lib/server/opening-balances";
 import type {
@@ -68,8 +69,8 @@ export async function getMonths(): Promise<ActionResult<Month[]>> {
 }
 
 export async function getOrCreateCurrentMonth(): Promise<ActionResult<Month>> {
-  const now = new Date();
-  return createMonth(now.getFullYear(), now.getMonth() + 1);
+  const { year, month } = currentYearMonth();
+  return createMonth(year, month);
 }
 
 export async function createNextMonthFromLatest(): Promise<ActionResult<Month>> {
@@ -102,7 +103,7 @@ export async function previewNextMonthFromLatest(): Promise<
     const latest = latestResult.data;
     const target = latest
       ? nextYearMonth(latest.year, latest.month)
-      : { year: new Date().getFullYear(), month: new Date().getMonth() + 1 };
+      : currentYearMonth();
 
     const supabase = await createClient();
 
@@ -259,17 +260,27 @@ export async function createMonth(
 
     const supabase = await createClient();
 
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from("months")
       .select("*")
       .eq("user_id", userId)
       .eq("year", year)
       .eq("month", month)
       .maybeSingle();
+    if (existingError) return { error: existingError.message };
 
     let monthRow = existing as Month | null;
 
-    if (!monthRow) {
+    if (monthRow) {
+      // Already opened: done. A month left without openings by an earlier
+      // failure falls through and gets them now.
+      const { count: openingCount, error: countError } = await supabase
+        .from("opening_balances")
+        .select("id", { count: "exact", head: true })
+        .eq("month_id", monthRow.id);
+      if (countError) return { error: countError.message };
+      if ((openingCount ?? 0) > 0) return { data: monthRow };
+    } else {
       const { data: created, error: createMonthError } = await supabase
         .from("months")
         .insert({ user_id: userId, year, month })
@@ -297,130 +308,24 @@ export async function createMonth(
       }
     }
 
-    const newMonth = monthRow;
+    // Openings of the new month (and of later months, unchanged unless they
+    // were already off) come from each account's initial balance and legs.
+    const rebuilt = await recalculateOpeningBalances(monthRow.id);
+    if ("error" in rebuilt) return { error: RECALCULATION_FAILED };
 
-    // If the month already has opening rows we're done. If it exists but has
-    // none (a previous partial failure), fall through and backfill — before
-    // this check, such a month was permanently stuck with no openings.
-    const { count: openingCount, error: countError } = await supabase
-      .from("opening_balances")
-      .select("id", { count: "exact", head: true })
-      .eq("month_id", newMonth.id);
-    if (countError) return { error: countError.message };
-    if ((openingCount ?? 0) > 0) return { data: newMonth };
-
-    const { data: accounts, error: accountsError } = await supabase
-      .from("accounts")
-      .select("id")
-      .eq("user_id", userId)
-      .eq("is_active", true);
-    if (accountsError) return { error: accountsError.message };
-
-    const activeAccountIds = (accounts ?? []).map((a) => a.id);
-    if (activeAccountIds.length === 0) return { data: newMonth };
-
-    const targetCode = toYearMonthCode(year, month);
-
-    const { data: previousMonths, error: prevMonthsError } = await supabase
-      .from("months")
-      .select("id, year, month")
-      .eq("user_id", userId)
-      .lt("year", year + 1)
-      .order("year", { ascending: false })
-      .order("month", { ascending: false });
-    if (prevMonthsError) return { error: prevMonthsError.message };
-
-    const previousMonth = (previousMonths ?? []).find(
-      (m) => toYearMonthCode(m.year, m.month) < targetCode
-    );
-
-    const openingByAccount = new Map<
-      string,
-      { opening_amount: number; opening_base_amount: number }
-    >();
-
-    if (previousMonth) {
-      const { data: prevOpenings, error: prevOpeningsError } = await supabase
-        .from("opening_balances")
-        .select("account_id, opening_amount, opening_base_amount")
-        .eq("month_id", previousMonth.id);
-      if (prevOpeningsError) return { error: prevOpeningsError.message };
-
-      for (const row of prevOpenings ?? []) {
-        openingByAccount.set(row.account_id, {
-          opening_amount: Number(row.opening_amount),
-          opening_base_amount: Number(row.opening_base_amount),
-        });
-      }
-
-      const { data: prevMovements, error: prevMovementsError } = await supabase
-        .from("transaction_amounts")
-        .select("account_id, amount, base_amount, transactions!inner(month_id, deleted_at)")
-        .eq("transactions.month_id", previousMonth.id)
-        .is("transactions.deleted_at", null);
-      if (prevMovementsError) return { error: prevMovementsError.message };
-
-      for (const row of prevMovements ?? []) {
-        const current = openingByAccount.get(row.account_id) ?? {
-          opening_amount: 0,
-          opening_base_amount: 0,
-        };
-        openingByAccount.set(row.account_id, {
-          opening_amount: current.opening_amount + Number(row.amount),
-          opening_base_amount:
-            current.opening_base_amount + Number(row.base_amount),
-        });
-      }
-    }
-
-    const openingRows = activeAccountIds.map((accountId) => {
-      const values = openingByAccount.get(accountId) ?? {
-        opening_amount: 0,
-        opening_base_amount: 0,
-      };
-      return {
-        month_id: newMonth.id,
-        account_id: accountId,
-        opening_amount: values.opening_amount,
-        opening_base_amount: values.opening_base_amount,
-      };
-    });
-
-    if (openingRows.length > 0) {
-      const { error: openingInsertError } = await supabase
-        .from("opening_balances")
-        .upsert(openingRows, { onConflict: "month_id,account_id" });
-      if (openingInsertError) return { error: openingInsertError.message };
-    }
-
-    return { data: newMonth };
-  } catch {
+    return { data: monthRow };
+  } catch (e) {
+    console.error("createMonth:", e);
     return { error: "Error al crear mes" };
   }
 }
 
-/**
- * Recalculate opening balances for ALL months (from the earliest).
- * One-time fix for stale data.
- */
+/** Rebuild the opening balances of every month and account. */
 export async function recalculateAllOpeningBalances(): Promise<ActionResult<null>> {
   try {
     const userId = await getUserId();
     if (!userId) return { error: "No autenticado" };
-
-    const supabase = await createClient();
-    const { data: allMonths, error } = await supabase
-      .from("months")
-      .select("id, year, month")
-      .eq("user_id", userId)
-      .order("year", { ascending: true })
-      .order("month", { ascending: true });
-    if (error) return { error: error.message };
-
-    if (!allMonths || allMonths.length < 2) return { data: null };
-
-    // Recalculate from the first month
-    return await recalculateOpeningBalances(allMonths[0].id);
+    return await recalculateOpeningBalances(null);
   } catch (e) {
     console.error("recalculateAllOpeningBalances:", e);
     return { error: "Error al recalcular saldos" };

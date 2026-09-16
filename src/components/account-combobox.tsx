@@ -18,7 +18,8 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import type { Account } from "@/types/accounts";
+import { ACCOUNT_TYPE_LABELS, type Account } from "@/types/accounts";
+import { filterByKeywords } from "@/components/command-filter";
 
 interface AccountComboboxProps {
   accounts: Account[];
@@ -45,8 +46,20 @@ export function AccountCombobox({
     selectedAccount && balanceByAccount
       ? balanceByAccount[selectedAccount.id]
       : undefined;
+  // Accounts may share name and currency with a different type (0031).
+  const hasNamesake = (account: Account) =>
+    accounts.some(
+      (other) =>
+        other.id !== account.id &&
+        other.name === account.name &&
+        other.currency === account.currency,
+    );
+  const accountLabel = (account: Account) =>
+    `${account.name} (${account.currency})${
+      hasNamesake(account) ? ` · ${ACCOUNT_TYPE_LABELS[account.account_type]}` : ""
+    }`;
   const displayLabel = selectedAccount
-    ? `${selectedAccount.name} (${selectedAccount.currency})${
+    ? `${accountLabel(selectedAccount)}${
         selectedBalance != null ? ` · ${formatAmount(selectedBalance)}` : ""
       }`
     : placeholder;
@@ -70,7 +83,7 @@ export function AccountCombobox({
         align="start"
         portal={false}
       >
-        <Command>
+        <Command filter={filterByKeywords}>
           <CommandInput placeholder="Buscar cuenta..." />
           <CommandList>
             <CommandEmpty>No se encontraron cuentas.</CommandEmpty>
@@ -80,7 +93,12 @@ export function AccountCombobox({
                 return (
                   <CommandItem
                     key={account.id}
-                    value={`${account.name} (${account.currency})`}
+                    value={account.id}
+                    keywords={[
+                      account.name,
+                      account.currency,
+                      ACCOUNT_TYPE_LABELS[account.account_type],
+                    ]}
                     onSelect={() => {
                       onValueChange(account.id);
                       setOpen(false);
@@ -94,6 +112,9 @@ export function AccountCombobox({
                     />
                     <span className="flex-1 truncate">
                       {account.name} ({account.currency})
+                      <span className="text-muted-foreground ml-1 text-xs">
+                        {ACCOUNT_TYPE_LABELS[account.account_type]}
+                      </span>
                     </span>
                     {balance != null && (
                       <span className="text-muted-foreground ml-2 whitespace-nowrap text-xs tabular-nums">

@@ -15,6 +15,9 @@ export type Database = {
           created_at: string
           currency: string
           id: string
+          initial_amount: number | null
+          initial_base_amount: number | null
+          initial_base_currency: string | null
           is_active: boolean
           name: string
           notes: string | null
@@ -26,6 +29,9 @@ export type Database = {
           created_at?: string
           currency: string
           id?: string
+          initial_amount?: number | null
+          initial_base_amount?: number | null
+          initial_base_currency?: string | null
           is_active?: boolean
           name: string
           notes?: string | null
@@ -37,6 +43,9 @@ export type Database = {
           created_at?: string
           currency?: string
           id?: string
+          initial_amount?: number | null
+          initial_base_amount?: number | null
+          initial_base_currency?: string | null
           is_active?: boolean
           name?: string
           notes?: string | null
@@ -47,6 +56,13 @@ export type Database = {
           {
             foreignKeyName: "accounts_currency_fkey"
             columns: ["currency"]
+            isOneToOne: false
+            referencedRelation: "currencies"
+            referencedColumns: ["code"]
+          },
+          {
+            foreignKeyName: "accounts_initial_base_currency_fkey"
+            columns: ["initial_base_currency"]
             isOneToOne: false
             referencedRelation: "currencies"
             referencedColumns: ["code"]
@@ -409,6 +425,7 @@ export type Database = {
           description: string | null
           id: string
           nw_item_id: string
+          snapshot_changes: Json | null
           transaction_id: string | null
         }
         Insert: {
@@ -420,6 +437,7 @@ export type Database = {
           description?: string | null
           id?: string
           nw_item_id: string
+          snapshot_changes?: Json | null
           transaction_id?: string | null
         }
         Update: {
@@ -431,6 +449,7 @@ export type Database = {
           description?: string | null
           id?: string
           nw_item_id?: string
+          snapshot_changes?: Json | null
           transaction_id?: string | null
         }
         Relationships: [
@@ -1159,6 +1178,8 @@ export type Database = {
           id: string
           month_id: string | null
           notes: string | null
+          occurrence_date: string | null
+          recurring_id: string | null
           source_investment_id: string | null
           source_investment_sale_id: string | null
           transaction_type: Database["public"]["Enums"]["transaction_type"]
@@ -1176,6 +1197,8 @@ export type Database = {
           id?: string
           month_id?: string | null
           notes?: string | null
+          occurrence_date?: string | null
+          recurring_id?: string | null
           source_investment_id?: string | null
           source_investment_sale_id?: string | null
           transaction_type: Database["public"]["Enums"]["transaction_type"]
@@ -1193,6 +1216,8 @@ export type Database = {
           id?: string
           month_id?: string | null
           notes?: string | null
+          occurrence_date?: string | null
+          recurring_id?: string | null
           source_investment_id?: string | null
           source_investment_sale_id?: string | null
           transaction_type?: Database["public"]["Enums"]["transaction_type"]
@@ -1219,6 +1244,13 @@ export type Database = {
             columns: ["month_id"]
             isOneToOne: false
             referencedRelation: "months"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "transactions_recurring_id_fkey"
+            columns: ["recurring_id"]
+            isOneToOne: false
+            referencedRelation: "recurring_transactions"
             referencedColumns: ["id"]
           },
           {
@@ -1274,6 +1306,25 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      account_balances: {
+        Args: { p_account_ids: string[] }
+        Returns: {
+          account_id: string
+          amount: number
+          base_amount: number
+        }[]
+      }
+      account_month_balances: {
+        Args: { p_account_id: string }
+        Returns: {
+          base_movements: number
+          month: number
+          movements: number
+          opening_amount: number
+          opening_base_amount: number
+          year: number
+        }[]
+      }
       account_net_worth_year: {
         Args: { p_base_currency?: string; p_year: number }
         Returns: {
@@ -1289,6 +1340,15 @@ export type Database = {
           month: number
           year: number
         }[]
+      }
+      apply_debt_balance_change: {
+        Args: {
+          p_date: string
+          p_delta: number
+          p_nw_item_id: string
+          p_rate: number
+        }
+        Returns: Json
       }
       budget_summary_vs_actual: {
         Args: { p_base_currency?: string; p_month_id: string }
@@ -1315,6 +1375,18 @@ export type Database = {
           planned_amount: number
           variance: number
         }[]
+      }
+      create_investment: {
+        Args: { p_cash_rate?: number; p_lot: Json }
+        Returns: string
+      }
+      delete_investment: {
+        Args: { p_id: string }
+        Returns: undefined
+      }
+      delete_investment_sale: {
+        Args: { p_sale_id: string }
+        Returns: undefined
       }
       latest_fx_rate: {
         Args: {
@@ -1373,6 +1445,36 @@ export type Database = {
           opening_base_amount: number
         }[]
       }
+      rebuild_opening_balances: {
+        Args: { p_from_month_id?: string }
+        Returns: undefined
+      }
+      record_debt_adjustment: {
+        Args: {
+          p_activity_type: Database["public"]["Enums"]["debt_activity_type"]
+          p_amount: number
+          p_amount_base?: number
+          p_date: string
+          p_debt_rate: number
+          p_description?: string
+          p_nw_item_id: string
+        }
+        Returns: string
+      }
+      record_debt_payment: {
+        Args: {
+          p_debt_amount: number
+          p_debt_rate: number
+          p_header: Json
+          p_leg: Json
+          p_nw_item_id: string
+        }
+        Returns: string
+      }
+      record_investment_sale: {
+        Args: { p_cash_rate?: number; p_sale: Json }
+        Returns: string
+      }
       reduce_investment_lots: {
         Args: {
           p_account_id: string
@@ -1387,6 +1489,26 @@ export type Database = {
       resolve_base_currency: {
         Args: { p_base_currency?: string }
         Returns: string
+      }
+      register_recurring_occurrence: {
+        Args: { p_leg: Json; p_occurrence_date: string; p_recurring_id: string }
+        Returns: string
+      }
+      reverse_debt_activity: {
+        Args: { p_activity_id: string }
+        Returns: undefined
+      }
+      save_ledger_transaction: {
+        Args: { p_header: Json; p_id?: string; p_legs: Json }
+        Returns: string
+      }
+      set_ledger_transaction_deleted: {
+        Args: { p_deleted: boolean; p_id: string }
+        Returns: undefined
+      }
+      sync_investment_cash: {
+        Args: { p_investment_id: string; p_rate: number; p_sale_id: string }
+        Returns: undefined
       }
       transactions_feed: {
         Args: {
@@ -1429,6 +1551,14 @@ export type Database = {
           p_ticker: string
           p_transfer_date: string
         }
+        Returns: undefined
+      }
+      transfer_investment_position: {
+        Args: { p_fee_cash?: number; p_fee_rate?: number; p_move: Json }
+        Returns: undefined
+      }
+      update_investment: {
+        Args: { p_cash_rate?: number; p_changes: Json; p_id: string }
         Returns: undefined
       }
       usage_counts: {

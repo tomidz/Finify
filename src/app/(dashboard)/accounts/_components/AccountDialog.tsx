@@ -37,6 +37,7 @@ import {
 } from "@/hooks/useAccounts";
 import { useBaseCurrency } from "@/hooks/useTransactions";
 import { CreateAccountSchema, UpdateAccountSchema } from "@/lib/validations/account.schema";
+import { accountBalancePayload } from "@/lib/account-balance-payload";
 import { formatNumberInput, parseNumberInput } from "@/lib/utils";
 import { fetchExchangeRate } from "@/lib/frankfurter";
 import {
@@ -62,6 +63,25 @@ type AccountFormValues = {
   base_amount: string;
 };
 
+function balanceFormValues(
+  balance: { opening_amount: number; opening_base_amount: number } | null | undefined,
+): Pick<AccountFormValues, "initial_amount" | "exchange_rate" | "base_amount"> {
+  const openingAmount = balance?.opening_amount ?? 0;
+  const openingBase = balance?.opening_base_amount ?? 0;
+  const rate = openingAmount > 0 ? openingBase / openingAmount : 1;
+  return {
+    initial_amount:
+      openingAmount > 0
+        ? formatNumberInput(String(openingAmount).replace(".", ","))
+        : "",
+    exchange_rate: formatNumberInput(String(rate).replace(".", ",")),
+    base_amount:
+      openingBase > 0
+        ? formatNumberInput(String(openingBase).replace(".", ","))
+        : "",
+  };
+}
+
 export function AccountDialog({
   account,
   open,
@@ -83,9 +103,11 @@ export function AccountDialog({
 
   const { data: currencies } = useCurrencies();
   const { data: baseCurrency } = useBaseCurrency();
-  const { data: initialBalance } = useAccountInitialBalance(
+  const { data: initialBalance, isPending: initialBalancePending } = useAccountInitialBalance(
     isEditing ? account?.id : undefined,
   );
+  // Editing an account waits for its stored balance before saving.
+  const waitingForBalance = isEditing && initialBalancePending;
   const createMutation = useCreateAccount();
   const updateMutation = useUpdateAccount();
 
@@ -93,6 +115,8 @@ export function AccountDialog({
 
   const [fetchingRate, setFetchingRate] = useState(false);
   const baseManuallyEdited = useRef(false);
+  // Whether the user typed in a balance field since the dialog opened.
+  const balanceEdited = useRef(false);
 
   const watchCurrency = useWatch({ control: form.control, name: "currency" });
   const watchAccountType = useWatch({
@@ -150,29 +174,17 @@ export function AccountDialog({
     applyFxRate(newCurrency);
   }, [form, applyFxRate]);
 
-  // Sync form when account or initialBalance changes
+  // Reset the form when the dialog opens for an account (or for a new one).
   useEffect(() => {
     if (!open) return;
 
     if (account) {
-      const openingAmount = initialBalance?.opening_amount ?? 0;
-      const openingBase = initialBalance?.opening_base_amount ?? 0;
-      const rate = openingAmount > 0 ? openingBase / openingAmount : 1;
-
       form.reset({
         name: account.name,
         account_type: account.account_type,
         currency: account.currency,
         notes: account.notes ?? "",
-        initial_amount:
-          openingAmount > 0
-            ? formatNumberInput(String(openingAmount).replace(".", ","))
-            : "",
-        exchange_rate: formatNumberInput(String(rate).replace(".", ",")),
-        base_amount:
-          openingBase > 0
-            ? formatNumberInput(String(openingBase).replace(".", ","))
-            : "",
+        ...balanceFormValues(initialBalance),
       });
     } else {
       form.reset({
@@ -186,11 +198,24 @@ export function AccountDialog({
       });
     }
     baseManuallyEdited.current = false;
-  }, [account, open, initialBalance, form]);
+    balanceEdited.current = false;
+    // initialBalance is applied by the effect below, without resetting the rest.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account, open, form]);
+
+  // The stored balance can arrive after the dialog opened: fill the balance
+  // fields then, unless the user already typed in them.
+  useEffect(() => {
+    if (!open || !account || !initialBalance || balanceEdited.current) return;
+    const values = balanceFormValues(initialBalance);
+    form.setValue("initial_amount", values.initial_amount);
+    form.setValue("exchange_rate", values.exchange_rate);
+    form.setValue("base_amount", values.base_amount);
+  }, [open, account, initialBalance, form]);
 
   // Auto-set currency when switching to crypto account types
   useEffect(() => {
-    if (!baseCurrency || !open) return;
+    if (!baseCurrency || !open || isEditing) return;
     if (isCryptoWallet) {
       form.setValue("currency", baseCurrency);
     } else if (isCryptoExchange) {
@@ -221,6 +246,7 @@ export function AccountDialog({
   }, [open, baseCurrency, isEditing, initialBalance]);
 
   const handleInitialAmountChange = useCallback((val: string) => {
+    balanceEdited.current = true;
     const formatted = formatNumberInput(val);
     form.setValue("initial_amount", formatted);
     const amt = parseNumberInput(formatted);
@@ -246,6 +272,7 @@ export function AccountDialog({
   }, [form]);
 
   const handleRateChange = useCallback((val: string) => {
+    balanceEdited.current = true;
     const formatted = formatNumberInput(val);
     form.setValue("exchange_rate", formatted);
     baseManuallyEdited.current = false;
@@ -261,6 +288,7 @@ export function AccountDialog({
   }, [form]);
 
   const handleBaseAmountChange = useCallback((val: string) => {
+    balanceEdited.current = true;
     baseManuallyEdited.current = true;
     const formatted = formatNumberInput(val);
     form.setValue("base_amount", formatted);
@@ -278,15 +306,14 @@ export function AccountDialog({
   const onSubmit = async (values: AccountFormValues) => {
     form.clearErrors();
 
-    const initialAmountNum = parseNumberInput(values.initial_amount);
-    const rateNum = parseNumberInput(values.exchange_rate);
-    const baseAmountNum = parseNumberInput(values.base_amount);
-
-    const balanceFields = {
-      initial_amount: isNaN(initialAmountNum) ? undefined : Math.abs(initialAmountNum),
-      exchange_rate: isNaN(rateNum) ? 1 : rateNum,
-      base_amount: isNaN(baseAmountNum) ? undefined : Math.abs(baseAmountNum),
-    };
+    const balanceFields = isEditing
+      ? accountBalancePayload({
+          mode: "edit",
+          values,
+          stored: initialBalance ?? null,
+          edited: balanceEdited.current,
+        })
+      : accountBalancePayload({ mode: "create", values });
 
     try {
       if (isEditing) {
@@ -418,7 +445,7 @@ export function AccountDialog({
                       <Select
                         value={field.value}
                         onValueChange={handleCurrencyChange}
-                        disabled={isPending}
+                        disabled={isPending || isEditing}
                       >
                         <SelectTrigger className="w-full">
                           <SelectValue />
@@ -457,6 +484,12 @@ export function AccountDialog({
                         </SelectContent>
                       </Select>
                     </FormControl>
+                    {isEditing && (
+                      <p className="text-muted-foreground text-xs">
+                        La moneda no se cambia: los movimientos quedaron en esta moneda. Para otra
+                        moneda, creá una cuenta nueva.
+                      </p>
+                    )}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -574,9 +607,11 @@ export function AccountDialog({
             />
 
             <DialogFooter>
-              <Button type="submit" disabled={isPending}>
+              <Button type="submit" disabled={isPending || waitingForBalance}>
                 {isPending
                   ? "Guardando..."
+                  : waitingForBalance
+                    ? "Cargando saldo..."
                   : isEditing
                     ? "Guardar cambios"
                     : "Crear cuenta"}

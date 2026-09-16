@@ -1,13 +1,16 @@
 "use client";
 
+import { useState } from "react";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -17,10 +20,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useDebtActivities } from "@/hooks/useNetWorth";
+import { useDebtActivities, useReverseDebtActivity } from "@/hooks/useNetWorth";
 import { formatAmount } from "@/lib/format";
 import {
   DEBT_ACTIVITY_TYPE_LABELS,
+  type DebtActivity,
   type DebtActivityType,
 } from "@/types/net-worth";
 import type { NwItemWithRelations } from "@/types/net-worth";
@@ -57,6 +61,8 @@ export function DebtHistoryDialog({
   const { data: activities, isLoading } = useDebtActivities(
     open ? debt?.id ?? null : null
   );
+  const reverse = useReverseDebtActivity();
+  const [reversing, setReversing] = useState<DebtActivity | null>(null);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -87,6 +93,7 @@ export function DebtHistoryDialog({
                   <TableHead>Tipo</TableHead>
                   <TableHead className="text-right">Monto</TableHead>
                   <TableHead>Descripción</TableHead>
+                  <TableHead />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -120,6 +127,16 @@ export function DebtHistoryDialog({
                     <TableCell className="text-muted-foreground max-w-[150px] truncate text-sm">
                       {activity.description || "—"}
                     </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setReversing(activity)}
+                        disabled={reverse.isPending}
+                      >
+                        Revertir
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -127,6 +144,39 @@ export function DebtHistoryDialog({
           </div>
         )}
       </DialogContent>
+
+      <Dialog
+        open={reversing !== null}
+        onOpenChange={(next) => !next && setReversing(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              Revertir {reversing ? DEBT_ACTIVITY_TYPE_LABELS[reversing.activity_type].toLowerCase() : ""}
+            </DialogTitle>
+            <DialogDescription>
+              {reversing?.activity_type === "payment"
+                ? "El saldo de la deuda vuelve a como estaba y se elimina el gasto del pago."
+                : "El saldo de la deuda vuelve a como estaba."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setReversing(null)}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={reverse.isPending}
+              onClick={() => {
+                if (!reversing) return;
+                reverse.mutate(reversing.id, { onSettled: () => setReversing(null) });
+              }}
+            >
+              Revertir
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }

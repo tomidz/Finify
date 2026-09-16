@@ -6,8 +6,11 @@ import {
   UpdateAccountSchema,
 } from "@/lib/validations/account.schema";
 import { getOrFetchFxRate } from "@/lib/server/fx";
-import { createMonth } from "@/actions/months";
-import { recalculateOpeningBalances } from "@/lib/server/opening-balances";
+import { today } from "@/lib/dates";
+import {
+  RECALCULATION_FAILED,
+  recalculateOpeningBalances,
+} from "@/lib/server/opening-balances";
 import type { Account, Currency } from "@/types/accounts";
 
 /** Devuelve el opening_base_amount correcto usando FX si es necesario. */
@@ -27,13 +30,35 @@ async function resolveOpeningBase(
     return Math.round(openingAmount * providedRate * 100) / 100;
   }
   // Obtener TC actual del servidor (con caché en DB)
-  const today = new Date().toISOString().slice(0, 10);
-  const result = await getOrFetchFxRate({ date: today, from: accountCurrency, to: baseCurrency });
+  const result = await getOrFetchFxRate({ date: today(), from: accountCurrency, to: baseCurrency });
   if ("error" in result) return 0; // crypto u otras monedas no soportadas
   return Math.round(openingAmount * result.data * 100) / 100;
 }
 
 type ActionResult<T> = { data: T } | { error: string };
+
+type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
+
+/**
+ * Whether anything is already denominated in the account's currency: legs,
+ * lots, sales or recurring templates. (A non-zero initial balance is on the
+ * account row itself.)
+ */
+async function accountHasHistory(
+  supabase: SupabaseServerClient,
+  accountId: string,
+): Promise<ActionResult<boolean>> {
+  const countOnly = { count: "exact", head: true } as const;
+  const results = await Promise.all([
+    supabase.from("transaction_amounts").select("id", countOnly).eq("account_id", accountId),
+    supabase.from("investments").select("id", countOnly).eq("account_id", accountId),
+    supabase.from("investment_sales").select("id", countOnly).eq("account_id", accountId),
+    supabase.from("recurring_transactions").select("id", countOnly).eq("account_id", accountId),
+  ]);
+  const failed = results.find((result) => result.error);
+  if (failed?.error) return { error: failed.error.message };
+  return { data: results.some((result) => (result.count ?? 0) > 0) };
+}
 
 // --- GET ACCOUNTS ---
 export async function getAccounts(): Promise<ActionResult<Account[]>> {
@@ -121,70 +146,28 @@ export async function getAccountBalanceHistory(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    const { data: months } = await supabase
-      .from("months")
-      .select("id, year, month")
-      .eq("user_id", user.id)
-      .order("year", { ascending: true })
-      .order("month", { ascending: true });
-    if (!months || months.length === 0) return { data: [] };
-
-    const monthIds = months.map((m) => m.id);
-
-    const { data: openings } = await supabase
-      .from("opening_balances")
-      .select("month_id, opening_amount, opening_base_amount")
-      .eq("account_id", accountId)
-      .in("month_id", monthIds);
-
-    const openingByMonth = new Map<
-      string,
-      { amount: number; base: number }
-    >();
-    for (const o of openings ?? []) {
-      openingByMonth.set(o.month_id as string, {
-        amount: Number(o.opening_amount),
-        base: Number(o.opening_base_amount),
-      });
-    }
-
-    const { data: movements } = await supabase
-      .from("transaction_amounts")
-      .select(
-        "amount, base_amount, transactions!inner(month_id, user_id, deleted_at)",
-      )
-      .eq("account_id", accountId)
-      .eq("transactions.user_id", user.id)
-      .is("transactions.deleted_at", null);
-
-    const movementsByMonth = new Map<string, { amount: number; base: number }>();
-    for (const m of movements ?? []) {
-      const t = Array.isArray(m.transactions) ? m.transactions[0] : m.transactions;
-      const monthId = (t as { month_id: string })?.month_id;
-      if (!monthId) continue;
-      const current = movementsByMonth.get(monthId) ?? { amount: 0, base: 0 };
-      current.amount += Number(m.amount);
-      current.base += Number(m.base_amount);
-      movementsByMonth.set(monthId, current);
-    }
+    const { data, error } = await supabase.rpc("account_month_balances", {
+      p_account_id: accountId,
+    });
+    if (error) return { error: error.message };
 
     return {
-      data: months
-        .map((m) => {
-          const opening = openingByMonth.get(m.id) ?? { amount: 0, base: 0 };
-          const movement = movementsByMonth.get(m.id) ?? { amount: 0, base: 0 };
-          return {
-            year: m.year,
-            month: m.month,
-            opening_amount: opening.amount,
-            opening_base_amount: opening.base,
-            month_movements: movement.amount,
-            month_base_movements: movement.base,
-            closing_amount: opening.amount + movement.amount,
-            closing_base_amount: opening.base + movement.base,
-          };
-        })
-        .reverse(),
+      data: (data ?? []).map((row) => {
+        const opening = Number(row.opening_amount);
+        const openingBase = Number(row.opening_base_amount);
+        const movements = Number(row.movements);
+        const baseMovements = Number(row.base_movements);
+        return {
+          year: row.year,
+          month: row.month,
+          opening_amount: opening,
+          opening_base_amount: openingBase,
+          month_movements: movements,
+          month_base_movements: baseMovements,
+          closing_amount: opening + movements,
+          closing_base_amount: openingBase + baseMovements,
+        };
+      }),
     };
   } catch {
     return { error: "Error al obtener el historial" };
@@ -202,32 +185,20 @@ export async function getAccountInitialBalance(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    const { data: earliestMonth } = await supabase
-      .from("months")
-      .select("id")
-      .eq("user_id", user.id)
-      .order("year", { ascending: true })
-      .order("month", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (!earliestMonth) {
-      return { data: { opening_amount: 0, opening_base_amount: 0 } };
-    }
-
     const { data, error } = await supabase
-      .from("opening_balances")
-      .select("opening_amount, opening_base_amount")
-      .eq("month_id", earliestMonth.id)
-      .eq("account_id", accountId)
+      .from("accounts")
+      .select("initial_amount, initial_base_amount")
+      .eq("id", accountId)
+      .eq("user_id", user.id)
       .maybeSingle();
 
     if (error) return { error: error.message };
+    if (!data) return { error: "Cuenta no encontrada" };
 
     return {
       data: {
-        opening_amount: Number(data?.opening_amount ?? 0),
-        opening_base_amount: Number(data?.opening_base_amount ?? 0),
+        opening_amount: Number(data.initial_amount ?? 0),
+        opening_base_amount: Number(data.initial_base_amount ?? 0),
       },
     };
   } catch {
@@ -246,50 +217,18 @@ export async function getAccountCurrentBalance(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    const { data: earliestMonth } = await supabase
-      .from("months")
-      .select("id")
-      .eq("user_id", user.id)
-      .order("year", { ascending: true })
-      .order("month", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    let openingAmount = 0;
-    let openingBase = 0;
-    if (earliestMonth) {
-      const { data: opening } = await supabase
-        .from("opening_balances")
-        .select("opening_amount, opening_base_amount")
-        .eq("month_id", earliestMonth.id)
-        .eq("account_id", accountId)
-        .maybeSingle();
-      openingAmount = Number(opening?.opening_amount ?? 0);
-      openingBase = Number(opening?.opening_base_amount ?? 0);
-    }
-
-    const { data: movements, error } = await supabase
-      .from("transaction_amounts")
-      .select(
-        "amount, base_amount, transactions!inner(user_id, deleted_at)",
-      )
-      .eq("account_id", accountId)
-      .eq("transactions.user_id", user.id)
-      .is("transactions.deleted_at", null);
-
+    const { data, error } = await supabase.rpc("account_balances", {
+      p_account_ids: [accountId],
+    });
     if (error) return { error: error.message };
+    const balance = data?.[0];
+    if (!balance) return { error: "Cuenta no encontrada" };
 
-    let amount = openingAmount;
-    let baseAmount = openingBase;
-    for (const m of movements ?? []) {
-      amount += Number(m.amount);
-      baseAmount += Number(m.base_amount);
-    }
-
+    // Not rounded: a crypto balance keeps its 8 decimals.
     return {
       data: {
-        amount: Math.round(amount * 100) / 100,
-        base_amount: Math.round(baseAmount * 100) / 100,
+        amount: Number(balance.amount),
+        base_amount: Number(balance.base_amount),
       },
     };
   } catch {
@@ -318,22 +257,6 @@ export async function createAccount(
     const { initial_amount, exchange_rate, base_amount, ...accountFields } = parsed.data;
     const openingAmount = initial_amount ?? 0;
 
-    const { data, error } = await supabase
-      .from("accounts")
-      .insert({ ...accountFields, user_id: user.id })
-      .select()
-      .single();
-
-    if (error) {
-      if (error.code === "23505") {
-        return {
-          error: "Ya existe una cuenta con ese nombre, moneda y tipo",
-        };
-      }
-      return { error: error.message };
-    }
-
-    // Obtener moneda base del usuario para calcular opening_base_amount
     const { data: prefsRow } = await supabase
       .from("user_preferences")
       .select("base_currency")
@@ -349,54 +272,34 @@ export async function createAccount(
       exchange_rate,
     );
 
-    const { data: months, error: monthsError } = await supabase
-      .from("months")
-      .select("id, year, month")
-      .eq("user_id", user.id);
+    const { data, error } = await supabase
+      .from("accounts")
+      .insert({
+        ...accountFields,
+        user_id: user.id,
+        initial_amount: openingAmount,
+        initial_base_amount: openingBase,
+        initial_base_currency: baseCurrency,
+      })
+      .select()
+      .single();
 
-    if (monthsError) return { error: monthsError.message };
-
-    // Ensure the current calendar month is included (may not exist yet if
-    // the dashboard hasn't been loaded for this period)
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth() + 1;
-    const monthList = months ?? [];
-    const hasCurrentMonth = monthList.some(
-      (m) => m.year === currentYear && m.month === currentMonth,
-    );
-
-    if (!hasCurrentMonth) {
-      // Create it through createMonth so every EXISTING account gets its
-      // opening carried forward — a raw insert here used to seed only the
-      // new account, zeroing everyone else's balances for the month.
-      const created = await createMonth(currentYear, currentMonth);
-      if (!("error" in created)) {
-        monthList.push({
-          id: created.data.id,
-          year: created.data.year,
-          month: created.data.month,
-        });
+    if (error) {
+      if (error.code === "23505") {
+        return {
+          error: "Ya existe una cuenta con ese nombre, moneda y tipo",
+        };
       }
+      return { error: error.message };
     }
 
-    const openingRows = monthList.map((month) => ({
-      month_id: month.id,
-      account_id: data.id,
-      opening_amount: openingAmount,
-      opening_base_amount: openingBase,
-    }));
-
-    if (openingRows.length > 0) {
-      const { error: openingError } = await supabase
-        .from("opening_balances")
-        .upsert(openingRows, { onConflict: "month_id,account_id" });
-
-      if (openingError) return { error: openingError.message };
-    }
+    // Every existing month gets an opening row for the new account.
+    const rebuilt = await recalculateOpeningBalances(null);
+    if ("error" in rebuilt) return { error: RECALCULATION_FAILED };
 
     return { data: data as Account };
-  } catch {
+  } catch (e) {
+    console.error("createAccount:", e);
     return { error: "Error al crear la cuenta" };
   }
 }
@@ -420,9 +323,74 @@ export async function updateAccount(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
+    let current: {
+      currency: string;
+      initial_amount: number | null;
+      initial_base_amount: number | null;
+    } | null = null;
+    if (accountUpdates.currency !== undefined || initial_amount !== undefined) {
+      const { data: stored, error: storedError } = await supabase
+        .from("accounts")
+        .select("currency, initial_amount, initial_base_amount")
+        .eq("id", id)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (storedError) return { error: storedError.message };
+      if (!stored) return { error: "Cuenta no encontrada" };
+      current = stored;
+    }
+
+    if (current && accountUpdates.currency !== undefined && current.currency !== accountUpdates.currency) {
+      const history =
+        Number(current.initial_amount ?? 0) !== 0
+          ? { data: true }
+          : await accountHasHistory(supabase, id);
+      if ("error" in history) return history;
+      if (history.data) {
+        return {
+          error:
+            "No se puede cambiar la moneda de una cuenta con movimientos, inversiones o saldo inicial. Creá una cuenta nueva en la otra moneda.",
+        };
+      }
+    }
+
+    let balanceUpdate: {
+      initial_amount: number;
+      initial_base_amount: number;
+      initial_base_currency: string;
+    } | null = null;
+    if (current && initial_amount !== undefined) {
+      const { data: prefsRow } = await supabase
+        .from("user_preferences")
+        .select("base_currency")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      const baseCurrency = prefsRow?.base_currency ?? "USD";
+
+      const openingBase = await resolveOpeningBase(
+        initial_amount,
+        accountUpdates.currency ?? current.currency,
+        baseCurrency,
+        base_amount,
+        exchange_rate,
+      );
+
+      // The same balance again rewrites nothing.
+      const unchanged =
+        Number(current.initial_amount ?? 0) === initial_amount &&
+        Number(current.initial_base_amount ?? 0) === openingBase;
+      if (!unchanged) {
+        balanceUpdate = {
+          initial_amount,
+          initial_base_amount: openingBase,
+          initial_base_currency: baseCurrency,
+        };
+      }
+    }
+
     const { data, error } = await supabase
       .from("accounts")
-      .update(accountUpdates)
+      .update({ ...accountUpdates, ...balanceUpdate })
       .eq("id", id)
       .eq("user_id", user.id)
       .select()
@@ -437,53 +405,15 @@ export async function updateAccount(
       return { error: error.message };
     }
 
-    if (initial_amount !== undefined) {
-      const { data: prefsRow } = await supabase
-        .from("user_preferences")
-        .select("base_currency")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      const baseCurrency = prefsRow?.base_currency ?? "USD";
-
-      // accountUpdates.currency puede ser undefined si no se cambió; leer de la cuenta actualizada
-      const accountCurrency = accountUpdates.currency ?? data.currency;
-      const openingBase = await resolveOpeningBase(
-        initial_amount,
-        accountCurrency,
-        baseCurrency,
-        base_amount,
-        exchange_rate,
-      );
-
-      // Opening balances cascade: only the earliest month holds the real
-      // initial amount; later months are derived (prev opening + prev
-      // movements). Set the earliest month and recalc forward, matching the
-      // transaction mutation paths — never force every month to the same value.
-      const { data: earliestMonth } = await supabase
-        .from("months")
-        .select("id")
-        .eq("user_id", user.id)
-        .order("year", { ascending: true })
-        .order("month", { ascending: true })
-        .limit(1)
-        .maybeSingle();
-
-      if (earliestMonth) {
-        await supabase.from("opening_balances").upsert(
-          {
-            month_id: earliestMonth.id,
-            account_id: id,
-            opening_amount: initial_amount,
-            opening_base_amount: openingBase,
-          },
-          { onConflict: "month_id,account_id" },
-        );
-        await recalculateOpeningBalances(earliestMonth.id);
-      }
+    // The initial balance is part of every month's opening.
+    if (balanceUpdate) {
+      const rebuilt = await recalculateOpeningBalances(null);
+      if ("error" in rebuilt) return { error: RECALCULATION_FAILED };
     }
 
     return { data: data as Account };
-  } catch {
+  } catch (e) {
+    console.error("updateAccount:", e);
     return { error: "Error al actualizar la cuenta" };
   }
 }

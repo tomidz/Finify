@@ -3,6 +3,7 @@ import "server-only";
 import type { ServerContext } from "@/lib/server/context";
 import { getOrFetchFxRate } from "@/lib/server/fx";
 import { resolveCurrentPrices, type PriceRequest } from "@/lib/server/prices";
+import { today as appToday } from "@/lib/dates";
 
 type Result<T> = { data: T } | { error: string };
 
@@ -29,11 +30,6 @@ type Lot = {
 
 function priceKey(lot: Pick<Lot, "ticker" | "isin" | "asset_name">): string {
   return lot.ticker?.trim() || lot.isin?.trim() || lot.asset_name.trim();
-}
-
-function localToday(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
 /**
@@ -101,7 +97,7 @@ export async function loadInvestmentValuation(
   if ("error" in pricesResult) return pricesResult;
   const prices = pricesResult.data;
 
-  const today = localToday();
+  const today = appToday();
   const fxByCurrency = new Map<string, number>();
   const fxFactor = async (lot: Lot): Promise<Result<number>> => {
     if (lot.asset_type === "crypto" || lot.currency === baseCurrency) return { data: 1 };
