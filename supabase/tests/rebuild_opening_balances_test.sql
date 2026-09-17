@@ -4,7 +4,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 
-select plan(10);
+select plan(11);
 
 insert into auth.users (id, email) values
   ('11111111-1111-4111-8111-111111111111', 'a@finify.test'),
@@ -12,7 +12,8 @@ insert into auth.users (id, email) values
 
 insert into public.accounts (id, user_id, name, account_type, currency, is_active, initial_amount, initial_base_amount, initial_base_currency) values
   ('aaaaaaaa-0000-4000-8000-000000000001', '11111111-1111-4111-8111-111111111111', 'Banco A', 'bank', 'USD', true, 1000, 1000, 'USD'),
-  ('aaaaaaaa-0000-4000-8000-000000000002', '11111111-1111-4111-8111-111111111111', 'Caja vieja', 'cash', 'USD', false, 50, 50, 'USD');
+  ('aaaaaaaa-0000-4000-8000-000000000002', '11111111-1111-4111-8111-111111111111', 'Caja vieja', 'cash', 'USD', false, 50, 50, 'USD'),
+  ('aaaaaaaa-0000-4000-8000-000000000003', '11111111-1111-4111-8111-111111111111', 'Sin saldo inicial', 'bank', 'USD', true, null, null, null);
 insert into public.months (id, user_id, year, month) values
   ('aaaaaaaa-0000-4000-8000-000000000011', '11111111-1111-4111-8111-111111111111', 2026, 1),
   ('aaaaaaaa-0000-4000-8000-000000000012', '11111111-1111-4111-8111-111111111111', 2026, 2),
@@ -28,6 +29,9 @@ insert into public.transaction_amounts (transaction_id, account_id, amount, orig
   ('aaaaaaaa-0000-4000-8000-000000000023', 'aaaaaaaa-0000-4000-8000-000000000002', 5, 'USD', 1, 5),
   ('aaaaaaaa-0000-4000-8000-000000000024', 'aaaaaaaa-0000-4000-8000-000000000001', -999, 'USD', 1, -999);
 update public.transactions set deleted_at = now() where id = 'aaaaaaaa-0000-4000-8000-000000000024';
+-- An account the previous app version wrote: openings but no initial balance.
+insert into public.opening_balances (month_id, account_id, opening_amount, opening_base_amount) values
+  ('aaaaaaaa-0000-4000-8000-000000000011', 'aaaaaaaa-0000-4000-8000-000000000003', 300, 300);
 
 set local request.jwt.claims = '{"sub":"11111111-1111-4111-8111-111111111111","role":"authenticated"}';
 set local role authenticated;
@@ -48,6 +52,14 @@ select is(
    where account_id = 'aaaaaaaa-0000-4000-8000-000000000002' and month_id = 'aaaaaaaa-0000-4000-8000-000000000013'),
   55::numeric,
   'inactive accounts are rebuilt too'
+);
+select results_eq(
+  $$ select a.initial_amount,
+            (select ob.opening_amount from public.opening_balances ob
+             where ob.account_id = a.id and ob.month_id = 'aaaaaaaa-0000-4000-8000-000000000013')
+     from public.accounts a where a.id = 'aaaaaaaa-0000-4000-8000-000000000003' $$,
+  $$ values (300::numeric, 300::numeric) $$,
+  'an account without a stored initial balance takes it from its earliest opening'
 );
 select is_empty($$ select * from public.ledger_drift() $$, 'a rebuilt chain has no drift');
 

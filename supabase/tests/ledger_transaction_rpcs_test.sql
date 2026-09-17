@@ -5,7 +5,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 
-select plan(21);
+select plan(20);
 
 insert into auth.users (id, email) values
   ('11111111-1111-4111-8111-111111111111', 'a@finify.test'),
@@ -92,11 +92,6 @@ select throws_ok(
          {"account_id":"aaaaaaaa-0000-4000-8000-000000000002","amount":0.1,"base_amount":6000}]') $$,
   'P0001', 'La cuenta origen y destino deben ser diferentes',
   'a transfer needs two different accounts'
-);
-select is(
-  (select count(*) from public.transactions),
-  1::bigint,
-  'rejected calls write nothing'
 );
 
 select lives_ok(

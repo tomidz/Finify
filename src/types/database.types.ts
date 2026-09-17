@@ -1504,7 +1504,13 @@ export type Database = {
         Returns: undefined
       }
       sync_investment_cash: {
-        Args: { p_investment_id: string; p_rate: number; p_sale_id: string }
+        Args: {
+          p_amount?: number
+          p_in_place?: boolean
+          p_investment_id: string
+          p_rate: number
+          p_sale_id: string
+        }
         Returns: undefined
       }
       transactions_feed: {
