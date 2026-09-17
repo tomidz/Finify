@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useMemo, useState } from "react";
-import { Plus, Pencil, Trash2, RefreshCw, ChevronDown, ChevronRight, ArrowLeftRight, TrendingDown, SlidersHorizontal } from "lucide-react";
+import { Plus, Pencil, Trash2, RefreshCw, ChevronDown, ChevronRight, ArrowLeftRight, TrendingDown, SlidersHorizontal, Tag, Repeat } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -46,6 +46,7 @@ import { useAccountNetWorth } from "@/hooks/useNetWorth";
 import { ACCOUNT_TYPE_LABELS } from "@/types/accounts";
 
 import { formatAmount, amountTone } from "@/lib/format";
+import { isCashLike, lotValueInBase, priceRequestFor, type PriceRequest } from "@/lib/asset-classes";
 import {
   ASSET_TYPE_LABELS,
   INVESTMENT_ACCOUNT_TYPES,
@@ -56,6 +57,8 @@ import { InvestmentDialog } from "./InvestmentDialog";
 import { SellInvestmentDialog } from "./SellInvestmentDialog";
 import { TransferPositionDialog } from "./TransferPositionDialog";
 import { AdjustPositionDialog } from "./AdjustPositionDialog";
+import { ManualPriceDialog } from "./ManualPriceDialog";
+import { SwapInvestmentDialog } from "./SwapInvestmentDialog";
 
 export function InvestmentsTable() {
   const { data: investments, isLoading, isError, error, refetch } = useInvestments();
@@ -86,27 +89,19 @@ export function InvestmentsTable() {
     return found?.symbol ?? baseCurrency;
   }, [baseCurrency, currencies]);
 
-  // Get unique tickers for price fetching
+  // One price lookup per distinct lot lookup.
   const tickersForPricing = useMemo(() => {
     if (!investments) return [];
-    const unique = new Map<
-      string,
-      { key: string; ticker?: string | null; isin?: string | null; assetType: string }
-    >();
+    const unique = new Map<string, PriceRequest>();
     for (const inv of investments) {
-      const key = inv.ticker?.trim() || inv.isin?.trim() || inv.asset_name.trim();
-      unique.set(key, {
-        key,
-        ticker: inv.ticker,
-        isin: inv.isin,
-        assetType: inv.asset_type,
-      });
+      const request = priceRequestFor(inv);
+      unique.set(request.key, request);
     }
     return Array.from(unique.values());
   }, [investments]);
 
   const {
-    data: prices,
+    data: priceData,
     refresh: refetchPrices,
     isFetching: fetchingPrices,
   } = useCurrentPrices(tickersForPricing, baseCurrency ?? "USD");
@@ -128,12 +123,25 @@ export function InvestmentsTable() {
       const totalCost = group.reduce((s, i) => s + i.total_cost, 0);
       const avgCost = totalQty > 0 ? totalCost / totalQty : 0;
       const ticker = first.ticker ?? first.asset_name;
-      const priceKey = first.ticker?.trim() || first.isin?.trim() || first.asset_name.trim();
-      const currentPrice = prices?.[priceKey] ?? null;
+      // Each lot at its own lookup's price, like the per-account valuation;
+      // a lot without one counts at cost while another lot has a price.
+      const pricedLot = group
+        .map((inv) => ({ inv, key: priceRequestFor(inv).key }))
+        .find(({ key }) => priceData?.prices[key] != null);
+      const priceKey = pricedLot?.key ?? null;
+      const currentPrice = priceKey !== null ? priceData!.prices[priceKey] : null;
       const currentValue =
-        currentPrice !== null ? totalQty * currentPrice : null;
+        priceKey !== null
+          ? group.reduce((s, inv) => {
+              const price = priceData!.prices[priceRequestFor(inv).key];
+              return s + (price != null ? inv.quantity * price : inv.total_cost);
+            }, 0)
+          : null;
+      // Money held (cash, stablecoins) shows no gain or loss.
       const gainLoss =
-        currentValue !== null ? currentValue - totalCost : null;
+        currentValue !== null && !isCashLike(first.asset_type)
+          ? currentValue - totalCost
+          : null;
       const gainLossPct =
         gainLoss !== null && totalCost > 0
           ? (gainLoss / totalCost) * 100
@@ -152,13 +160,14 @@ export function InvestmentsTable() {
         avg_cost_per_unit: avgCost,
         total_cost: totalCost,
         current_price: currentPrice,
+        manual_price_date: priceKey !== null ? (priceData!.manualDates[priceKey] ?? null) : null,
         current_value: currentValue,
         gain_loss: gainLoss,
         gain_loss_pct: gainLossPct,
         investments: group,
       };
     });
-  }, [investments, prices]);
+  }, [investments, priceData]);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingInvestment, setEditingInvestment] =
@@ -172,6 +181,8 @@ export function InvestmentsTable() {
   const [sellDialogOpen, setSellDialogOpen] = useState(false);
   const [adjustHolding, setAdjustHolding] = useState<HoldingPosition | null>(null);
   const [adjustDialogOpen, setAdjustDialogOpen] = useState(false);
+  const [pricingHolding, setPricingHolding] = useState<HoldingPosition | null>(null);
+  const [swapHolding, setSwapHolding] = useState<HoldingPosition | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [assetTypeFilter, setAssetTypeFilter] = useState("all");
   const [accountFilter, setAccountFilter] = useState("all");
@@ -235,6 +246,37 @@ export function InvestmentsTable() {
 
   // Grouped views: by account or by asset (combining the same asset across
   // accounts). Each group carries its own cost/current/gain subtotals.
+  // Market value and cost per account in the base currency, from the same
+  // prices as the rows; null for an account with a lot in a currency without
+  // a rate.
+  const valuationByAccount = useMemo(() => {
+    if (!investments || !priceData) return undefined;
+    const byAccount: Record<string, { current: number; cost: number } | null> = {};
+    for (const inv of investments) {
+      const value = lotValueInBase(inv, priceData.prices, priceData.ratesToBase);
+      const entry = byAccount[inv.account_id] === undefined ? { current: 0, cost: 0 } : byAccount[inv.account_id];
+      byAccount[inv.account_id] =
+        entry && value ? { current: entry.current + value.current, cost: entry.cost + value.cost } : null;
+    }
+    return byAccount;
+  }, [investments, priceData]);
+
+  // Holdings are in their own currency and totals in the base currency: a
+  // total with a holding whose rate is not known yet is unknown too.
+  const sumInBase = useCallback(
+    (holdings: HoldingPosition[], amountOf: (holding: HoldingPosition) => number) => {
+      let total = 0;
+      for (const holding of holdings) {
+        const rate =
+          holding.currency === baseCurrency ? 1 : priceData?.ratesToBase[holding.currency];
+        if (rate == null) return null;
+        total += amountOf(holding) * rate;
+      }
+      return total;
+    },
+    [priceData, baseCurrency],
+  );
+
   const groupedHoldings = useMemo(() => {
     if (viewMode === "flat") return null;
 
@@ -255,34 +297,35 @@ export function InvestmentsTable() {
 
     return Array.from(groups.values())
       .map((group) => {
-        const cost = group.items.reduce((s, h) => s + h.total_cost, 0);
-        // Unpriced holdings count at cost, same as the summary cards.
-        const current = group.items.reduce(
-          (s, h) => s + (h.current_value ?? h.total_cost),
-          0,
+        // Unpriced holdings count at cost, same as the summary cards; money
+        // held counts at its value on both sides.
+        const cost = sumInBase(group.items, (h) =>
+          isCashLike(h.asset_type) ? (h.current_value ?? h.total_cost) : h.total_cost,
         );
-        const gain = current - cost;
-        const gainPct = cost > 0 ? (gain / cost) * 100 : null;
+        const current = sumInBase(group.items, (h) => h.current_value ?? h.total_cost);
+        const gain = cost !== null && current !== null ? current - cost : null;
+        const gainPct = gain !== null && cost! > 0 ? (gain / cost!) * 100 : null;
         return { ...group, cost, current, gain, gainPct };
       })
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [viewMode, filteredHoldings]);
+  }, [viewMode, filteredHoldings, sumInBase]);
 
   // Holdings without a live price are valued at cost (same fallback the
   // server uses). One unpriced asset used to blank the whole summary.
+  // Cash and stablecoins held in the accounts count as cash, not as invested.
   const summaryTotals = useMemo(() => {
-    const invested = filteredHoldings.reduce((sum, h) => sum + h.total_cost, 0);
-    const current = filteredHoldings.reduce(
-      (sum, h) => sum + (h.current_value ?? h.total_cost),
-      0,
+    const positions = filteredHoldings.filter((h) => !isCashLike(h.asset_type));
+    const invested = sumInBase(positions, (h) => h.total_cost);
+    const current = sumInBase(positions, (h) => h.current_value ?? h.total_cost);
+    const gain = invested !== null && current !== null ? current - invested : null;
+    const gainPct = gain !== null && invested! > 0 ? (gain / invested!) * 100 : null;
+    const unpricedCount = positions.filter((h) => h.current_value === null).length;
+    const cashHeld = sumInBase(
+      filteredHoldings.filter((h) => isCashLike(h.asset_type)),
+      (h) => h.current_value ?? h.total_cost,
     );
-    const gain = current - invested;
-    const gainPct = invested > 0 ? (gain / invested) * 100 : null;
-    const unpricedCount = filteredHoldings.filter(
-      (h) => h.current_value === null,
-    ).length;
-    return { invested, current, gain, gainPct, unpricedCount };
-  }, [filteredHoldings]);
+    return { invested, current, gain, gainPct, unpricedCount, cashHeld };
+  }, [filteredHoldings, sumInBase]);
 
   const hasActiveFilters =
     searchTerm.trim().length > 0 ||
@@ -345,6 +388,8 @@ export function InvestmentsTable() {
           setAdjustHolding(selectedHolding);
           setAdjustDialogOpen(true);
         }}
+        onSetPrice={setPricingHolding}
+        onSwap={setSwapHolding}
         onEdit={handleEdit}
         onDelete={setDeletingInvestment}
       />
@@ -443,7 +488,9 @@ export function InvestmentsTable() {
       <InvestmentsSummaryCards
         holdingsCount={filteredHoldings.length}
         currencySymbol={currencySymbol}
-        totalCashUninvested={totalCashUninvested}
+        totalCashUninvested={
+          summaryTotals.cashHeld !== null ? totalCashUninvested + summaryTotals.cashHeld : null
+        }
         totalInvested={summaryTotals.invested}
         totalCurrentValue={summaryTotals.current}
         totalGainLoss={summaryTotals.gain}
@@ -453,6 +500,7 @@ export function InvestmentsTable() {
 
       <InvestmentAccountsBreakdown
         accounts={investmentAccounts}
+        valuationByAccount={valuationByAccount}
         currencySymbol={currencySymbol}
       />
 
@@ -508,7 +556,7 @@ export function InvestmentsTable() {
                       </span>
                     </TableCell>
                     <TableCell className="text-right font-semibold">
-                      {currencySymbol} {formatAmount(group.cost)}
+                      {group.cost !== null ? `${currencySymbol} ${formatAmount(group.cost)}` : "—"}
                     </TableCell>
                     <TableCell />
                     <TableCell className="text-right font-semibold">
@@ -580,6 +628,16 @@ export function InvestmentsTable() {
         }}
       />
 
+      <SwapInvestmentDialog
+        holding={swapHolding}
+        onOpenChange={(open) => !open && setSwapHolding(null)}
+      />
+
+      <ManualPriceDialog
+        holding={pricingHolding}
+        onOpenChange={(open) => !open && setPricingHolding(null)}
+      />
+
       {/* Delete Confirmation Dialog */}
       <Dialog
         open={!!deletingInvestment}
@@ -630,8 +688,8 @@ const InvestmentsSummaryCards = React.memo(function InvestmentsSummaryCards({
 }: {
   holdingsCount: number;
   currencySymbol: string;
-  totalCashUninvested: number;
-  totalInvested: number;
+  totalCashUninvested: number | null;
+  totalInvested: number | null;
   totalCurrentValue: number | null;
   totalGainLoss: number | null;
   totalGainLossPct: number | null;
@@ -647,7 +705,7 @@ const InvestmentsSummaryCards = React.memo(function InvestmentsSummaryCards({
         </CardHeader>
         <CardContent className="px-4 pb-4">
           <p className="text-2xl font-bold">
-            {currencySymbol} {formatAmount(totalCashUninvested)}
+            {totalCashUninvested !== null ? `${currencySymbol} ${formatAmount(totalCashUninvested)}` : "—"}
           </p>
         </CardContent>
       </Card>
@@ -658,7 +716,7 @@ const InvestmentsSummaryCards = React.memo(function InvestmentsSummaryCards({
         </CardHeader>
         <CardContent className="px-4 pb-4">
           <p className="text-2xl font-bold">
-            {currencySymbol} {formatAmount(totalInvested)}
+            {totalInvested !== null ? `${currencySymbol} ${formatAmount(totalInvested)}` : "—"}
           </p>
         </CardContent>
       </Card>
@@ -715,9 +773,12 @@ type InvestmentAccountBreakdownRow = {
 
 const InvestmentAccountsBreakdown = React.memo(function InvestmentAccountsBreakdown({
   accounts,
+  valuationByAccount,
   currencySymbol,
 }: {
   accounts: InvestmentAccountBreakdownRow[];
+  /** Market value and cost per account, in the base currency. */
+  valuationByAccount: Record<string, { current: number; cost: number } | null> | undefined;
   currencySymbol: string;
 }) {
   if (accounts.length === 0) return null;
@@ -733,15 +794,19 @@ const InvestmentAccountsBreakdown = React.memo(function InvestmentAccountsBreakd
             <TableRow>
               <TableHead>Cuenta</TableHead>
               <TableHead>Tipo</TableHead>
-              <TableHead className="text-right">Cash sin invertir</TableHead>
-              <TableHead className="text-right">Invertido (costo)</TableHead>
+              <TableHead className="text-right">Efectivo</TableHead>
+              <TableHead className="text-right">Costo</TableHead>
+              <TableHead className="text-right">Valor actual</TableHead>
               <TableHead className="text-right">Total</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {accounts.map((account) => {
               const cash = account.balance_base;
-              const invested = account.investment_value_base;
+              const valuation = valuationByAccount?.[account.id];
+              const cost = valuation?.cost ?? account.investment_value_base;
+              // Until prices arrive the holdings count at cost.
+              const current = valuation?.current ?? cost;
               const label =
                 ACCOUNT_TYPE_LABELS[
                   account.account_type as keyof typeof ACCOUNT_TYPE_LABELS
@@ -755,11 +820,14 @@ const InvestmentAccountsBreakdown = React.memo(function InvestmentAccountsBreakd
                   <TableCell className="text-right">
                     {currencySymbol} {formatAmount(cash)}
                   </TableCell>
+                  <TableCell className="text-right text-muted-foreground">
+                    {currencySymbol} {formatAmount(cost)}
+                  </TableCell>
                   <TableCell className="text-right">
-                    {currencySymbol} {formatAmount(invested)}
+                    {currencySymbol} {formatAmount(current)}
                   </TableCell>
                   <TableCell className="text-right font-medium">
-                    {currencySymbol} {formatAmount(cash + invested)}
+                    {currencySymbol} {formatAmount(cash + current)}
                   </TableCell>
                 </TableRow>
               );
@@ -778,6 +846,8 @@ const HoldingRows = React.memo(function HoldingRows({
   onTransfer,
   onSell,
   onAdjust,
+  onSetPrice,
+  onSwap,
   onEdit,
   onDelete,
 }: {
@@ -787,6 +857,8 @@ const HoldingRows = React.memo(function HoldingRows({
   onTransfer: (holding: HoldingPosition) => void;
   onSell: (holding: HoldingPosition) => void;
   onAdjust: (holding: HoldingPosition) => void;
+  onSetPrice: (holding: HoldingPosition) => void;
+  onSwap: (holding: HoldingPosition) => void;
   onEdit: (investment: InvestmentWithAccount) => void;
   onDelete: (investment: InvestmentWithAccount) => void;
 }) {
@@ -830,6 +902,11 @@ const HoldingRows = React.memo(function HoldingRows({
           {holding.current_price !== null
             ? `${holding.currency_symbol} ${formatAmount(holding.current_price)}`
             : "—"}
+          {holding.manual_price_date && (
+            <div className="text-muted-foreground text-[11px]">
+              manual del {holding.manual_price_date.slice(8, 10)}/{holding.manual_price_date.slice(5, 7)}
+            </div>
+          )}
         </TableCell>
         <TableCell className="text-right">
           {holding.current_value !== null
@@ -837,7 +914,9 @@ const HoldingRows = React.memo(function HoldingRows({
             : "—"}
         </TableCell>
         <TableCell className="text-right">
-          {holding.gain_loss !== null ? (
+          {isCashLike(holding.asset_type) ? (
+            <span className="text-muted-foreground text-xs">Efectivo</span>
+          ) : holding.gain_loss !== null ? (
             <div>
               <span className={`text-sm font-medium ${amountTone(holding.gain_loss)}`}>
                 {formatAmount(holding.gain_loss)}
@@ -858,9 +937,17 @@ const HoldingRows = React.memo(function HoldingRows({
               <Button variant="ghost" size="icon" aria-label="Vender" onClick={() => onSell(holding)}>
                 <TrendingDown className="size-4" />
               </Button>
+              <Button variant="ghost" size="icon" aria-label="Intercambiar" onClick={() => onSwap(holding)}>
+                <Repeat className="size-4" />
+              </Button>
               <Button variant="ghost" size="icon" aria-label="Ajustar posición" onClick={() => onAdjust(holding)}>
                 <SlidersHorizontal className="size-4" />
               </Button>
+              {!isCashLike(holding.asset_type) && (
+                <Button variant="ghost" size="icon" aria-label="Precio manual" onClick={() => onSetPrice(holding)}>
+                  <Tag className="size-4" />
+                </Button>
+              )}
               <Button variant="ghost" size="icon" aria-label="Transferir posicion" onClick={() => onTransfer(holding)}>
                 <ArrowLeftRight className="size-4" />
               </Button>
@@ -887,6 +974,17 @@ const HoldingRows = React.memo(function HoldingRows({
               <Button
                 variant="ghost"
                 size="icon"
+                aria-label="Intercambiar"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSwap(holding);
+                }}
+              >
+                <Repeat className="size-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
                 aria-label="Ajustar posición"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -895,6 +993,19 @@ const HoldingRows = React.memo(function HoldingRows({
               >
                 <SlidersHorizontal className="size-4" />
               </Button>
+              {!isCashLike(holding.asset_type) && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Precio manual"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSetPrice(holding);
+                  }}
+                >
+                  <Tag className="size-4" />
+                </Button>
+              )}
               <span className="text-xs text-muted-foreground">{holding.investments.length} compras</span>
             </div>
           )}

@@ -14,6 +14,10 @@ function store(options: { base: string; accounts: number; budgetLines: number })
   return (query: RecordedQuery): Response => {
     if (query.table === "accounts") return { data: null, error: null, count: options.accounts };
     if (query.table === "budget_lines") return { data: null, error: null, count: options.budgetLines };
+    if (query.table === "currencies") {
+      const code = argsOf(query, "eq")?.[1];
+      return { data: { currency_type: code === "BTC" ? "crypto" : "fiat" }, error: null };
+    }
     if (query.table === "user_preferences" && argsOf(query, "upsert")) {
       const row = argsOf(query, "upsert")![0] as { base_currency: string; fx_source?: string };
       return { data: { base_currency: row.base_currency, fx_source: row.fx_source ?? "frankfurter" }, error: null };
@@ -51,6 +55,14 @@ describe("base currency lock", () => {
     expect(await updateUserPreferences({ base_currency: "EUR" })).toEqual({
       data: { base_currency: "EUR", fx_source: "frankfurter", base_currency_locked: false },
     });
+  });
+
+  it("refuses a crypto base currency", async () => {
+    respond = store({ base: "USD", accounts: 0, budgetLines: 0 });
+    expect(await updateUserPreferences({ base_currency: "BTC" })).toEqual({
+      error: "La moneda base tiene que ser una moneda fiat.",
+    });
+    expect(upserts()).toHaveLength(0);
   });
 
   it("still saves other preferences with data present", async () => {

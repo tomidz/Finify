@@ -113,7 +113,9 @@ export default function SettingsPage() {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {(currencies ?? []).map((c) => (
+                          {(currencies ?? [])
+                            .filter((c) => c.currency_type === "fiat")
+                            .map((c) => (
                             <SelectItem key={c.code} value={c.code}>
                               {c.code} ({c.symbol})
                             </SelectItem>

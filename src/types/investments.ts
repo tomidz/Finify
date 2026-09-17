@@ -1,4 +1,4 @@
-export const ASSET_TYPES = ["stock", "etf", "crypto", "bond", "other"] as const;
+export const ASSET_TYPES = ["stock", "etf", "crypto", "bond", "stablecoin", "cash", "other"] as const;
 
 /** Account types that can hold investments (single source of truth). */
 export const INVESTMENT_ACCOUNT_TYPES = new Set([
@@ -13,6 +13,8 @@ export const ASSET_TYPE_LABELS: Record<AssetType, string> = {
   etf: "ETF",
   crypto: "Crypto",
   bond: "Bono",
+  stablecoin: "Stablecoin",
+  cash: "Efectivo",
   other: "Otro",
 };
 
@@ -70,6 +72,8 @@ export interface HoldingPosition {
   avg_cost_per_unit: number;
   total_cost: number;
   current_price: number | null;
+  /** Set when the current price is a manual one: the date it was set for. */
+  manual_price_date: string | null;
   current_value: number | null;
   gain_loss: number | null;
   gain_loss_pct: number | null;
@@ -112,6 +116,8 @@ export interface InvestmentSale {
   currency: string;
   sale_date: string;
   notes: string | null;
+  /** The lot a swap bought with this sale; null for a sale. */
+  swap_lot_id: string | null;
   created_at: string;
   updated_at: string;
 }

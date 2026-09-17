@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import type { Json, TablesUpdate } from "@/types/database.types";
 import { getOrFetchFxRate } from "@/lib/server/fx";
+import { today as appToday } from "@/lib/dates";
 import { resolveFxRates } from "@/lib/server/fx-range";
 import { ledgerRpcError } from "@/lib/server/ledger-rpc";
 import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
@@ -11,11 +12,14 @@ import {
   type ValuationByAccount,
   type ValuationByMonth,
 } from "@/lib/server/investment-valuation";
-import { resolveCurrentPrices } from "@/lib/server/prices";
+import { priceCacheKey, resolvePricesWithSources, type ResolvedPrices } from "@/lib/server/prices";
+import { priceRequestFor, type PriceRequest } from "@/lib/asset-classes";
 import {
   AdjustInvestmentPositionSchema,
   CreateInvestmentSchema,
+  ManualPriceSchema,
   SellInvestmentSchema,
+  SwapInvestmentSchema,
   TransferInvestmentPositionSchema,
   UpdateInvestmentSchema,
 } from "@/lib/validations/investment.schema";
@@ -754,6 +758,7 @@ export async function getInvestmentSales(): Promise<
         currency: row.currency,
         sale_date: row.sale_date,
         notes: row.notes,
+        swap_lot_id: row.swap_lot_id,
         created_at: row.created_at,
         updated_at: row.updated_at,
         account_name: (account as { name?: string })?.name ?? "",
@@ -799,16 +804,113 @@ export async function deleteInvestmentSale(
   }
 }
 
+/**
+ * Exchanges one asset for another inside an account at market value, without
+ * moving the account's cash: the asset given is sold at that value and the
+ * asset received is bought at it (swap_investment_lots, 0051).
+ */
+export async function swapInvestment(
+  input: unknown,
+): Promise<ActionResult<{ id: string }>> {
+  try {
+    const parsed = SwapInvestmentSchema.safeParse(input);
+    if (!parsed.success) {
+      return { error: parsed.error.issues[0]?.message ?? "Datos inválidos" };
+    }
+
+    const userId = await getUserId();
+    if (!userId) return { error: "No autenticado" };
+
+    const supabase = await createClient();
+    const { data, error } = await supabase.rpc("swap_investment_lots", {
+      p_swap: {
+        ...parsed.data,
+        notes: parsed.data.notes ?? null,
+      },
+    });
+    if (error) {
+      return ledgerRpcError("swap_investment_lots", error, "Error al registrar el intercambio");
+    }
+    return { data: { id: data } };
+  } catch (e) {
+    console.error("swapInvestment:", e);
+    return { error: "Error al registrar el intercambio" };
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Precios actuales                                                     */
 /* ------------------------------------------------------------------ */
 
 export async function fetchCurrentPrices(
-  tickers: { key: string; ticker?: string | null; isin?: string | null; assetType: string }[],
+  tickers: PriceRequest[],
   baseCurrency: string,
   fresh = false,
-): Promise<ActionResult<Record<string, number>>> {
+): Promise<ActionResult<ResolvedPrices>> {
   const ctx = await getServerContext();
   if (!ctx) return { error: "No autenticado" };
-  return resolveCurrentPrices(tickers, baseCurrency, ctx, { fresh: fresh === true });
+  return resolvePricesWithSources(tickers, baseCurrency, ctx, { fresh: fresh === true });
+}
+
+/**
+ * A price the user sets for an asset no provider quotes, in the holding's
+ * currency. It is used while no provider answers, and a quote from a provider
+ * replaces it.
+ */
+export async function setManualPrice(
+  input: unknown,
+): Promise<ActionResult<null>> {
+  try {
+    const parsed = ManualPriceSchema.safeParse(input);
+    if (!parsed.success) {
+      return { error: parsed.error.issues[0]?.message ?? "Datos inválidos" };
+    }
+
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
+    const baseCurrency = await loadBaseCurrency(ctx);
+    if ("error" in baseCurrency) return baseCurrency;
+
+    const { lots, asset_type, currency, date } = parsed.data;
+    // Crypto prices are stored in the base currency, like CoinGecko's.
+    let price = parsed.data.price;
+    if (asset_type === "crypto" && currency !== baseCurrency.data) {
+      const fx = await getOrFetchFxRate({ date: appToday(), from: currency, to: baseCurrency.data });
+      if ("error" in fx) return { error: fx.error };
+      price *= fx.data;
+    }
+
+    const keys = new Set(
+      lots.map((lot) =>
+        priceCacheKey(
+          priceRequestFor({
+            asset_name: lot.asset_name,
+            ticker: lot.ticker ?? null,
+            isin: lot.isin ?? null,
+            asset_type,
+            currency,
+          }),
+          baseCurrency.data,
+        ),
+      ),
+    );
+    const { error } = await ctx.supabase.from("instrument_prices").upsert(
+      [...keys].map((price_key) => ({
+        user_id: ctx.userId,
+        price_key,
+        price,
+        source: "manual",
+        fetched_at: `${date}T12:00:00Z`,
+      })),
+      { onConflict: "user_id,price_key" },
+    );
+    if (error) {
+      console.error("setManualPrice:", error.code, error.message);
+      return { error: "No se pudo guardar el precio" };
+    }
+    return { data: null };
+  } catch (e) {
+    console.error("setManualPrice:", e);
+    return { error: "No se pudo guardar el precio" };
+  }
 }

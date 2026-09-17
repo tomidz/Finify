@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { argsOf, fakeSupabase, type RecordedQuery } from "../../../tests/support/fake-supabase";
 
 const fetchCryptoPrices = vi.fn();
+const getOrFetchFxRate = vi.fn();
 const fetchTwelveDataPrices = vi.fn();
 const yahooQuote = vi.fn();
 
@@ -12,18 +13,30 @@ vi.mock("@/lib/coingecko", () => ({
 vi.mock("@/lib/twelvedata", () => ({
   fetchTwelveDataPrices: (...args: unknown[]) => fetchTwelveDataPrices(...args),
 }));
+vi.mock("@/lib/server/fx", () => ({
+  getOrFetchFxRate: (...args: unknown[]) => getOrFetchFxRate(...args),
+}));
 vi.mock("yahoo-finance2", () => ({
   default: { quote: (...args: unknown[]) => yahooQuote(...args) },
 }));
 
-const { resolveCurrentPrices } = await import("./prices");
+const { resolvePricesWithSources } = await import("./prices");
 
-function context(cachedRows: { price_key: string; price: number }[]) {
-  const fake = fakeSupabase((query: RecordedQuery) =>
-    argsOf(query, "upsert")
-      ? { data: null, error: null }
-      : { data: cachedRows, error: null },
-  );
+const resolveCurrentPrices = async (...args: Parameters<typeof resolvePricesWithSources>) => {
+  const result = await resolvePricesWithSources(...args);
+  return "error" in result ? result : { data: result.data.prices };
+};
+
+function context(cachedRows: { price_key: string; price: number; source?: string; fetched_at?: string }[]) {
+  const filtersSource = (query: RecordedQuery, method: string) =>
+    query.calls.some((call) => call.method === method && call.args[0] === "source");
+  const fake = fakeSupabase((query: RecordedQuery) => {
+    if (argsOf(query, "upsert")) return { data: null, error: null };
+    const rows = cachedRows.filter((row) =>
+      filtersSource(query, "eq") ? row.source === "manual" : filtersSource(query, "neq") ? row.source !== "manual" : true,
+    );
+    return { data: rows, error: null };
+  });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return { ...fake, ctx: { supabase: fake.client as any, userId: "user-1" } };
 }
@@ -36,6 +49,13 @@ describe("resolveCurrentPrices", () => {
     fetchCryptoPrices.mockReset().mockResolvedValue({});
     fetchTwelveDataPrices.mockReset().mockResolvedValue({});
     yahooQuote.mockReset();
+    getOrFetchFxRate.mockReset().mockImplementation(async ({ from, to }: { from: string; to: string }) =>
+      from === "EUR" && to === "USD"
+        ? { data: 1.1 }
+        : from === "USD" && to === "EUR"
+          ? { data: 0.9 }
+          : { error: "sin cotización" },
+    );
   });
 
   it("serves fresh cached prices without calling any provider", async () => {
@@ -157,5 +177,133 @@ describe("resolveCurrentPrices", () => {
       "USD",
     );
     expect(result).toEqual({ data: { eth: 3_000 } });
+  });
+
+  it("prices cash and stablecoins at the exchange rate, without asking a provider", async () => {
+    const { ctx } = context([]);
+    const result = await resolveCurrentPrices(
+      [
+        { key: "cash:EUR:USD", ticker: "EUR", assetType: "cash", currency: "USD" },
+        { key: "cash:USD:USD", ticker: "USD", assetType: "cash", currency: "USD" },
+        { key: "cash:USDT:USD", ticker: "USDT", assetType: "stablecoin", currency: "USD" },
+      ],
+      "USD",
+      ctx,
+    );
+    expect(result).toEqual({ data: { "cash:EUR:USD": 1.1, "cash:USD:USD": 1, "cash:USDT:USD": 1 } });
+    expect(fetchCryptoPrices).not.toHaveBeenCalled();
+    expect(fetchTwelveDataPrices).not.toHaveBeenCalled();
+  });
+
+  it("never asks a market provider about a currency code held as an asset", async () => {
+    const { ctx } = context([]);
+    const result = await resolveCurrentPrices(
+      [
+        { key: "usd", ticker: "USD", assetType: "stock", currency: "USD" },
+        { key: "eur", ticker: "EUR", assetType: "other", currency: "USD" },
+        { key: "usdt", ticker: "USDT", assetType: "other", currency: "USD" },
+      ],
+      "USD",
+      ctx,
+    );
+    expect(result).toEqual({ data: {} });
+    expect(fetchTwelveDataPrices).not.toHaveBeenCalled();
+  });
+
+  it("asks about a stock whose ticker is a currency code held in another currency", async () => {
+    const { ctx } = context([]);
+    fetchTwelveDataPrices.mockResolvedValue({ "market:NOK|": { price: 4.5 } });
+    const result = await resolveCurrentPrices([{ key: "nok", ticker: "NOK", assetType: "stock", currency: "USD" }], "USD", ctx);
+    expect(result).toEqual({ data: { nok: 4.5 } });
+  });
+
+  it("quotes a stock even when money filed under its ticker is looked up too", async () => {
+    const { ctx } = context([]);
+    fetchTwelveDataPrices.mockResolvedValue({ "market:NOK|": { price: 4.5 } });
+    const result = await resolveCurrentPrices(
+      [
+        { key: "nok-cash", ticker: "NOK", assetType: "other", currency: "NOK" },
+        { key: "nokia", ticker: "NOK", assetType: "stock", currency: "USD" },
+      ],
+      "USD",
+      ctx,
+    );
+    expect(result).toEqual({ data: { nokia: 4.5 } });
+  });
+
+  it("uses a manual price, with its date, while no provider quotes the asset", async () => {
+    const { ctx } = context([
+      { price_key: "market:GGALD|", price: 1500, source: "manual", fetched_at: "2026-09-01T12:00:00+00:00" },
+    ]);
+    const result = await resolvePricesWithSources([{ key: "GGALD", ticker: "GGALD", assetType: "stock" }], "USD", ctx);
+    expect(result).toEqual({
+      data: { prices: { GGALD: 1500 }, manualDates: { GGALD: "2026-09-01" }, ratesToBase: { USD: 1 } },
+    });
+  });
+
+  it("gives a currency code held as an asset its manual price", async () => {
+    const { ctx } = context([
+      { price_key: "unlisted:etf:USD:USD", price: 81, source: "manual", fetched_at: "2026-09-01T12:00:00+00:00" },
+    ]);
+    const result = await resolveCurrentPrices([{ key: "usd", ticker: "USD", assetType: "etf", currency: "USD" }], "USD", ctx);
+    expect(result).toEqual({ data: { usd: 81 } });
+  });
+
+  it("gives a holding with neither ticker nor ISIN only the manual price set under its name", async () => {
+    const { ctx } = context([
+      { price_key: "unlisted:bond:USD:Plazo fijo", price: 1.05, source: "manual", fetched_at: "2026-09-01T12:00:00+00:00" },
+    ]);
+    const result = await resolveCurrentPrices(
+      [
+        { key: "plazo", ticker: null, isin: null, name: "Plazo fijo", assetType: "bond", currency: "USD" },
+        { key: "plazo-ars", ticker: null, isin: null, name: "Plazo fijo", assetType: "bond", currency: "ARS" },
+        { key: "depto", ticker: null, isin: null, name: "Departamento", assetType: "other", currency: "USD" },
+      ],
+      "USD",
+      ctx,
+    );
+    expect(result).toEqual({ data: { plazo: 1.05 } });
+    expect(fetchTwelveDataPrices).not.toHaveBeenCalled();
+    expect(yahooQuote).not.toHaveBeenCalled();
+  });
+
+  it("never takes a manual price for a fresh quote, whatever its date", async () => {
+    const { ctx } = context([
+      { price_key: "market:GGALD|", price: 1500, source: "manual", fetched_at: "2026-12-01T12:00:00+00:00" },
+    ]);
+    fetchTwelveDataPrices.mockResolvedValue({ "market:GGALD|": { price: 1600 } });
+    const result = await resolveCurrentPrices([{ key: "GGALD", ticker: "GGALD", assetType: "stock" }], "USD", ctx);
+    expect(result).toEqual({ data: { GGALD: 1600 } });
+  });
+
+  it("prices a crypto lot in its own currency and reports each currency's rate to the base", async () => {
+    const { ctx } = context([]);
+    fetchCryptoPrices.mockResolvedValue({ BTC: 100_000 });
+    const result = await resolvePricesWithSources(
+      [
+        { key: "btc-usd", ticker: "BTC", assetType: "crypto", currency: "USD" },
+        { key: "btc-eur", ticker: "BTC", assetType: "crypto", currency: "EUR" },
+      ],
+      "USD",
+      ctx,
+    );
+    expect(result).toEqual({
+      data: { prices: { "btc-usd": 100_000, "btc-eur": 90_000 }, manualDates: {}, ratesToBase: { USD: 1, EUR: 1.1 } },
+    });
+    expect(fetchCryptoPrices).toHaveBeenCalledTimes(1);
+  });
+
+  it("prefers a provider quote over a manual price", async () => {
+    const { ctx } = context([
+      { price_key: "market:GGALD|", price: 1500, source: "manual", fetched_at: "2026-09-01T12:00:00+00:00" },
+    ]);
+    fetchTwelveDataPrices.mockResolvedValue({ "market:GGALD|": { price: 1600 } });
+    const result = await resolvePricesWithSources(
+      [{ key: "GGALD", ticker: "GGALD", assetType: "stock" }],
+      "USD",
+      ctx,
+      { fresh: true },
+    );
+    expect(result).toEqual({ data: { prices: { GGALD: 1600 }, manualDates: {}, ratesToBase: { USD: 1 } } });
   });
 });

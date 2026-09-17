@@ -18,15 +18,20 @@ import {
   fetchCurrentPrices,
   lookupInvestmentInstrument,
   sellInvestment,
+  setManualPrice,
+  swapInvestment,
   transferInvestmentPosition,
 } from "@/actions/investments";
 import type {
   AdjustInvestmentPositionInput,
   CreateInvestmentInput,
+  ManualPriceInput,
+  SwapInvestmentInput,
   SellInvestmentInput,
   TransferInvestmentPositionInput,
   UpdateInvestmentInput,
 } from "@/lib/validations/investment.schema";
+import type { PriceRequest } from "@/lib/asset-classes";
 import type { InvestmentValuation } from "@/lib/server/investment-valuation";
 import type { InvestmentWithAccount } from "@/types/investments";
 import { invalidateLedger } from "@/lib/query-keys";
@@ -343,8 +348,50 @@ export function useTransferInvestmentPosition() {
   });
 }
 
+export function useSwapInvestment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: SwapInvestmentInput) => {
+      const result = await swapInvestment(input);
+      if ("error" in result) throw new Error(result.error);
+      return result.data;
+    },
+    onError: (err: Error) => {
+      toast.error(err.message);
+    },
+    onSuccess: () => {
+      toast.success("Intercambio registrado");
+    },
+    onSettled: () => {
+      invalidateInvestmentWrite(queryClient);
+    },
+  });
+}
+
+export function useSetManualPrice() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: ManualPriceInput) => {
+      const result = await setManualPrice(input);
+      if ("error" in result) throw new Error(result.error);
+      return result.data;
+    },
+    onError: (err: Error) => {
+      toast.error(err.message);
+    },
+    onSuccess: () => {
+      toast.success("Precio guardado");
+    },
+    onSettled: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["investments", "prices"] }),
+        queryClient.invalidateQueries({ queryKey: INVESTMENT_KEYS.valuationAll }),
+      ]),
+  });
+}
+
 export function useCurrentPrices(
-  tickers: { key: string; ticker?: string | null; isin?: string | null; assetType: string }[],
+  tickers: PriceRequest[],
   baseCurrency: string
 ) {
   const queryClient = useQueryClient();

@@ -1,21 +1,28 @@
 import "server-only";
 
+import { cashCurrencyOf, isCashLike, namesMoney, type PriceRequest } from "@/lib/asset-classes";
 import { forEachLimited } from "@/lib/concurrency";
 import { fetchCryptoPrices } from "@/lib/coingecko";
+import { today } from "@/lib/dates";
 import type { ServerContext } from "@/lib/server/context";
+import { getOrFetchFxRate } from "@/lib/server/fx";
 import { chunk, IN_LIST_CHUNK } from "@/lib/server/paginate";
 import { fetchTwelveDataPrices } from "@/lib/twelvedata";
 
 type ActionResult<T> = { data: T } | { error: string };
 
-export type PriceRequest = {
-  key: string;
-  ticker?: string | null;
-  isin?: string | null;
-  assetType: string;
+export type ResolvedPrices = {
+  /** Keyed by request key, each in the request's currency. */
+  prices: Record<string, number>;
+  /** Request keys priced by a manual price, with the date it was set for. */
+  manualDates: Record<string, string>;
+  /** One unit of each requested currency in the base currency, where a rate is known. */
+  ratesToBase: Record<string, number>;
 };
 
-type PriceSource = "coingecko" | "twelvedata" | "yahoo";
+type PriceSource = "coingecko" | "twelvedata" | "yahoo" | "manual";
+
+type CachedPrice = { price: number; source: PriceSource; date: string };
 
 // Market data moves, but not enough within a page session to justify hitting
 // rate-limited providers on every render.
@@ -23,47 +30,72 @@ const PRICE_TTL_MS = 15 * 60_000;
 const PROVIDER_CONCURRENCY = 4;
 
 /**
- * Identifies a lookup, not a holding: requests that ask the providers the same
- * question share a price, and a different ticker/ISIN for the same holding
- * never reads another lookup's answer. Crypto prices come back in the user's
- * base currency (CoinGecko vs_currency), market prices in the instrument's own
- * currency, so the base currency is part of the key only for crypto.
+ * Identifies a lookup, not a holding: requests that ask the same question
+ * share a price, and a different ticker/ISIN for the same holding never reads
+ * another lookup's answer. Crypto prices are stored in the user's base
+ * currency (CoinGecko vs_currency) and market prices in the instrument's own
+ * currency, so the base currency is part of the key only for crypto. A lookup
+ * no provider can be asked about (no ticker or ISIN, or a ticker that names
+ * money) only has a manual price, kept per class and currency.
  */
-function cacheKey(request: PriceRequest, baseCurrency: string): string {
-  return request.assetType === "crypto"
-    ? `crypto:${cryptoCode(request)}:${baseCurrency}`
-    : `market:${request.ticker ?? ""}|${request.isin ?? ""}`;
+export function priceCacheKey(
+  request: Pick<PriceRequest, "key" | "ticker" | "isin" | "name" | "assetType" | "currency">,
+  baseCurrency: string,
+): string {
+  if (request.assetType === "crypto") return `crypto:${cryptoCode(request)}:${baseCurrency}`;
+  if (isQuotable(request)) return `market:${request.ticker ?? ""}|${request.isin ?? ""}`;
+  const id = (request.ticker ?? request.name ?? request.key).trim();
+  return `unlisted:${request.assetType}:${request.currency ?? baseCurrency}:${id}`;
 }
 
-function cryptoCode(request: PriceRequest): string {
+function cryptoCode(request: Pick<PriceRequest, "key" | "ticker">): string {
   return (request.ticker ?? request.key).trim().toUpperCase();
 }
 
-async function readCachedPrices(
+/** Whether a provider can be asked about the request at all. */
+function isQuotable(request: Pick<PriceRequest, "ticker" | "isin" | "assetType" | "currency">): boolean {
+  if (request.assetType === "crypto") return true;
+  return !!request.isin || (!!request.ticker && !namesMoney(request));
+}
+
+/**
+ * Stored prices for `keys`: provider quotes while fresh, or manual prices of
+ * any age. A manual price never passes for a fresh quote, whatever its date.
+ */
+async function readStoredPrices(
   { supabase, userId }: ServerContext,
   keys: string[],
-): Promise<Map<string, number>> {
-  const cached = new Map<string, number>();
-  if (keys.length === 0) return cached;
+  source: "provider" | "manual",
+): Promise<Map<string, CachedPrice>> {
+  const stored = new Map<string, CachedPrice>();
+  if (keys.length === 0) return stored;
   const freshSince = new Date(Date.now() - PRICE_TTL_MS).toISOString();
   const reads = await Promise.all(
-    chunk(keys, IN_LIST_CHUNK).map((keysChunk) =>
-      supabase
+    chunk(keys, IN_LIST_CHUNK).map((keysChunk) => {
+      const query = supabase
         .from("instrument_prices")
-        .select("price_key, price")
+        .select("price_key, price, source, fetched_at")
         .eq("user_id", userId)
-        .in("price_key", keysChunk)
-        .gte("fetched_at", freshSince),
-    ),
+        .in("price_key", keysChunk);
+      return source === "manual"
+        ? query.eq("source", "manual")
+        : query.neq("source", "manual").gte("fetched_at", freshSince);
+    }),
   );
   for (const { data, error } of reads) {
     if (error) {
-      console.error("readCachedPrices:", error.code);
+      console.error("readStoredPrices:", error.code);
       continue;
     }
-    for (const row of data ?? []) cached.set(row.price_key, Number(row.price));
+    for (const row of data ?? []) {
+      stored.set(row.price_key, {
+        price: Number(row.price),
+        source: row.source as PriceSource,
+        date: String(row.fetched_at).slice(0, 10),
+      });
+    }
   }
-  return cached;
+  return stored;
 }
 
 async function writeCachedPrices(
@@ -80,28 +112,70 @@ async function writeCachedPrices(
 }
 
 /**
- * Current prices keyed by `request.key`. Reads the per-user price cache first
- * and only asks providers for what is missing or older than the TTL; provider
- * calls run in parallel with a small concurrency cap. `fresh` (an explicit
- * refresh) skips the cache read but still stores what it fetches.
+ * Current prices keyed by `request.key`, each in the request's currency. Reads
+ * the per-user price cache first and only asks providers for what is missing
+ * or older than the TTL; provider calls run in parallel with a small
+ * concurrency cap. `fresh` (an explicit refresh) skips the cache read but
+ * still stores what it fetches. A lookup no provider answers takes the user's
+ * manual price, if there is one.
  */
-export async function resolveCurrentPrices(
+export async function resolvePricesWithSources(
   requests: PriceRequest[],
   baseCurrency: string,
   ctx?: ServerContext,
   options: { fresh?: boolean } = {},
-): Promise<ActionResult<Record<string, number>>> {
+): Promise<ActionResult<ResolvedPrices>> {
   try {
-    const requestsByLookup = new Map<string, PriceRequest[]>();
-    for (const request of requests) {
-      const lookup = cacheKey(request, baseCurrency);
-      requestsByLookup.set(lookup, [...(requestsByLookup.get(lookup) ?? []), request]);
+    const prices: Record<string, number> = {};
+    const manualDates: Record<string, string> = {};
+    const ratesToBase: Record<string, number> = {};
+
+    const rates = new Map<string, Promise<number | null>>();
+    const fxRate = (from: string, to: string): Promise<number | null> => {
+      if (from === to) return Promise.resolve(1);
+      const pair = `${from}:${to}`;
+      if (!rates.has(pair)) {
+        rates.set(
+          pair,
+          getOrFetchFxRate({ date: today(), from, to }).then((fx) => ("error" in fx ? null : fx.data)),
+        );
+      }
+      return rates.get(pair)!;
+    };
+    const currencyOf = (request: PriceRequest) => request.currency ?? baseCurrency;
+
+    for (const currency of new Set(requests.map(currencyOf))) {
+      const rate = await fxRate(currency, baseCurrency);
+      if (rate != null) ratesToBase[currency] = rate;
     }
 
-    const priceByLookup =
-      ctx && !options.fresh
-        ? await readCachedPrices(ctx, [...requestsByLookup.keys()])
-        : new Map<string, number>();
+    // Cash and stablecoins: one unit is worth one unit of their currency,
+    // converted to the currency of the holding's cost. No provider is asked.
+    for (const request of requests.filter((r) => isCashLike(r.assetType))) {
+      const unit = cashCurrencyOf({
+        asset_type: request.assetType,
+        ticker: request.ticker,
+        asset_name: request.name ?? request.key,
+      })!;
+      const rate = await fxRate(unit, currencyOf(request));
+      if (rate != null) prices[request.key] = rate;
+    }
+
+    const requestsByLookup = new Map<string, PriceRequest[]>();
+    for (const request of requests) {
+      if (isCashLike(request.assetType)) continue;
+      const lookup = priceCacheKey(request, baseCurrency);
+      requestsByLookup.set(lookup, [...(requestsByLookup.get(lookup) ?? []), request]);
+    }
+    const quotable = [...requestsByLookup].filter(([, [request]]) => isQuotable(request));
+
+    const priceByLookup = new Map<string, number>();
+    const manualDateByLookup = new Map<string, string>();
+
+    if (ctx && !options.fresh) {
+      const cached = await readStoredPrices(ctx, quotable.map(([lookup]) => lookup), "provider");
+      for (const [lookup, stored] of cached) priceByLookup.set(lookup, stored.price);
+    }
 
     const fetched: { price_key: string; price: number; source: PriceSource }[] = [];
     const remember = (lookup: string, price: number, source: PriceSource) => {
@@ -110,7 +184,7 @@ export async function resolveCurrentPrices(
     };
 
     // One provider question per distinct lookup.
-    const missing = [...requestsByLookup]
+    const missing = quotable
       .filter(([lookup]) => !priceByLookup.has(lookup))
       .map(([lookup, [request]]) => ({ lookup, request }));
     const cryptoMissing = missing.filter((m) => m.request.assetType === "crypto");
@@ -161,23 +235,38 @@ export async function resolveCurrentPrices(
           }
         });
       } catch (e) {
-        console.error("resolveCurrentPrices: yahoo fallback unavailable:", e);
+        console.error("resolvePricesWithSources: yahoo fallback unavailable:", e);
       }
     };
 
     await Promise.all([cryptoTask(), marketTask()]);
 
-    if (ctx) await writeCachedPrices(ctx, fetched);
+    if (ctx) {
+      const unpriced = [...requestsByLookup.keys()].filter((lookup) => !priceByLookup.has(lookup));
+      const manual = await readStoredPrices(ctx, unpriced, "manual");
+      for (const [lookup, stored] of manual) {
+        priceByLookup.set(lookup, stored.price);
+        manualDateByLookup.set(lookup, stored.date);
+      }
+      await writeCachedPrices(ctx, fetched);
+    }
 
-    const prices: Record<string, number> = {};
     for (const [lookup, lookupRequests] of requestsByLookup) {
       const price = priceByLookup.get(lookup);
       if (price == null) continue;
-      for (const request of lookupRequests) prices[request.key] = price;
+      const manualDate = manualDateByLookup.get(lookup);
+      for (const request of lookupRequests) {
+        // A crypto price is in the base currency; a lot in another currency
+        // without a rate stays unpriced rather than mixing currencies.
+        const rate = request.assetType === "crypto" ? await fxRate(baseCurrency, currencyOf(request)) : 1;
+        if (rate == null) continue;
+        prices[request.key] = price * rate;
+        if (manualDate) manualDates[request.key] = manualDate;
+      }
     }
-    return { data: prices };
+    return { data: { prices, manualDates, ratesToBase } };
   } catch (e) {
-    console.error("resolveCurrentPrices:", e);
+    console.error("resolvePricesWithSources:", e);
     return { error: "Error al obtener precios actuales" };
   }
 }

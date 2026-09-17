@@ -1,14 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { PriceRequest } from "@/lib/asset-classes";
 import { fakeSupabase } from "../../../tests/support/fake-supabase";
-import type { PriceRequest } from "./prices";
 
-const resolveCurrentPrices = vi.fn();
+const resolvePricesWithSources = vi.fn();
 vi.mock("@/lib/server/prices", () => ({
-  resolveCurrentPrices: (...args: unknown[]) => resolveCurrentPrices(...args),
-}));
-vi.mock("@/lib/server/fx", () => ({
-  getOrFetchFxRate: async () => ({ data: 1 }),
+  resolvePricesWithSources: (...args: unknown[]) => resolvePricesWithSources(...args),
 }));
 
 const { loadInvestmentValuation } = await import("./investment-valuation");
@@ -32,17 +29,17 @@ function context(lots: ReturnType<typeof lot>[]) {
   return { supabase: fake.client as any, userId: "user-1" };
 }
 
+const priced = (prices: Record<string, number>, ratesToBase: Record<string, number> = { USD: 1 }) => ({
+  data: { prices, manualDates: {}, ratesToBase },
+});
+
 describe("loadInvestmentValuation", () => {
   beforeEach(() => {
-    resolveCurrentPrices.mockReset();
+    resolvePricesWithSources.mockReset();
   });
 
-  it("looks a holding without ticker up by name per account, and by its ISIN per month", async () => {
-    resolveCurrentPrices.mockImplementation(async (requests: PriceRequest[]) => ({
-      data: Object.fromEntries(
-        requests.map((r) => [r.key, r.ticker === "Apple Inc" ? 999 : 200]),
-      ),
-    }));
+  it("asks once per lot lookup, the way the holdings table does, for both views", async () => {
+    resolvePricesWithSources.mockResolvedValue(priced({ "stock:USD:|US0378331005": 200 }));
 
     const result = await loadInvestmentValuation(
       context([lot({ isin: "US0378331005" })]),
@@ -50,13 +47,19 @@ describe("loadInvestmentValuation", () => {
       2026,
     );
 
-    expect(resolveCurrentPrices.mock.calls[0][0]).toEqual([
-      { key: "account:US0378331005", ticker: "Apple Inc", isin: "US0378331005", assetType: "stock" },
-      { key: "month:US0378331005", ticker: null, isin: "US0378331005", assetType: "stock" },
+    expect(resolvePricesWithSources.mock.calls[0][0]).toEqual([
+      {
+        key: "stock:USD:|US0378331005",
+        ticker: null,
+        isin: "US0378331005",
+        name: "Apple Inc",
+        assetType: "stock",
+        currency: "USD",
+      },
     ]);
     expect(result).toEqual({
       data: {
-        byAccount: { broker: { current: 2 * 999, cost: 300 } },
+        byAccount: { broker: { current: 2 * 200, cost: 300 } },
         byMonth: expect.objectContaining({
           3: { currentValue: 2 * 200, costBasis: 300 },
           12: { currentValue: 2 * 200, costBasis: 300 },
@@ -65,31 +68,89 @@ describe("loadInvestmentValuation", () => {
     });
   });
 
-  it("looks a crypto lot without ticker up by its coin code in both views", async () => {
-    resolveCurrentPrices.mockImplementation(async (requests: PriceRequest[]) => ({
-      data: Object.fromEntries(requests.map((r) => [r.key, 60_000])),
-    }));
+  it("values an unpriced lot at its cost in the base currency", async () => {
+    resolvePricesWithSources.mockResolvedValue(priced({}, { USD: 1, EUR: 1.1 }));
 
-    await loadInvestmentValuation(
-      context([lot({ asset_name: "BTC", asset_type: "crypto", quantity: 0.5, total_cost: 10_000 })]),
+    const result = await loadInvestmentValuation(
+      context([lot({ ticker: "SAP", currency: "EUR", total_cost: 1000 })]),
+      "USD",
+      null,
+    );
+
+    expect(result).toEqual({ data: { byAccount: { broker: { current: 1100, cost: 1100 } }, byMonth: null } });
+  });
+
+  it("converts a crypto lot's value and cost from its own currency", async () => {
+    resolvePricesWithSources.mockResolvedValue(priced({ "crypto:EUR:BTC": 60_000 }, { EUR: 1.1 }));
+
+    const result = await loadInvestmentValuation(
+      context([lot({ asset_name: "BTC", asset_type: "crypto", currency: "EUR", quantity: 0.5, total_cost: 10_000 })]),
+      "USD",
+      null,
+    );
+
+    expect(result).toEqual({ data: { byAccount: { broker: { current: 33_000, cost: 11_000 } }, byMonth: null } });
+  });
+
+  it("values cash held at the exchange rate, against what it cost", async () => {
+    resolvePricesWithSources.mockResolvedValue(priced({ "cash:USD:EUR": 1.1 }));
+
+    const result = await loadInvestmentValuation(
+      context([lot({ asset_name: "Euros", ticker: "EUR", asset_type: "cash", quantity: 1000, total_cost: 1050 })]),
       "USD",
       2026,
     );
 
-    expect(resolveCurrentPrices.mock.calls[0][0]).toEqual([
-      { key: "account:BTC", ticker: "BTC", isin: null, assetType: "crypto" },
-      { key: "month:BTC", ticker: "BTC", isin: null, assetType: "crypto" },
-    ]);
+    expect(result).toEqual({
+      data: {
+        byAccount: { broker: { current: 1100, cost: 1050 } },
+        byMonth: expect.objectContaining({ 3: { currentValue: 1100, costBasis: 1050 } }),
+      },
+    });
   });
 
-  it("only prices per account when no year is asked for", async () => {
-    resolveCurrentPrices.mockResolvedValue({ data: {} });
+  it("prices the same code held against two currencies separately", async () => {
+    resolvePricesWithSources.mockResolvedValue(
+      priced({ "stablecoin:USD:USDT": 1, "stablecoin:EUR:USDT": 0.9 }, { USD: 1, EUR: 1.1 }),
+    );
 
-    const result = await loadInvestmentValuation(context([lot({ ticker: "AAPL" })]), "USD", null);
+    const result = await loadInvestmentValuation(
+      context([
+        lot({ asset_name: "Tether", ticker: "USDT", asset_type: "stablecoin", quantity: 100, total_cost: 100 }),
+        lot({
+          account_id: "exchange",
+          asset_name: "Tether",
+          ticker: "USDT",
+          asset_type: "stablecoin",
+          currency: "EUR",
+          quantity: 100,
+          total_cost: 90,
+        }),
+      ]),
+      "USD",
+      null,
+    );
 
-    expect(resolveCurrentPrices.mock.calls[0][0]).toEqual([
-      { key: "account:AAPL", ticker: "AAPL", isin: null, assetType: "stock" },
+    expect((resolvePricesWithSources.mock.calls[0][0] as PriceRequest[]).map((r) => r.key)).toEqual([
+      "stablecoin:USD:USDT",
+      "stablecoin:EUR:USDT",
     ]);
-    expect(result).toEqual({ data: { byAccount: { broker: { current: 300, cost: 300 } }, byMonth: null } });
+    expect(result).toEqual({
+      data: {
+        byAccount: {
+          broker: { current: 100, cost: 100 },
+          exchange: { current: expect.closeTo(99, 6), cost: expect.closeTo(99, 6) },
+        },
+        byMonth: null,
+      },
+    });
+  });
+
+  it("fails rather than mixing currencies when a lot's currency has no rate", async () => {
+    resolvePricesWithSources.mockResolvedValue(priced({}, { USD: 1 }));
+
+    const result = await loadInvestmentValuation(context([lot({ ticker: "SAP", currency: "EUR" })]), "USD", null);
+
+    expect(result).toEqual({ error: "No hay tipo de cambio de EUR a USD" });
   });
 });

@@ -114,6 +114,19 @@ export async function updateUserPreferences(
     if ("error" in hasData) return hasData;
     if (baseCurrency !== currentBase && hasData.data) return { error: BASE_CURRENCY_LOCKED };
 
+    if (baseCurrency !== currentBase) {
+      // Exchange rates only exist between fiat currencies.
+      const { data: currency, error: currencyError } = await supabase
+        .from("currencies")
+        .select("currency_type")
+        .eq("code", baseCurrency)
+        .maybeSingle();
+      if (currencyError) return { error: currencyError.message };
+      if (currency?.currency_type !== "fiat") {
+        return { error: "La moneda base tiene que ser una moneda fiat." };
+      }
+    }
+
     const { data, error } = await supabase
       .from("user_preferences")
       .upsert(

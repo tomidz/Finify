@@ -289,12 +289,23 @@ export function SalesHistoryTable() {
       <Dialog open={!!deleting} onOpenChange={(open) => !open && setDeleting(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Eliminar venta</DialogTitle>
+            <DialogTitle>{deleting?.swap_lot_id ? "Deshacer intercambio" : "Eliminar venta"}</DialogTitle>
             <DialogDescription>
-              Vas a eliminar la venta de{" "}
-              <span className="font-semibold">{deleting?.asset_name}</span> del{" "}
-              {deleting?.sale_date}. La app va a revertir el auto-crédito en la
-              cuenta y restaurar un lote con el costo base original.
+              {deleting?.swap_lot_id ? (
+                <>
+                  Vas a deshacer el intercambio de{" "}
+                  <span className="font-semibold">{deleting.asset_name}</span> del{" "}
+                  {deleting.sale_date}. Se elimina lo que recibiste y vuelve un lote
+                  con el costo base original.
+                </>
+              ) : (
+                <>
+                  Vas a eliminar la venta de{" "}
+                  <span className="font-semibold">{deleting?.asset_name}</span> del{" "}
+                  {deleting?.sale_date}. La app va a revertir el auto-crédito en la
+                  cuenta y restaurar un lote con el costo base original.
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2 sm:gap-0">

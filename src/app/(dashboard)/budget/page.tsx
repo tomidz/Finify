@@ -22,8 +22,8 @@ import {
   useUpsertBudgetMonthPlan,
 } from "@/hooks/useBudget";
 import { useEnsureCurrentMonth, useMonths } from "@/hooks/useMonths";
-import { useBaseCurrency } from "@/hooks/useTransactions";
-import { useInvestments } from "@/hooks/useInvestments";
+import { useBaseCurrency, useTransactions } from "@/hooks/useTransactions";
+import { netInvestmentContributions } from "@/lib/investment-contributions";
 import { useCurrencies } from "@/hooks/useAccounts";
 import { useQueryClient } from "@tanstack/react-query";
 import { BUDGET_CATEGORY_LABELS, type BudgetCategory } from "@/types/budget";
@@ -240,7 +240,6 @@ export default function BudgetPage() {
 
       <BudgetMonthContent
         selectedMonthId={selectedMonthId}
-        selectedMonth={selectedMonth}
         currencySymbol={currencySymbol}
         amountDraftByCategoryId={amountDraftByCategoryId}
         editingCategoryIds={editingCategoryIds}
@@ -259,7 +258,6 @@ export default function BudgetPage() {
 
 function BudgetMonthContent({
   selectedMonthId,
-  selectedMonth,
   currencySymbol,
   amountDraftByCategoryId,
   editingCategoryIds,
@@ -272,7 +270,6 @@ function BudgetMonthContent({
   onEnsureLineForCategory,
 }: {
   selectedMonthId: string;
-  selectedMonth: { year: number; month: number } | null;
   currencySymbol: string;
   amountDraftByCategoryId: Record<string, string>;
   editingCategoryIds: Record<string, boolean>;
@@ -376,17 +373,12 @@ function BudgetMonthContent({
     });
   }, [categoryRows, onSetDrafts]);
 
-  // Get investment purchases for the selected month
-  const { data: allInvestments } = useInvestments();
-  const monthInvestmentTotal = useMemo(() => {
-    if (!allInvestments || !selectedMonth) return 0;
-    return allInvestments
-      .filter((inv) => {
-        const d = new Date(`${inv.purchase_date}T00:00:00`);
-        return d.getFullYear() === selectedMonth.year && d.getMonth() + 1 === selectedMonth.month;
-      })
-      .reduce((sum, inv) => sum + Math.abs(inv.total_cost), 0);
-  }, [allInvestments, selectedMonth]);
+  // Cash actually put into investments this month (purchases minus sales).
+  const { data: monthTransactions } = useTransactions(selectedMonthId);
+  const monthInvestmentTotal = useMemo(
+    () => netInvestmentContributions(monthTransactions ?? []),
+    [monthTransactions],
+  );
 
   // Compute grouped totals for summary cards (must be before early return)
   const groupedTotals = useMemo(() => {

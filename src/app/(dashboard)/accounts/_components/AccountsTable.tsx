@@ -137,11 +137,7 @@ export function AccountsTable() {
                     {ACCOUNT_TYPE_LABELS[account.account_type]}
                   </TableCell>
                   <TableCell>
-                    <Badge variant="secondary">
-                      {account.account_type === "crypto_wallet"
-                        ? "Multi"
-                        : account.currency}
-                    </Badge>
+                    <Badge variant="secondary">{account.currency}</Badge>
                   </TableCell>
                   <TableCell>
                     <Badge

@@ -415,6 +415,30 @@ export type Database = {
         }
         Relationships: []
       }
+      data_reclassification_backup: {
+        Row: {
+          column_name: string
+          previous_value: string
+          reclassified_at: string
+          row_id: string
+          table_name: string
+        }
+        Insert: {
+          column_name: string
+          previous_value: string
+          reclassified_at?: string
+          row_id: string
+          table_name: string
+        }
+        Update: {
+          column_name?: string
+          previous_value?: string
+          reclassified_at?: string
+          row_id?: string
+          table_name?: string
+        }
+        Relationships: []
+      }
       debt_activities: {
         Row: {
           activity_type: Database["public"]["Enums"]["debt_activity_type"]
@@ -608,6 +632,7 @@ export type Database = {
           quantity_sold: number
           realized_pnl: number
           sale_date: string
+          swap_lot_id: string | null
           tax: number
           ticker: string | null
           total_proceeds: number
@@ -629,6 +654,7 @@ export type Database = {
           quantity_sold: number
           realized_pnl: number
           sale_date: string
+          swap_lot_id?: string | null
           tax?: number
           ticker?: string | null
           total_proceeds: number
@@ -650,6 +676,7 @@ export type Database = {
           quantity_sold?: number
           realized_pnl?: number
           sale_date?: string
+          swap_lot_id?: string | null
           tax?: number
           ticker?: string | null
           total_proceeds?: number
@@ -1503,6 +1530,7 @@ export type Database = {
         Args: { p_deleted: boolean; p_id: string }
         Returns: undefined
       }
+      swap_investment_lots: { Args: { p_swap: Json }; Returns: string }
       sync_investment_cash: {
         Args: {
           p_amount?: number

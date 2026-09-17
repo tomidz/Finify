@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { today } from "@/lib/dates";
 import { ASSET_TYPES } from "@/types/investments";
 
 export const CreateInvestmentSchema = z.object({
@@ -93,7 +94,62 @@ export const SellInvestmentSchema = z.object({
   skip_credit: z.boolean().optional().default(false),
 });
 
+export const ManualPriceSchema = z
+  .object({
+    // The distinct lookups of the holding's lots: a lot's name, ticker and
+    // ISIN decide its lookup.
+    lots: z
+      .array(
+        z.object({
+          asset_name: z.string().min(1, "El activo es obligatorio").max(200),
+          ticker: z.string().max(20).nullable().optional(),
+          isin: z.string().max(20).nullable().optional(),
+        }),
+      )
+      .min(1)
+      .max(500),
+    asset_type: z.enum(ASSET_TYPES),
+    currency: z.string().min(1, "La moneda es obligatoria"),
+    price: z.number().positive("El precio debe ser mayor a 0"),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida")
+      .refine((date) => date <= today(), "La fecha no puede ser futura"),
+  })
+  .refine((data) => data.asset_type !== "cash" && data.asset_type !== "stablecoin", {
+    message: "El efectivo y las stablecoins no llevan precio manual",
+    path: ["asset_type"],
+  });
+
+const SwapAssetSchema = z.object({
+  asset_name: z.string().min(1, "El activo es obligatorio").max(200),
+  ticker: z.string().max(20).nullable().optional(),
+  isin: z.string().max(20).nullable().optional(),
+  asset_type: z.enum(ASSET_TYPES),
+  currency: z.string().min(1, "La moneda es obligatoria"),
+  quantity: z.number().positive("La cantidad debe ser mayor a 0"),
+});
+
+export const SwapInvestmentSchema = z
+  .object({
+    account_id: z.string().uuid("Cuenta inválida"),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
+    // Market value of the swap, in the currency of both assets.
+    value: z.number().positive("El valor debe ser mayor a 0"),
+    given: SwapAssetSchema,
+    received: SwapAssetSchema,
+    fee_quantity: z.number().min(0, "La comisión no puede ser negativa").optional().default(0),
+    fee_asset: z.enum(["given", "received"]).optional().default("given"),
+    notes: z.string().max(500).nullable().optional(),
+  })
+  .refine((data) => data.given.currency === data.received.currency, {
+    message: "Los dos activos tienen que estar en la misma moneda",
+    path: ["received", "currency"],
+  });
+
 export type CreateInvestmentInput = z.infer<typeof CreateInvestmentSchema>;
+export type SwapInvestmentInput = z.input<typeof SwapInvestmentSchema>;
+export type ManualPriceInput = z.input<typeof ManualPriceSchema>;
 export type UpdateInvestmentInput = z.infer<typeof UpdateInvestmentSchema>;
 export type TransferInvestmentPositionInput = z.infer<
   typeof TransferInvestmentPositionSchema
