@@ -2,10 +2,11 @@ import "server-only";
 
 import { forEachLimited } from "@/lib/concurrency";
 import { fetchArsPerUsdHistory } from "@/lib/dolarapi";
+import { fetchFrankfurterSeries } from "@/lib/frankfurter";
 import { getFxQuote } from "@/lib/server/fx";
 import { readAllRows } from "@/lib/server/paginate";
 import type { createClient } from "@/lib/supabase/server";
-import { today as appToday } from "@/lib/dates";
+import { addDays, today as appToday } from "@/lib/dates";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -23,6 +24,17 @@ const PROVIDER_CONCURRENCY = 4;
 const ARS_HISTORY_THRESHOLD = 3;
 /** Days a peso quote carries over to the days after it without one (weekends, holidays). */
 const ARS_CARRY_DAYS = 3;
+/** The same for the ECB, which closes up to four days in a row at Easter. */
+const ECB_CARRY_DAYS = 4;
+
+/** The value on `date`, or on the closest day up to `carryDays` before it. */
+function carried(series: Map<string, number> | null | undefined, date: string, carryDays: number) {
+  for (let back = 0; back <= carryDays; back += 1) {
+    const value = series?.get(addDays(date, -back));
+    if (value != null) return value;
+  }
+  return undefined;
+}
 
 /**
  * Resolves many (date, currency) → `to` conversions with one paginated read of
@@ -88,23 +100,31 @@ export async function resolveFxRates(
     if (!quotes.has(requestKey)) unresolved.set(requestKey, { date: cacheDate(request.date), from: request.from });
   }
 
-  // Many past days of the peso: one request for its whole history, cached
-  // under each day asked, instead of one request per day.
-  const arsPast = [...unresolved].filter(
-    ([, r]) => r.date < today && ((r.from === "ARS" && to === "USD") || (r.from === "USD" && to === "ARS")),
-  );
+  // Many past days of the peso: its whole history in one request, and for a
+  // cross with another currency, that currency's dollar series in one more,
+  // cached under each day asked, instead of requests per day.
+  const arsPast = [...unresolved].filter(([, r]) => r.date < today && (r.from === "ARS" || to === "ARS"));
   if (arsPast.length >= ARS_HISTORY_THRESHOLD) {
     const history = await fetchArsPerUsdHistory();
+    // The currency on the other side of the peso, quoted per dollar.
+    const otherOf = (request: FxRequest) => (to === "ARS" ? request.from : to);
+    const pastDates = arsPast.map(([, r]) => r.date).sort();
+    const perUsd = new Map<string, Map<string, number> | null>();
+    if (history) {
+      const others = [...new Set(arsPast.map(([, r]) => otherOf(r)))].filter((c) => c !== "USD");
+      await Promise.all(
+        others.map(async (other) =>
+          perUsd.set(other, await fetchFrankfurterSeries("USD", other, pastDates[0], pastDates[pastDates.length - 1])),
+        ),
+      );
+    }
     const rows: { rate_date: string; from_currency: string; to_currency: string; rate: number; source: string }[] = [];
     for (const [requestKey, request] of history ? arsPast : []) {
-      let arsPerUsd: number | undefined;
-      for (let back = 0; back <= ARS_CARRY_DAYS && arsPerUsd == null; back += 1) {
-        const day = new Date(`${request.date}T00:00:00Z`);
-        day.setUTCDate(day.getUTCDate() - back);
-        arsPerUsd = history!.get(day.toISOString().slice(0, 10));
-      }
-      if (arsPerUsd == null) continue;
-      const rate = request.from === "ARS" ? 1 / arsPerUsd : arsPerUsd;
+      const arsPerUsd = carried(history, request.date, ARS_CARRY_DAYS);
+      const other = otherOf(request);
+      const otherPerUsd = other === "USD" ? 1 : carried(perUsd.get(other), request.date, ECB_CARRY_DAYS);
+      if (arsPerUsd == null || otherPerUsd == null) continue;
+      const rate = request.from === "ARS" ? otherPerUsd / arsPerUsd : arsPerUsd / otherPerUsd;
       quotes.set(requestKey, { rate, rateDate: request.date });
       unresolved.delete(requestKey);
       rows.push({ rate_date: request.date, from_currency: request.from, to_currency: to, rate, source: "dolarapi" });

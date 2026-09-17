@@ -20,3 +20,10 @@ export function currentYearMonth(now: Date = new Date()): { year: number; month:
   const [year, month] = today(now).split("-").map(Number);
   return { year, month };
 }
+
+/** A yyyy-MM-dd date `days` days later (earlier when negative). */
+export function addDays(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}

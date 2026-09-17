@@ -392,11 +392,16 @@ export function TransactionDialog({
   const onSubmit = async (values: TransactionFormValues) => {
     form.clearErrors();
 
+    const accountCurrency = accounts?.find((a) => a.id === values.account_id)?.currency;
+    const needsRate = accountCurrency != null && baseCurrency != null && accountCurrency !== baseCurrency;
     const rateNum = parseNumberInput(values.exchange_rate);
-    const safeRate = isNaN(rateNum) || rateNum <= 0 ? 1 : rateNum;
+    const enteredRate = !isNaN(rateNum) && rateNum > 0 ? rateNum : null;
+    const rateRequired = () =>
+      form.setError("exchange_rate", { message: "Ingresá el tipo de cambio" });
 
     let amountNum: number;
     let baseNum: number;
+    let safeRate: number;
     let description = values.description;
 
     if (isBalanceAdjustment) {
@@ -413,12 +418,29 @@ export function TransactionDialog({
         });
         return;
       }
+      const rate = needsRate ? enteredRate : 1;
+      if (rate === null) {
+        rateRequired();
+        return;
+      }
+      safeRate = rate;
       amountNum = adjustment;
       baseNum = Math.round(adjustment * safeRate * 100) / 100;
       description = values.description.trim() || "Ajuste de saldo";
     } else {
       amountNum = parseNumberInput(values.amount);
       baseNum = parseNumberInput(values.base_amount);
+      // A base amount typed without a rate implies the rate.
+      const impliedRate =
+        !isNaN(amountNum) && amountNum !== 0 && !isNaN(baseNum) && baseNum !== 0
+          ? Math.abs(baseNum / amountNum)
+          : null;
+      const rate = needsRate ? (enteredRate ?? impliedRate) : 1;
+      if (rate === null) {
+        rateRequired();
+        return;
+      }
+      safeRate = rate;
     }
 
     const formData = {

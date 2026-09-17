@@ -7,8 +7,12 @@ const fetchArsPerUsdHistory = vi.fn();
 vi.mock("@/lib/server/fx", () => ({
   getFxQuote: (input: unknown) => getFxQuote(input),
 }));
+const fetchFrankfurterSeries = vi.fn();
 vi.mock("@/lib/dolarapi", () => ({
   fetchArsPerUsdHistory: () => fetchArsPerUsdHistory(),
+}));
+vi.mock("@/lib/frankfurter", () => ({
+  fetchFrankfurterSeries: (...args: unknown[]) => fetchFrankfurterSeries(...args),
 }));
 
 const quote = (rate: number, rateDate: string) => ({ data: { rate, rateDate, source: "frankfurter" } });
@@ -37,6 +41,7 @@ describe("resolveFxRates", () => {
     vi.setSystemTime(new Date(2026, 8, 16, 12)); // 2026-09-16 local
     getFxQuote.mockReset();
     fetchArsPerUsdHistory.mockReset().mockResolvedValue(null);
+    fetchFrankfurterSeries.mockReset().mockResolvedValue(null);
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -151,6 +156,41 @@ describe("resolveFxRates", () => {
     expect(fxAt("2026-09-08", "ARS")).toBeCloseTo(1 / 1420);
     const cached = queries.flatMap((q) => (argsOf(q, "upsert")?.[0] as { rate_date: string }[] | undefined) ?? []);
     expect(cached.map((row) => row.rate_date)).toEqual(["2026-09-06", "2026-09-07", "2026-09-08"]);
+  });
+
+  it("crosses the peso's history with the other currency's dollar series, in one request each", async () => {
+    const { client } = withCache([]);
+    fetchArsPerUsdHistory.mockResolvedValue(
+      new Map([
+        ["2026-09-04", 1400],
+        ["2026-09-07", 1410],
+        ["2026-09-08", 1420],
+      ]),
+    );
+    // EUR per USD, business days only.
+    fetchFrankfurterSeries.mockResolvedValue(
+      new Map([
+        ["2026-09-04", 0.9],
+        ["2026-09-07", 0.8],
+        ["2026-09-08", 0.85],
+      ]),
+    );
+
+    const fxAt = await resolveFxRates(
+      asClient(client),
+      [
+        { date: "2026-09-06", from: "EUR" },
+        { date: "2026-09-07", from: "EUR" },
+        { date: "2026-09-08", from: "EUR" },
+      ],
+      "ARS",
+    );
+
+    expect(fetchFrankfurterSeries).toHaveBeenCalledTimes(1);
+    expect(fetchFrankfurterSeries).toHaveBeenCalledWith("USD", "EUR", "2026-09-06", "2026-09-08");
+    expect(getFxQuote).not.toHaveBeenCalled();
+    expect(fxAt("2026-09-06", "EUR")).toBeCloseTo(1400 / 0.9);
+    expect(fxAt("2026-09-08", "EUR")).toBeCloseTo(1420 / 0.85);
   });
 
   it("stops asking a provider that failed for the rest of the batch", async () => {

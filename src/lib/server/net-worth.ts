@@ -1,9 +1,11 @@
 import "server-only";
 
+import { after } from "next/server";
+
 import { forEachLimited } from "@/lib/concurrency";
-import { today } from "@/lib/dates";
+import { addDays, today } from "@/lib/dates";
 import type { ServerContext } from "@/lib/server/context";
-import { getFxQuote } from "@/lib/server/fx";
+import { getFxQuote, maxRateAgeDays } from "@/lib/server/fx";
 import type {
   AccountNetWorthSummary,
   LiabilitiesSummary,
@@ -14,9 +16,10 @@ type Result<T> = { data: T } | { error: string };
 
 /**
  * Fetches today's rate for every currency the net worth RPCs convert. They
- * only read cached rates, and only recent ones: without this a currency not
- * looked up in a week would show as having no rate. A failed lookup is left
- * for the RPCs to mark.
+ * only read cached rates, and only recent ones (see maxRateAgeDays): a currency
+ * without one is looked up before they run, and one with an older rate than
+ * today's is refreshed after the response, so a provider that hangs never holds
+ * up the page. A failed lookup is left for the RPCs to mark.
  */
 export async function warmTodayRates(ctx: ServerContext, baseCurrency: string): Promise<void> {
   const { data, error } = await ctx.supabase.rpc("user_valued_currencies");
@@ -25,10 +28,34 @@ export async function warmTodayRates(ctx: ServerContext, baseCurrency: string): 
     return;
   }
   const currencies = (data ?? []).filter((currency) => currency !== baseCurrency);
+  if (currencies.length === 0) return;
   const date = today();
-  await forEachLimited(currencies, 4, async (from) => {
-    await getFxQuote({ date, from, to: baseCurrency });
+
+  const { data: cached, error: cacheError } = await ctx.supabase
+    .from("fx_rates")
+    .select("from_currency, rate_date")
+    .eq("to_currency", baseCurrency)
+    .in("from_currency", currencies)
+    .gte("rate_date", addDays(date, -7))
+    .lte("rate_date", date);
+  if (cacheError) console.error("warmTodayRates: cache read failed:", cacheError.code);
+  const newest = new Map<string, string>();
+  for (const row of cached ?? []) {
+    if (row.rate_date > (newest.get(row.from_currency) ?? "")) newest.set(row.from_currency, row.rate_date);
+  }
+
+  const lookUp = (list: string[]) =>
+    forEachLimited(list, 4, async (from) => {
+      await getFxQuote({ date, from, to: baseCurrency });
+    });
+  const missing = currencies.filter((currency) => {
+    const rateDate = newest.get(currency);
+    return rateDate == null || rateDate < addDays(date, -maxRateAgeDays(currency, baseCurrency));
   });
+  const stale = currencies.filter((currency) => !missing.includes(currency) && newest.get(currency) !== date);
+
+  if (stale.length > 0) after(() => lookUp(stale));
+  await lookUp(missing);
 }
 
 export async function loadAccountNetWorth(

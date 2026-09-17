@@ -4,7 +4,7 @@ import { cache } from "react";
 
 import { createClient } from "@/lib/supabase/server";
 import { fetchExchangeRate } from "@/lib/frankfurter";
-import { today as appToday } from "@/lib/dates";
+import { addDays, today as appToday } from "@/lib/dates";
 
 type ActionResult<T> = { data: T } | { error: string };
 
@@ -24,13 +24,8 @@ export type FxQuote = { rate: number; rateDate: string; source: string };
  * How old a cached rate may be when the provider cannot answer. The peso moves
  * enough in a few days that an older quote misvalues it.
  */
-const MAX_AGE_DAYS = 7;
-const ARS_MAX_AGE_DAYS = 3;
-
-function daysBefore(date: string, days: number): string {
-  const d = new Date(`${date}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() - days);
-  return d.toISOString().slice(0, 10);
+export function maxRateAgeDays(from: string, to: string): number {
+  return from === "ARS" || to === "ARS" ? 3 : 7;
 }
 
 /**
@@ -54,7 +49,6 @@ const resolveQuote = cache(async function resolveQuote(
   const today = appToday();
   // A future date takes today's quote, the best available.
   const quoteDate = date > today ? today : date;
-  const involvesArs = from === "ARS" || to === "ARS";
 
   try {
     const supabase = await createClient();
@@ -96,7 +90,7 @@ const resolveQuote = cache(async function resolveQuote(
       .eq("to_currency", to)
       .eq("source", source)
       .lte("rate_date", quoteDate)
-      .gte("rate_date", daysBefore(quoteDate, involvesArs ? ARS_MAX_AGE_DAYS : MAX_AGE_DAYS))
+      .gte("rate_date", addDays(quoteDate, -maxRateAgeDays(from, to)))
       .order("rate_date", { ascending: false })
       .limit(1)
       .maybeSingle();

@@ -22,6 +22,41 @@ export async function fetchExchangeRate(
   return fetchFrankfurter(from, to, date);
 }
 
+/**
+ * The daily rates of `from` in `to` between two dates (yyyy-MM-dd), by date,
+ * or null if the request fails. Only business days have a rate, and the series
+ * starts at the last one on or before `start`.
+ */
+export async function fetchFrankfurterSeries(
+  from: string,
+  to: string,
+  start: string,
+  end: string,
+): Promise<Map<string, number> | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await fetch(
+        `https://api.frankfurter.dev/v1/${start}..${end}?base=${encodeURIComponent(from)}&symbols=${encodeURIComponent(to)}`,
+        { signal: controller.signal },
+      );
+      if (!res.ok) return null;
+      const data: { rates?: Record<string, Record<string, number>> } = await res.json();
+      const series = new Map<string, number>();
+      for (const [date, rates] of Object.entries(data.rates ?? {})) {
+        const rate = rates[to];
+        if (rate != null && rate > 0) series.set(date, rate);
+      }
+      return series;
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    return null;
+  }
+}
+
 async function fetchFrankfurter(
   from: string,
   to: string,

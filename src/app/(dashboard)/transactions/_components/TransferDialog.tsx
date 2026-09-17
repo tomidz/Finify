@@ -335,8 +335,15 @@ export function TransferDialog({
     form.clearErrors();
 
     const amountNum = parseNumberInput(values.amount);
-    const rateNum = sameCurrency ? 1 : parseNumberInput(values.exchange_rate);
     const destinationNum = sameCurrency ? amountNum : parseNumberInput(values.destination_amount);
+    // The rate is the one between the two amounts, implied when left empty.
+    const enteredRate = sameCurrency ? 1 : parseNumberInput(values.exchange_rate);
+    const rateNum =
+      !isNaN(enteredRate) && enteredRate > 0
+        ? enteredRate
+        : amountNum > 0 && destinationNum > 0
+          ? destinationNum / amountNum
+          : NaN;
     const feeRaw = parseNumberInput(values.fee);
     const feeNum = isNaN(feeRaw) ? 0 : Math.max(0, feeRaw);
 
@@ -347,7 +354,7 @@ export function TransferDialog({
           date: values.date,
           description: values.description,
           amount: isNaN(amountNum) ? 0 : amountNum,
-          exchange_rate: isNaN(rateNum) ? 1 : rateNum,
+          exchange_rate: isNaN(rateNum) ? undefined : rateNum,
           base_amount: isNaN(destinationNum) ? 0 : destinationNum,
           source_account_id: values.source_account_id,
           destination_account_id: values.destination_account_id,
@@ -368,7 +375,7 @@ export function TransferDialog({
       destination_account_id: values.destination_account_id,
       description: values.description,
       amount: isNaN(amountNum) ? 0 : amountNum,
-      exchange_rate: isNaN(rateNum) ? 1 : rateNum,
+      exchange_rate: rateNum,
       base_amount: isNaN(destinationNum) ? 0 : destinationNum,
       fee: feeNum,
       notes: values.notes,

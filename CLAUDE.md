@@ -61,7 +61,8 @@ correspondiente en `node_modules/next/dist/docs/`.
 - **Sin cotización**: un monto sin tasa no tiene base. Queda fuera de los totales y la pantalla lo
   marca ("sin cotización"); una escritura que necesita la base falla con un mensaje. Las RPCs de
   patrimonio devuelven `NULL` y `fx_missing`, y solo leen cotizaciones guardadas dentro de la misma
-  ventana: antes de llamarlas se trae la de hoy (`warmTodayRates`).
+  ventana: antes de llamarlas se trae la de hoy (`warmTodayRates`), esperando solo por las monedas
+  sin ninguna dentro de la ventana; las demás se actualizan después de responder (`after`).
 - **Frescura**: cuando una tasa es anterior a la fecha que se pidió, la pantalla muestra "TC del
   dd/mm".
 
