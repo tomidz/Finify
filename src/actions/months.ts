@@ -193,23 +193,21 @@ export async function previewNextMonthFromLatest(): Promise<
       2,
       "0",
     )}-01`;
-    const fxCache = new Map<string, number>();
+    const fxCache = new Map<string, number | null>();
 
-    const getRate = async (from: string): Promise<number> => {
+    // A currency without a rate leaves its accounts at their stored base
+    // amount instead of failing the whole preview.
+    const getRate = async (from: string): Promise<number | null> => {
       if (from === baseCurrency) return 1;
-      const key = `${fxDate}:${from}:${baseCurrency}`;
-      const cached = fxCache.get(key);
-      if (cached != null) return cached;
+      if (fxCache.has(from)) return fxCache.get(from)!;
       const result = await getOrFetchFxRate({
         date: fxDate,
         from,
         to: baseCurrency,
       });
-      if ("error" in result) {
-        throw new Error(result.error);
-      }
-      fxCache.set(key, result.data);
-      return result.data;
+      const rate = "error" in result ? null : result.data;
+      fxCache.set(from, rate);
+      return rate;
     };
 
     const balances: OpeningBalancePreview[] = [];
@@ -222,7 +220,7 @@ export async function previewNextMonthFromLatest(): Promise<
       let currentOpeningBase: number | undefined;
       if (opening.opening_amount) {
         const rate = await getRate(account.currency);
-        currentOpeningBase = opening.opening_amount * rate;
+        if (rate != null) currentOpeningBase = opening.opening_amount * rate;
       }
 
       balances.push({

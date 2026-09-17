@@ -20,12 +20,13 @@ import type {
   NetWorthEvolutionPoint,
 } from "@/types/net-worth";
 
-import { getServerContext } from "@/lib/server/context";
+import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
 import { getOrFetchFxRate } from "@/lib/server/fx";
 import {
   loadAccountNetWorth,
   loadLiabilitiesForYear,
   loadNetWorthEvolution,
+  warmTodayRates,
 } from "@/lib/server/net-worth";
 
 type ActionResult<T> = { data: T } | { error: string };
@@ -64,8 +65,7 @@ async function buildFxMap(
         from: currency,
         to: baseCurrency,
       });
-      // Missing entries deliberately stay unset: callers fall back to the
-      // stored amount_base, never to rate 1.
+      // A missing entry stays unset: callers never assume rate 1.
       if (!("error" in result)) fxMap.set(currency, result.data);
     })
   );
@@ -274,21 +274,16 @@ export async function getNwSnapshotsForMonth(
     const summaryItems = (items ?? []).map((item) => {
       const snap = snapByItem.get(item.id);
       const amount = snap?.amount ?? 0;
-      let amountBase = snap?.amount_base ?? null;
-
-      // Always recalculate amount_base for non-base currencies using live FX rate
-      if (amount !== 0 && item.currency !== baseCurrency) {
-        // Revalue only when a live rate exists; a missing rate must fall
-        // back to the stored amount_base, never to rate 1.
-        const rate = fxMap.get(item.currency as string);
-        if (rate != null) amountBase = amount * rate;
-      }
+      // Today's rate for another currency; without one the item has no base
+      // amount and is left out of the totals.
+      const rate = fxMap.get(item.currency as string);
+      const amountBase = amount === 0 ? 0 : rate != null ? amount * rate : null;
 
       const currencyRaw = item.currencies;
       const currency = Array.isArray(currencyRaw) ? currencyRaw[0] : currencyRaw;
       const symbol = (currency as { symbol?: string })?.symbol ?? item.currency;
 
-      const valueForTotal = amountBase ?? amount;
+      const valueForTotal = amountBase ?? 0;
       if (item.side === "asset") {
         totalAssets += valueForTotal;
       } else {
@@ -398,16 +393,11 @@ export async function getNwSnapshotsForYear(
     const summaryItems = (items ?? []).map((item) => {
       const snap = snapByItem.get(item.id);
       const amount = snap?.amount ?? 0;
-      let amountBase = snap?.amount_base ?? null;
       const snapshotMonth = snap?.month ?? 0;
-
-      // Always recalculate amount_base for non-base currencies using live FX rate
-      if (amount !== 0 && item.currency !== baseCurrencyYear) {
-        // Revalue only when a live rate exists; a missing rate must fall
-        // back to the stored amount_base, never to rate 1.
-        const rate = fxMapYear.get(item.currency as string);
-        if (rate != null) amountBase = amount * rate;
-      }
+      // Today's rate for another currency; without one the item has no base
+      // amount and is left out of the totals.
+      const rate = fxMapYear.get(item.currency as string);
+      const amountBase = amount === 0 ? 0 : rate != null ? amount * rate : null;
 
       const currencyRaw = item.currencies;
       const currency = Array.isArray(currencyRaw)
@@ -416,7 +406,7 @@ export async function getNwSnapshotsForYear(
       const symbol =
         (currency as { symbol?: string })?.symbol ?? item.currency;
 
-      const valueForTotal = amountBase ?? amount;
+      const valueForTotal = amountBase ?? 0;
       if (item.side === "asset") {
         totalAssets += valueForTotal;
       } else {
@@ -508,6 +498,9 @@ export async function getAccountNetWorth(
 ): Promise<ActionResult<AccountNetWorthSummary>> {
   const ctx = await getServerContext();
   if (!ctx) return { error: "No autenticado" };
+  const baseCurrency = await loadBaseCurrency(ctx);
+  if ("error" in baseCurrency) return baseCurrency;
+  await warmTodayRates(ctx, baseCurrency.data);
   return loadAccountNetWorth(ctx, year);
 }
 
@@ -520,6 +513,9 @@ export async function getLiabilitiesForYear(
 ): Promise<ActionResult<LiabilitiesSummary>> {
   const ctx = await getServerContext();
   if (!ctx) return { error: "No autenticado" };
+  const baseCurrency = await loadBaseCurrency(ctx);
+  if ("error" in baseCurrency) return baseCurrency;
+  await warmTodayRates(ctx, baseCurrency.data);
   return loadLiabilitiesForYear(ctx, year);
 }
 
@@ -617,14 +613,10 @@ export async function getLiabilitiesForMonth(
     const summaryItems = (items ?? []).map((item) => {
       const snap = latestByItem.get(item.id);
       const amount = snap?.amount ?? 0;
-      let amountBase = snap?.amount_base ?? null;
-
-      if (amount !== 0 && item.currency !== baseCurrency) {
-        // Revalue only when a live rate exists; a missing rate must fall
-        // back to the stored amount_base, never to rate 1.
-        const rate = fxMap.get(item.currency as string);
-        if (rate != null) amountBase = amount * rate;
-      }
+      // Today's rate for another currency; without one the debt has no base
+      // amount and is left out of the total.
+      const rate = fxMap.get(item.currency as string);
+      const amountBase = amount === 0 ? 0 : rate != null ? amount * rate : null;
 
       const currencyRaw = item.currencies;
       const currency = Array.isArray(currencyRaw)
@@ -633,7 +625,7 @@ export async function getLiabilitiesForMonth(
       const symbol =
         (currency as { symbol?: string })?.symbol ?? item.currency;
 
-      total += amountBase ?? amount;
+      total += amountBase ?? 0;
 
       return {
         item_id: item.id,
@@ -660,5 +652,8 @@ export async function getNetWorthEvolution(
 ): Promise<ActionResult<NetWorthEvolutionPoint[]>> {
   const ctx = await getServerContext();
   if (!ctx) return { error: "No autenticado" };
+  const baseCurrency = await loadBaseCurrency(ctx);
+  if ("error" in baseCurrency) return baseCurrency;
+  await warmTodayRates(ctx, baseCurrency.data);
   return loadNetWorthEvolution(ctx, year);
 }

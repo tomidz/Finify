@@ -45,7 +45,8 @@ import { useCurrencies } from "@/hooks/useAccounts";
 import { useAccountNetWorth } from "@/hooks/useNetWorth";
 import { ACCOUNT_TYPE_LABELS } from "@/types/accounts";
 
-import { formatAmount, amountTone } from "@/lib/format";
+import { formatAmount, amountTone, formatDayMonth } from "@/lib/format";
+import { today } from "@/lib/dates";
 import { isCashLike, lotValueInBase, priceRequestFor, type PriceRequest } from "@/lib/asset-classes";
 import {
   ASSET_TYPE_LABELS,
@@ -324,8 +325,16 @@ export function InvestmentsTable() {
       filteredHoldings.filter((h) => isCashLike(h.asset_type)),
       (h) => h.current_value ?? h.total_cost,
     );
-    return { invested, current, gain, gainPct, unpricedCount, cashHeld };
-  }, [filteredHoldings, sumInBase]);
+    // The oldest rate a holding in another currency is converted at, shown
+    // when it is not today's.
+    const fxRateDate =
+      filteredHoldings
+        .filter((h) => h.currency !== baseCurrency)
+        .map((h) => priceData?.rateDatesToBase[h.currency])
+        .filter((date): date is string => date != null)
+        .sort()[0] ?? null;
+    return { invested, current, gain, gainPct, unpricedCount, cashHeld, fxRateDate };
+  }, [filteredHoldings, sumInBase, baseCurrency, priceData]);
 
   const hasActiveFilters =
     searchTerm.trim().length > 0 ||
@@ -496,6 +505,7 @@ export function InvestmentsTable() {
         totalGainLoss={summaryTotals.gain}
         totalGainLossPct={summaryTotals.gainPct}
         unpricedCount={summaryTotals.unpricedCount}
+        fxRateDate={summaryTotals.fxRateDate}
       />
 
       <InvestmentAccountsBreakdown
@@ -685,6 +695,7 @@ const InvestmentsSummaryCards = React.memo(function InvestmentsSummaryCards({
   totalGainLoss,
   totalGainLossPct,
   unpricedCount,
+  fxRateDate,
 }: {
   holdingsCount: number;
   currencySymbol: string;
@@ -694,6 +705,7 @@ const InvestmentsSummaryCards = React.memo(function InvestmentsSummaryCards({
   totalGainLoss: number | null;
   totalGainLossPct: number | null;
   unpricedCount?: number;
+  fxRateDate: string | null;
 }) {
   if (holdingsCount === 0 && totalCashUninvested === 0) return null;
 
@@ -737,6 +749,9 @@ const InvestmentsSummaryCards = React.memo(function InvestmentsSummaryCards({
               (valuado{unpricedCount === 1 ? "" : "s"} al costo)
             </p>
           )}
+          {fxRateDate && fxRateDate < today() && (
+            <p className="text-muted-foreground mt-1 text-xs">TC del {formatDayMonth(fxRateDate)}</p>
+          )}
         </CardContent>
       </Card>
 
@@ -768,7 +783,7 @@ type InvestmentAccountBreakdownRow = {
   name: string;
   account_type: string;
   balance_base: number;
-  investment_value_base: number;
+  investment_value_base: number | null;
 };
 
 const InvestmentAccountsBreakdown = React.memo(function InvestmentAccountsBreakdown({
@@ -804,9 +819,12 @@ const InvestmentAccountsBreakdown = React.memo(function InvestmentAccountsBreakd
             {accounts.map((account) => {
               const cash = account.balance_base;
               const valuation = valuationByAccount?.[account.id];
+              // Until prices arrive the holdings count at cost; null when a
+              // lot's currency has no rate.
               const cost = valuation?.cost ?? account.investment_value_base;
-              // Until prices arrive the holdings count at cost.
               const current = valuation?.current ?? cost;
+              const inBase = (value: number | null) =>
+                value !== null ? `${currencySymbol} ${formatAmount(value)}` : "sin cotización";
               const label =
                 ACCOUNT_TYPE_LABELS[
                   account.account_type as keyof typeof ACCOUNT_TYPE_LABELS
@@ -821,13 +839,11 @@ const InvestmentAccountsBreakdown = React.memo(function InvestmentAccountsBreakd
                     {currencySymbol} {formatAmount(cash)}
                   </TableCell>
                   <TableCell className="text-right text-muted-foreground">
-                    {currencySymbol} {formatAmount(cost)}
+                    {inBase(cost)}
                   </TableCell>
-                  <TableCell className="text-right">
-                    {currencySymbol} {formatAmount(current)}
-                  </TableCell>
+                  <TableCell className="text-right">{inBase(current)}</TableCell>
                   <TableCell className="text-right font-medium">
-                    {currencySymbol} {formatAmount(cash + current)}
+                    {inBase(current !== null ? cash + current : null)}
                   </TableCell>
                 </TableRow>
               );
@@ -904,7 +920,7 @@ const HoldingRows = React.memo(function HoldingRows({
             : "—"}
           {holding.manual_price_date && (
             <div className="text-muted-foreground text-[11px]">
-              manual del {holding.manual_price_date.slice(8, 10)}/{holding.manual_price_date.slice(5, 7)}
+              manual del {formatDayMonth(holding.manual_price_date)}
             </div>
           )}
         </TableCell>

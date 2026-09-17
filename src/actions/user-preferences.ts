@@ -5,7 +5,6 @@ import { z } from "zod";
 
 export interface UserPreferences {
   base_currency: string;
-  fx_source: string;
   /** Accounts or budgets already hold amounts in the base currency. */
   base_currency_locked: boolean;
 }
@@ -38,7 +37,6 @@ async function hasBaseCurrencyData(
 
 const UpdateUserPreferencesSchema = z.object({
   base_currency: z.string().min(1).optional(),
-  fx_source: z.string().min(1).optional(),
 });
 
 export async function getUserPreferences(): Promise<
@@ -54,7 +52,7 @@ export async function getUserPreferences(): Promise<
     const [{ data, error }, locked] = await Promise.all([
       supabase
         .from("user_preferences")
-        .select("base_currency, fx_source")
+        .select("base_currency")
         .eq("user_id", user.id)
         .maybeSingle(),
       hasBaseCurrencyData(supabase, user.id),
@@ -65,7 +63,6 @@ export async function getUserPreferences(): Promise<
     return {
       data: {
         base_currency: data?.base_currency ?? "USD",
-        fx_source: data?.fx_source ?? "frankfurter",
         base_currency_locked: locked.data,
       },
     };
@@ -94,7 +91,7 @@ export async function updateUserPreferences(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    if (parsed.data.base_currency == null && parsed.data.fx_source == null) {
+    if (parsed.data.base_currency == null) {
       return getUserPreferences();
     }
 
@@ -106,9 +103,7 @@ export async function updateUserPreferences(
     if (currentError) return { error: currentError.message };
     const currentBase = current?.base_currency ?? "USD";
 
-    // base_currency is NOT NULL: when only fx_source changes, carry the
-    // current value (or the default) so the upsert's insert arm is valid.
-    const baseCurrency = parsed.data.base_currency ?? currentBase;
+    const baseCurrency = parsed.data.base_currency;
 
     const hasData = await hasBaseCurrencyData(supabase, user.id);
     if ("error" in hasData) return hasData;
@@ -130,24 +125,17 @@ export async function updateUserPreferences(
     const { data, error } = await supabase
       .from("user_preferences")
       .upsert(
-        {
-          user_id: user.id,
-          base_currency: baseCurrency,
-          ...(parsed.data.fx_source != null
-            ? { fx_source: parsed.data.fx_source }
-            : {}),
-        },
+        { user_id: user.id, base_currency: baseCurrency },
         { onConflict: "user_id" },
       )
       .eq("user_id", user.id)
-      .select("base_currency, fx_source")
+      .select("base_currency")
       .single();
 
     if (error) return { error: error.message };
     return {
       data: {
         base_currency: data.base_currency,
-        fx_source: data.fx_source,
         base_currency_locked: hasData.data,
       },
     };

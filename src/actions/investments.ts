@@ -731,8 +731,9 @@ export async function getInvestmentSales(): Promise<
         ? currencyRaw[0]
         : currencyRaw;
 
-      const rate = fxAt(row.sale_date as string, row.currency as string) ?? 1;
-      const toBase = (n: number) => Number((n * rate).toFixed(4));
+      // Without a rate the sale has no base amounts, never 1:1 ones.
+      const rate = fxAt(row.sale_date as string, row.currency as string);
+      const toBase = (n: number) => (rate != null ? Number((n * rate).toFixed(4)) : null);
 
       return {
         id: row.id,

@@ -19,11 +19,11 @@ function store(options: { base: string; accounts: number; budgetLines: number })
       return { data: { currency_type: code === "BTC" ? "crypto" : "fiat" }, error: null };
     }
     if (query.table === "user_preferences" && argsOf(query, "upsert")) {
-      const row = argsOf(query, "upsert")![0] as { base_currency: string; fx_source?: string };
-      return { data: { base_currency: row.base_currency, fx_source: row.fx_source ?? "frankfurter" }, error: null };
+      const row = argsOf(query, "upsert")![0] as { base_currency: string };
+      return { data: { base_currency: row.base_currency }, error: null };
     }
     if (query.table === "user_preferences") {
-      return { data: { base_currency: options.base, fx_source: "frankfurter" }, error: null };
+      return { data: { base_currency: options.base }, error: null };
     }
     throw new Error(`unexpected query on ${query.table}`);
   };
@@ -39,7 +39,7 @@ describe("base currency lock", () => {
   it("reports the base currency as locked once there are accounts", async () => {
     respond = store({ base: "USD", accounts: 2, budgetLines: 0 });
     expect(await getUserPreferences()).toEqual({
-      data: { base_currency: "USD", fx_source: "frankfurter", base_currency_locked: true },
+      data: { base_currency: "USD", base_currency_locked: true },
     });
   });
 
@@ -53,7 +53,7 @@ describe("base currency lock", () => {
   it("changes the base currency while there is nothing stored in it", async () => {
     respond = store({ base: "USD", accounts: 0, budgetLines: 0 });
     expect(await updateUserPreferences({ base_currency: "EUR" })).toEqual({
-      data: { base_currency: "EUR", fx_source: "frankfurter", base_currency_locked: false },
+      data: { base_currency: "EUR", base_currency_locked: false },
     });
   });
 
@@ -65,10 +65,10 @@ describe("base currency lock", () => {
     expect(upserts()).toHaveLength(0);
   });
 
-  it("still saves other preferences with data present", async () => {
+  it("saves the same base currency with data present", async () => {
     respond = store({ base: "USD", accounts: 3, budgetLines: 0 });
-    expect(await updateUserPreferences({ base_currency: "USD", fx_source: "manual" })).toEqual({
-      data: { base_currency: "USD", fx_source: "manual", base_currency_locked: true },
+    expect(await updateUserPreferences({ base_currency: "USD" })).toEqual({
+      data: { base_currency: "USD", base_currency_locked: true },
     });
   });
 });

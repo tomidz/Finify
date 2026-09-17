@@ -1362,6 +1362,8 @@ export type Database = {
           balance_base: number
           currency: string
           currency_symbol: string
+          investment_fx_missing: boolean
+          investment_fx_rate_date: string
           investment_value: number
           investment_value_base: number
           month: number
@@ -1412,6 +1414,23 @@ export type Database = {
         Args: { p_sale_id: string }
         Returns: undefined
       }
+      fx_max_age_days: {
+        Args: { p_from: string; p_to: string }
+        Returns: number
+      }
+      fx_rate_asof: {
+        Args: {
+          p_date: string
+          p_from: string
+          p_max_age_days?: number
+          p_to: string
+        }
+        Returns: {
+          rate: number
+          rate_date: string
+          source: string
+        }[]
+      }
       latest_fx_rate: {
         Args: {
           p_from_currency: string
@@ -1441,6 +1460,8 @@ export type Database = {
           amount_base: number
           currency: string
           currency_symbol: string
+          fx_missing: boolean
+          fx_rate_date: string
           item_id: string
           name: string
         }[]
@@ -1449,6 +1470,7 @@ export type Database = {
         Args: { p_base_currency?: string; p_year: number }
         Returns: {
           assets: number
+          fx_missing: boolean
           liabilities: number
           month: number
           net_worth: number
@@ -1600,6 +1622,7 @@ export type Database = {
           usage_count: number
         }[]
       }
+      user_valued_currencies: { Args: never; Returns: string[] }
     }
     Enums: {
       account_type:

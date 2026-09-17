@@ -39,12 +39,31 @@ correspondiente en `node_modules/next/dist/docs/`.
 4. Apertura del mes M = saldo inicial + Σ legs de los meses anteriores. Toda mutación de un mes
    pasado recalcula la cadena y **el resultado del recálculo se revisa**: nunca se ignora un error.
 5. Nunca se guarda una cotización bajo una fecha para la que no fue cotizada, y nunca se asume una
-   tasa 1:1 en silencio. dolarapi (ARS) solo da la cotización actual.
+   tasa 1:1 en silencio (ver "Política de FX").
 6. El débito o crédito automático de inversiones solo ocurre si coinciden la moneda de la cuenta y
    la de la inversión.
 7. Una escritura de varias filas va en una función plpgsql (una transacción) o es idempotente.
 8. Ninguna lectura que necesite "todas las filas" depende de `max_rows` (1000): sumar en SQL o
    paginar.
+
+## Política de FX
+
+- **Flujos** (movimientos, pagos de deuda, compras y ventas): a la tasa de su fecha. Se guarda
+  `base_amount` al registrarlos y las listas y el dashboard los revalúan a esa misma fecha.
+- **Saldos y patrimonio**: a la tasa de cierre de cada mes (hoy para el mes en curso). Todavía no
+  todas las vistas lo cumplen: patrimonio suma la caja a la base histórica de sus movimientos y
+  valúa inversiones y pasivos a la tasa de hoy.
+- **Búsqueda** (`getFxQuote`, `resolveFxRates` en TS; `fx_rate_asof` en SQL): la cotización
+  guardada para esa fecha; si no está, el proveedor (que se guarda); si falla, la última guardada
+  dentro de 7 días (3 para ARS), con su fecha. Una fecha futura usa la de hoy.
+- **Proveedores**: Frankfurter (BCE, fiat con historial). ARS oficial: dolarapi para hoy y
+  argentinadatos para fechas pasadas; los cruces ARS↔otra moneda pasan por USD.
+- **Sin cotización**: un monto sin tasa no tiene base. Queda fuera de los totales y la pantalla lo
+  marca ("sin cotización"); una escritura que necesita la base falla con un mensaje. Las RPCs de
+  patrimonio devuelven `NULL` y `fx_missing`, y solo leen cotizaciones guardadas dentro de la misma
+  ventana: antes de llamarlas se trae la de hoy (`warmTodayRates`).
+- **Frescura**: cuando una tasa es anterior a la fecha que se pidió, la pantalla muestra "TC del
+  dd/mm".
 
 ## Rendimiento
 
@@ -88,6 +107,7 @@ configuran en los dashboards, no en el repo. `supabase/config.toml` solo describ
 
 - `docs/runbooks/migration-recovery.md`: una migración falló en producción.
 - `docs/runbooks/restore-from-backup.md`: backups cifrados y restauración.
+- `docs/runbooks/fx-provider-outage.md`: un proveedor de cotizaciones no responde.
 
 ## Estilo
 

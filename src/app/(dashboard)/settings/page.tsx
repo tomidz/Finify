@@ -35,7 +35,6 @@ import { TransactionRulesSection } from "./_components/TransactionRulesSection";
 
 const SettingsFormSchema = z.object({
   base_currency: z.string().min(1, "Elija una moneda"),
-  fx_source: z.string().min(1, "Elija una fuente FX"),
 });
 
 type SettingsFormValues = z.infer<typeof SettingsFormSchema>;
@@ -49,7 +48,6 @@ export default function SettingsPage() {
     resolver: zodResolver(SettingsFormSchema),
     defaultValues: {
       base_currency: "USD",
-      fx_source: "frankfurter",
     },
   });
 
@@ -57,7 +55,6 @@ export default function SettingsPage() {
     if (prefs) {
       form.reset({
         base_currency: prefs.base_currency,
-        fx_source: prefs.fx_source,
       });
     }
   }, [prefs, form]);
@@ -65,7 +62,6 @@ export default function SettingsPage() {
   const onSubmit = async (values: SettingsFormValues) => {
     await updatePrefs.mutateAsync({
       base_currency: values.base_currency,
-      fx_source: values.fx_source,
     });
   };
 
@@ -129,42 +125,6 @@ export default function SettingsPage() {
                         guardan montos en esta moneda.
                       </p>
                     )}
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Fuente de cotizaciones</CardTitle>
-              <CardDescription>
-                API usada para obtener tipos de cambio (fiat).
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <FormField
-                control={form.control}
-                name="fx_source"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Fuente FX</FormLabel>
-                    <FormControl>
-                      <Select
-                        value={field.value}
-                        onValueChange={field.onChange}
-                        disabled={updatePrefs.isPending}
-                      >
-                        <SelectTrigger className="w-48">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="frankfurter">Frankfurter</SelectItem>
-                          <SelectItem value="manual">Manual</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}

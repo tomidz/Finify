@@ -29,10 +29,7 @@ export function useUserPreferences() {
 export function useUpdateUserPreferences() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: {
-      base_currency?: string;
-      fx_source?: string;
-    }) => {
+    mutationFn: async (input: { base_currency?: string }) => {
       const result = await updateUserPreferences(input);
       if ("error" in result) throw new Error(result.error);
       return result.data;

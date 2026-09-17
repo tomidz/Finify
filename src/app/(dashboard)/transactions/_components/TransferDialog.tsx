@@ -161,12 +161,20 @@ export function TransferDialog({
       return;
     }
 
+    // Without a quote the rate is entered by hand: a rate left from another
+    // pair of accounts would convert the amount at it.
+    const clearRate = () => {
+      form.setValue("exchange_rate", "");
+      if (!destinationManuallyEdited.current) form.setValue("destination_amount", "");
+    };
+
     const sourceCurrencyInfo = currencies.find((c) => c.code === sourceCurrency);
     const targetCurrencyInfo = currencies.find((c) => c.code === targetCurrency);
     if (
       sourceCurrencyInfo?.currency_type !== "fiat" ||
       targetCurrencyInfo?.currency_type !== "fiat"
     ) {
+      clearRate();
       return;
     }
 
@@ -176,18 +184,20 @@ export function TransferDialog({
     fetchExchangeRate(sourceCurrency, targetCurrency, watchDate).then((rate) => {
       if (cancelled) return;
       setFetchingRate(false);
-      if (rate !== null) {
-        const formattedRate = formatNumberInput(String(rate).replace(".", ","));
-        form.setValue("exchange_rate", formattedRate);
-        destinationManuallyEdited.current = false;
-        const amt = parseNumberInput(amountRef.current);
-        if (!isNaN(amt) && amt > 0) {
-          const base = toDestination(amt * rate);
-          form.setValue(
-            "destination_amount",
-            formatNumberInput(String(base).replace(".", ","))
-          );
-        }
+      if (rate === null) {
+        clearRate();
+        return;
+      }
+      const formattedRate = formatNumberInput(String(rate).replace(".", ","));
+      form.setValue("exchange_rate", formattedRate);
+      destinationManuallyEdited.current = false;
+      const amt = parseNumberInput(amountRef.current);
+      if (!isNaN(amt) && amt > 0) {
+        const base = toDestination(amt * rate);
+        form.setValue(
+          "destination_amount",
+          formatNumberInput(String(base).replace(".", ","))
+        );
       }
     });
 

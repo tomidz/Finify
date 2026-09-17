@@ -14,7 +14,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useEnsureCurrentMonth } from "@/hooks/useMonths";
 import { useNetWorthData } from "@/hooks/useScreens";
 import { useInvestmentValuation } from "@/hooks/useInvestments";
-import { MONTH_NAMES, formatAmount, amountTone } from "@/lib/format";
+import { MONTH_NAMES, formatAmount, amountTone, formatDayMonth } from "@/lib/format";
+import { today } from "@/lib/dates";
 import { ACCOUNT_TYPE_LABELS, type AccountType } from "@/types/accounts";
 import type { NetWorthData } from "@/actions/screens";
 import { NetWorthEvolutionChart } from "./_components/NetWorthEvolutionChart";
@@ -163,10 +164,33 @@ function NetWorthContent({
     [valuation, evolution],
   );
 
+  // Amounts without a rate to the base currency are left out of the totals.
   const totalAssets = accountsWithCurrentValues.reduce(
-    (sum, account) => sum + account.balance_base + account.investment_value_base,
+    (sum, account) => sum + account.balance_base + (account.investment_value_base ?? 0),
     0,
   );
+  const fxMissing =
+    accountsWithCurrentValues.some((a) => a.investment_value_base === null && a.investment_value !== 0) ||
+    liabilities.items.some((item) => item.amount_base === null && item.amount !== 0) ||
+    evolution.some((point) => point.fxMissing);
+  // The oldest rate shown: today's valuation for the accounts it covers, the
+  // stored rates for the rest and for debts.
+  const fxRateDate =
+    [
+      valuation?.fxRateDate ?? null,
+      ...assetsSummary.accounts
+        .filter((a) => valuation?.byAccount[a.id] == null)
+        .map((a) => a.investment_fx_rate_date),
+      ...liabilities.items.map((item) => item.fx_rate_date),
+    ]
+      .filter((date): date is string => date != null)
+      .sort()[0] ?? null;
+  const fxNote = [
+    fxMissing ? "montos sin cotización fuera de los totales" : null,
+    fxRateDate && fxRateDate < today() ? `TC del ${formatDayMonth(fxRateDate)}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const totalLiabilities = liabilities.total ?? 0;
   const netWorth = totalAssets - totalLiabilities;
 
@@ -187,7 +211,7 @@ function NetWorthContent({
       }
       const group = map.get(type)!;
       group.accounts.push(acc);
-      group.total += acc.balance_base + acc.investment_value_base;
+      group.total += acc.balance_base + (acc.investment_value_base ?? 0);
     }
     return Array.from(map.values());
   }, [accountsWithCurrentValues]);
@@ -203,6 +227,7 @@ function NetWorthContent({
         <Card className="gap-0 py-0"><CardHeader className="px-4 pt-4 pb-2"><CardDescription>Total Pasivos</CardDescription></CardHeader><CardContent className="px-4 pb-4"><p className="text-2xl font-bold text-red-600">{currencySymbol} {formatAmount(totalLiabilities)}</p></CardContent></Card>
         <Card className="gap-0 py-0"><CardHeader className="px-4 pt-4 pb-2"><CardDescription>Patrimonio Neto{pendingHint}</CardDescription></CardHeader><CardContent className="px-4 pb-4"><p className={`text-2xl font-bold ${amountTone(netWorth)}`}>{currencySymbol} {formatAmount(netWorth)}</p></CardContent></Card>
       </div>
+      {fxNote && <p className="text-muted-foreground -mt-4 text-xs">{fxNote}</p>}
 
       <NetWorthEvolutionChart data={evolutionWithCurrentValues} currencySymbol={currencySymbol} />
 
@@ -216,10 +241,11 @@ function NetWorthContent({
               <div key={group.type} className="overflow-hidden rounded-md border">
                 <div className="border-b bg-muted/30 px-4 py-2"><span className="text-sm font-semibold">{group.label}</span><span className="text-muted-foreground ml-2 text-xs">{currencySymbol} {formatAmount(group.total)}</span></div>
                 {group.accounts.map((acc) => {
-                  const totalValueBase = acc.balance_base + acc.investment_value_base;
+                  const totalValueBase = acc.balance_base + (acc.investment_value_base ?? 0);
                   const cashValueBase = acc.balance_base;
+                  const investmentWithoutRate = acc.investment_value_base === null && acc.investment_value !== 0;
                   const showInvestmentBreakdown =
-                    acc.investment_value_base > 0 &&
+                    ((acc.investment_value_base ?? 0) > 0 || investmentWithoutRate) &&
                     Math.abs(cashValueBase) > 0.01;
                   return (
                     <div key={acc.id} className="flex items-center justify-between border-b px-4 py-3 last:border-b-0">
@@ -227,7 +253,7 @@ function NetWorthContent({
                         <span className="text-sm font-medium">{acc.name}</span>
                         {showInvestmentBreakdown && (
                           <span className="text-muted-foreground ml-2 text-xs">
-                            (cash: {currencySymbol} {formatAmount(cashValueBase)} · inv: {currencySymbol} {formatAmount(acc.investment_value_base)})
+                            (cash: {currencySymbol} {formatAmount(cashValueBase)} · inv: {acc.investment_value_base !== null ? `${currencySymbol} ${formatAmount(acc.investment_value_base)}` : "sin cotización"})
                           </span>
                         )}
                       </div>
@@ -258,6 +284,7 @@ function NetWorthContent({
                   <div className="text-right">
                     <span className="text-sm font-medium">{item.currency_symbol} {formatAmount(item.amount)}</span>
                     {item.amount_base !== null && item.currency !== baseCurrency && <span className="text-muted-foreground ml-2 text-xs">≈ {currencySymbol} {formatAmount(item.amount_base)}</span>}
+                    {item.amount_base === null && item.amount !== 0 && <span className="text-muted-foreground ml-2 text-xs">sin cotización</span>}
                   </div>
                 </div>
               ))}

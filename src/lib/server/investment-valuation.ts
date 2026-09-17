@@ -13,6 +13,8 @@ export type InvestmentValuation = {
   byAccount: ValuationByAccount;
   /** Only computed when a year is requested. */
   byMonth: ValuationByMonth | null;
+  /** The oldest exchange rate a lot in another currency was valued at. */
+  fxRateDate: string | null;
 };
 
 /**
@@ -38,7 +40,7 @@ export async function loadInvestmentValuation(
     quantity: Number(row.quantity),
     total_cost: Number(row.total_cost),
   }));
-  if (lots.length === 0) return { data: { byAccount: {}, byMonth: year ? {} : null } };
+  if (lots.length === 0) return { data: { byAccount: {}, byMonth: year ? {} : null, fxRateDate: null } };
 
   const requests = new Map<string, PriceRequest>();
   for (const lot of lots) {
@@ -47,7 +49,13 @@ export async function loadInvestmentValuation(
   }
   const resolved = await resolvePricesWithSources([...requests.values()], baseCurrency, ctx);
   if ("error" in resolved) return resolved;
-  const { prices, ratesToBase } = resolved.data;
+  const { prices, ratesToBase, rateDatesToBase } = resolved.data;
+  const fxRateDate =
+    lots
+      .filter((lot) => lot.currency !== baseCurrency)
+      .map((lot) => rateDatesToBase[lot.currency])
+      .filter((date): date is string => date != null)
+      .sort()[0] ?? null;
 
   const valued: { account_id: string; purchase_date: string; current: number; cost: number }[] = [];
   for (const lot of lots) {
@@ -64,7 +72,7 @@ export async function loadInvestmentValuation(
     byAccount[lot.account_id] = entry;
   }
 
-  if (!year) return { data: { byAccount, byMonth: null } };
+  if (!year) return { data: { byAccount, byMonth: null, fxRateDate } };
 
   const byMonth: ValuationByMonth = {};
   for (const lot of valued) {
@@ -81,5 +89,5 @@ export async function loadInvestmentValuation(
     }
   }
 
-  return { data: { byAccount, byMonth } };
+  return { data: { byAccount, byMonth, fxRateDate } };
 }

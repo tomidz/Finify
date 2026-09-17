@@ -87,7 +87,10 @@ export interface AccountNetWorthSummary {
     balance: number;
     balance_base: number;
     investment_value: number;
-    investment_value_base: number;
+    /** Null when a lot or sale of the account has no rate to the base currency. */
+    investment_value_base: number | null;
+    /** The oldest rate the investments were valued at. */
+    investment_fx_rate_date: string | null;
   }[];
 }
 
@@ -100,7 +103,9 @@ export interface LiabilitiesSummary {
     currency: string;
     currency_symbol: string;
     amount: number;
+    /** Null when the debt's currency has no rate to the base currency. */
     amount_base: number | null;
+    fx_rate_date: string | null;
   }[];
 }
 
@@ -109,6 +114,8 @@ export interface NetWorthEvolutionPoint {
   assets: number;
   liabilities: number;
   netWorth: number;
+  /** The month leaves out amounts without a rate to the base currency. */
+  fxMissing: boolean;
 }
 
 /* ------------------------------------------------------------------ */

@@ -2,10 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { argsOf, fakeSupabase } from "../../../tests/support/fake-supabase";
 
-const getOrFetchFxRate = vi.fn();
+const getFxQuote = vi.fn();
+const fetchArsPerUsdHistory = vi.fn();
 vi.mock("@/lib/server/fx", () => ({
-  getOrFetchFxRate: (input: unknown) => getOrFetchFxRate(input),
+  getFxQuote: (input: unknown) => getFxQuote(input),
 }));
+vi.mock("@/lib/dolarapi", () => ({
+  fetchArsPerUsdHistory: () => fetchArsPerUsdHistory(),
+}));
+
+const quote = (rate: number, rateDate: string) => ({ data: { rate, rateDate, source: "frankfurter" } });
 
 const { resolveFxRates } = await import("./fx-range");
 
@@ -29,7 +35,8 @@ describe("resolveFxRates", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 8, 16, 12)); // 2026-09-16 local
-    getOrFetchFxRate.mockReset();
+    getFxQuote.mockReset();
+    fetchArsPerUsdHistory.mockReset().mockResolvedValue(null);
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -41,7 +48,7 @@ describe("resolveFxRates", () => {
       eur("2026-09-08", 9.9, "manual"),
       { from_currency: "GBP", rate_date: "2026-09-07", rate: 1.3, source: "frankfurter" },
     ]);
-    getOrFetchFxRate.mockResolvedValue({ data: 1.21 });
+    getFxQuote.mockResolvedValue(quote(1.21, "2026-09-08"));
 
     const fxAt = await resolveFxRates(
       asClient(client),
@@ -59,27 +66,30 @@ describe("resolveFxRates", () => {
     expect(fxAt("2026-09-07", "USD")).toBe(1);
     // Only a row from another source: goes to the provider like before.
     expect(fxAt("2026-09-08", "EUR")).toBe(1.21);
-    expect(getOrFetchFxRate).toHaveBeenCalledTimes(1);
-    expect(getOrFetchFxRate).toHaveBeenCalledWith({ date: "2026-09-08", from: "EUR", to: "USD" });
+    expect(getFxQuote).toHaveBeenCalledTimes(1);
+    expect(getFxQuote).toHaveBeenCalledWith({ date: "2026-09-08", from: "EUR", to: "USD", offline: false });
     expect(queries).toHaveLength(1);
     expect(argsOf(queries[0], "in")).toEqual(["from_currency", ["EUR", "GBP"]]);
   });
 
   it("does not stand in a nearby date for a missing one, and returns null when the provider fails", async () => {
     const { client } = withCache([eur("2026-09-04", 1.1)]);
-    getOrFetchFxRate.mockResolvedValue({ error: "sin cotización" });
+    getFxQuote.mockResolvedValue({ error: "sin cotización" });
 
     const fxAt = await resolveFxRates(asClient(client), [{ date: "2026-09-06", from: "EUR" }], "USD");
 
-    expect(getOrFetchFxRate).toHaveBeenCalledWith({ date: "2026-09-06", from: "EUR", to: "USD" });
+    expect(getFxQuote).toHaveBeenCalledWith({ date: "2026-09-06", from: "EUR", to: "USD", offline: false });
     expect(fxAt("2026-09-06", "EUR")).toBeNull();
+    expect(fxAt.rateDate("2026-09-06", "EUR")).toBeNull();
   });
 
-  it("asks dolarapi once per currency, since it only quotes today", async () => {
+  it("asks for each uncached past date of the peso, which has history", async () => {
     const { client } = withCache([
       { from_currency: "ARS", rate_date: "2026-08-01", rate: 0.0009, source: "dolarapi" },
     ]);
-    getOrFetchFxRate.mockResolvedValue({ data: 0.0008 });
+    getFxQuote.mockImplementation(async ({ date }: { date: string }) =>
+      date === "2026-07-01" ? quote(0.001, "2026-07-01") : quote(0.0008, "2026-08-30"),
+    );
 
     const fxAt = await resolveFxRates(
       asClient(client),
@@ -91,11 +101,72 @@ describe("resolveFxRates", () => {
       "USD",
     );
 
-    expect(getOrFetchFxRate).toHaveBeenCalledTimes(1);
-    expect(getOrFetchFxRate).toHaveBeenCalledWith({ date: "2026-09-16", from: "ARS", to: "USD" });
-    expect(fxAt("2026-07-01", "ARS")).toBe(0.0008);
+    expect(getFxQuote).toHaveBeenCalledTimes(2);
+    expect(fxAt("2026-07-01", "ARS")).toBe(0.001);
     expect(fxAt("2026-08-01", "ARS")).toBe(0.0009);
     expect(fxAt("2026-09-01", "ARS")).toBe(0.0008);
+  });
+
+  it("says which date each rate was quoted for", async () => {
+    const { client } = withCache([eur("2026-09-07", 1.2)]);
+    getFxQuote.mockResolvedValue(quote(1.19, "2026-09-04"));
+
+    const fxAt = await resolveFxRates(
+      asClient(client),
+      [
+        { date: "2026-09-07", from: "EUR" },
+        { date: "2026-09-08", from: "EUR" },
+      ],
+      "USD",
+    );
+
+    expect(fxAt.rateDate("2026-09-07", "EUR")).toBe("2026-09-07");
+    expect(fxAt.rateDate("2026-09-08", "EUR")).toBe("2026-09-04");
+    expect(fxAt.rateDate("2026-09-08", "USD")).toBe("2026-09-08");
+  });
+
+  it("loads the peso's history once for many uncached past days, carrying a quote over a weekend", async () => {
+    const { client, queries } = withCache([]);
+    fetchArsPerUsdHistory.mockResolvedValue(
+      new Map([
+        ["2026-09-04", 1400],
+        ["2026-09-07", 1410],
+        ["2026-09-08", 1420],
+      ]),
+    );
+
+    const fxAt = await resolveFxRates(
+      asClient(client),
+      [
+        { date: "2026-09-06", from: "ARS" },
+        { date: "2026-09-07", from: "ARS" },
+        { date: "2026-09-08", from: "ARS" },
+      ],
+      "USD",
+    );
+
+    expect(fetchArsPerUsdHistory).toHaveBeenCalledTimes(1);
+    expect(getFxQuote).not.toHaveBeenCalled();
+    expect(fxAt("2026-09-06", "ARS")).toBeCloseTo(1 / 1400);
+    expect(fxAt("2026-09-08", "ARS")).toBeCloseTo(1 / 1420);
+    const cached = queries.flatMap((q) => (argsOf(q, "upsert")?.[0] as { rate_date: string }[] | undefined) ?? []);
+    expect(cached.map((row) => row.rate_date)).toEqual(["2026-09-06", "2026-09-07", "2026-09-08"]);
+  });
+
+  it("stops asking a provider that failed for the rest of the batch", async () => {
+    const { client } = withCache([]);
+    getFxQuote.mockImplementation(async ({ offline }: { offline: boolean }) =>
+      offline ? { error: "sin cotización" } : quote(1.1, "2026-09-01"),
+    );
+
+    await resolveFxRates(
+      asClient(client),
+      Array.from({ length: 10 }, (_, i) => ({ date: `2026-09-${String(i + 2).padStart(2, "0")}`, from: "EUR" })),
+      "USD",
+    );
+
+    const online = getFxQuote.mock.calls.filter(([input]) => !(input as { offline: boolean }).offline);
+    expect(online.length).toBeLessThanOrEqual(4);
   });
 
   it("reads today's quote for future dates", async () => {
@@ -112,12 +183,12 @@ describe("resolveFxRates", () => {
 
     expect(fxAt("2026-10-01", "EUR")).toBe(1.17);
     expect(fxAt("2026-11-01", "EUR")).toBe(1.17);
-    expect(getOrFetchFxRate).not.toHaveBeenCalled();
+    expect(getFxQuote).not.toHaveBeenCalled();
   });
 
   it("asks the provider once for all uncached future dates of a currency", async () => {
     const { client } = withCache([]);
-    getOrFetchFxRate.mockResolvedValue({ data: 1.18 });
+    getFxQuote.mockResolvedValue(quote(1.18, "2026-09-16"));
 
     const fxAt = await resolveFxRates(
       asClient(client),
@@ -128,7 +199,8 @@ describe("resolveFxRates", () => {
       "USD",
     );
 
-    expect(getOrFetchFxRate).toHaveBeenCalledTimes(1);
+    expect(getFxQuote).toHaveBeenCalledTimes(1);
+    expect(getFxQuote).toHaveBeenCalledWith({ date: "2026-09-16", from: "EUR", to: "USD", offline: false });
     expect(fxAt("2026-11-01", "EUR")).toBe(1.18);
   });
 

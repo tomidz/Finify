@@ -70,6 +70,7 @@ async function withCurrentBaseAmounts(
         account_name: line.accounts?.name ?? "",
         account_currency_symbol: line.currencies?.symbol ?? line.original_currency,
         current_base_amount: rate != null ? amount * rate : undefined,
+        current_rate_date: rate != null ? (rateFor.rateDate(txDate, originalCurrency) ?? undefined) : undefined,
       };
     });
 

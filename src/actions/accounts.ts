@@ -13,6 +13,8 @@ import {
 } from "@/lib/server/opening-balances";
 import type { Account, Currency } from "@/types/accounts";
 
+type ActionResult<T> = { data: T } | { error: string };
+
 /** Devuelve el opening_base_amount correcto usando FX si es necesario. */
 async function resolveOpeningBase(
   openingAmount: number,
@@ -20,22 +22,24 @@ async function resolveOpeningBase(
   baseCurrency: string,
   providedBase: number | undefined,
   providedRate: number | undefined,
-): Promise<number> {
-  if (openingAmount === 0) return 0;
-  if (accountCurrency === baseCurrency) return openingAmount;
+): Promise<ActionResult<number>> {
+  if (openingAmount === 0) return { data: 0 };
+  if (accountCurrency === baseCurrency) return { data: openingAmount };
   // Si el usuario ingresó explícitamente el monto base, respetarlo
-  if (providedBase !== undefined && providedBase > 0) return providedBase;
+  if (providedBase !== undefined && providedBase > 0) return { data: providedBase };
   // Si hay un TC válido distinto de 1 ingresado por el usuario, usarlo
   if (providedRate !== undefined && providedRate > 0 && providedRate !== 1) {
-    return Math.round(openingAmount * providedRate * 100) / 100;
+    return { data: Math.round(openingAmount * providedRate * 100) / 100 };
   }
   // Obtener TC actual del servidor (con caché en DB)
   const result = await getOrFetchFxRate({ date: today(), from: accountCurrency, to: baseCurrency });
-  if ("error" in result) return 0; // crypto u otras monedas no soportadas
-  return Math.round(openingAmount * result.data * 100) / 100;
+  if ("error" in result) {
+    return {
+      error: `No hay cotización de ${accountCurrency} a ${baseCurrency}: ingresá el tipo de cambio del saldo inicial.`,
+    };
+  }
+  return { data: Math.round(openingAmount * result.data * 100) / 100 };
 }
-
-type ActionResult<T> = { data: T } | { error: string };
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -271,6 +275,7 @@ export async function createAccount(
       base_amount,
       exchange_rate,
     );
+    if ("error" in openingBase) return openingBase;
 
     const { data, error } = await supabase
       .from("accounts")
@@ -278,7 +283,7 @@ export async function createAccount(
         ...accountFields,
         user_id: user.id,
         initial_amount: openingAmount,
-        initial_base_amount: openingBase,
+        initial_base_amount: openingBase.data,
         initial_base_currency: baseCurrency,
       })
       .select()
@@ -327,11 +332,12 @@ export async function updateAccount(
       currency: string;
       initial_amount: number | null;
       initial_base_amount: number | null;
+      initial_base_currency: string | null;
     } | null = null;
     if (accountUpdates.currency !== undefined || initial_amount !== undefined) {
       const { data: stored, error: storedError } = await supabase
         .from("accounts")
-        .select("currency, initial_amount, initial_base_amount")
+        .select("currency, initial_amount, initial_base_amount, initial_base_currency")
         .eq("id", id)
         .eq("user_id", user.id)
         .maybeSingle();
@@ -367,24 +373,34 @@ export async function updateAccount(
         .maybeSingle();
       const baseCurrency = prefsRow?.base_currency ?? "USD";
 
-      const openingBase = await resolveOpeningBase(
-        initial_amount,
-        accountUpdates.currency ?? current.currency,
-        baseCurrency,
-        base_amount,
-        exchange_rate,
-      );
-
-      // The same balance again rewrites nothing.
-      const unchanged =
+      // The same balance, with no new rate, keeps the base it was converted at.
+      const sameBalance =
         Number(current.initial_amount ?? 0) === initial_amount &&
-        Number(current.initial_base_amount ?? 0) === openingBase;
-      if (!unchanged) {
-        balanceUpdate = {
+        (accountUpdates.currency ?? current.currency) === current.currency &&
+        current.initial_base_currency === baseCurrency &&
+        base_amount === undefined &&
+        (exchange_rate === undefined || exchange_rate === 1);
+      if (!sameBalance) {
+        const openingBase = await resolveOpeningBase(
           initial_amount,
-          initial_base_amount: openingBase,
-          initial_base_currency: baseCurrency,
-        };
+          accountUpdates.currency ?? current.currency,
+          baseCurrency,
+          base_amount,
+          exchange_rate,
+        );
+        if ("error" in openingBase) return openingBase;
+
+        // The same balance again rewrites nothing.
+        const unchanged =
+          Number(current.initial_amount ?? 0) === initial_amount &&
+          Number(current.initial_base_amount ?? 0) === openingBase.data;
+        if (!unchanged) {
+          balanceUpdate = {
+            initial_amount,
+            initial_base_amount: openingBase.data,
+            initial_base_currency: baseCurrency,
+          };
+        }
       }
     }
 

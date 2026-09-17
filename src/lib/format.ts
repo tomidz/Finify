@@ -32,6 +32,11 @@ export function formatAmount(value: number): string {
   return amountFormatter.format(normalized);
 }
 
+/** "dd/mm" for a yyyy-MM-dd date. */
+export function formatDayMonth(date: string): string {
+  return `${date.slice(8, 10)}/${date.slice(5, 7)}`;
+}
+
 /** Return a Tailwind text color class based on the sign of a number. */
 export function amountTone(value: number): string {
   if (value > 0) return "text-green-600";

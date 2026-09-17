@@ -30,7 +30,12 @@ function context(lots: ReturnType<typeof lot>[]) {
 }
 
 const priced = (prices: Record<string, number>, ratesToBase: Record<string, number> = { USD: 1 }) => ({
-  data: { prices, manualDates: {}, ratesToBase },
+  data: {
+    prices,
+    manualDates: {},
+    ratesToBase,
+    rateDatesToBase: Object.fromEntries(Object.keys(ratesToBase).map((currency) => [currency, "2026-09-15"])),
+  },
 });
 
 describe("loadInvestmentValuation", () => {
@@ -64,6 +69,7 @@ describe("loadInvestmentValuation", () => {
           3: { currentValue: 2 * 200, costBasis: 300 },
           12: { currentValue: 2 * 200, costBasis: 300 },
         }),
+        fxRateDate: null,
       },
     });
   });
@@ -77,7 +83,7 @@ describe("loadInvestmentValuation", () => {
       null,
     );
 
-    expect(result).toEqual({ data: { byAccount: { broker: { current: 1100, cost: 1100 } }, byMonth: null } });
+    expect(result).toEqual({ data: { byAccount: { broker: { current: 1100, cost: 1100 } }, byMonth: null, fxRateDate: "2026-09-15" } });
   });
 
   it("converts a crypto lot's value and cost from its own currency", async () => {
@@ -89,7 +95,7 @@ describe("loadInvestmentValuation", () => {
       null,
     );
 
-    expect(result).toEqual({ data: { byAccount: { broker: { current: 33_000, cost: 11_000 } }, byMonth: null } });
+    expect(result).toEqual({ data: { byAccount: { broker: { current: 33_000, cost: 11_000 } }, byMonth: null, fxRateDate: "2026-09-15" } });
   });
 
   it("values cash held at the exchange rate, against what it cost", async () => {
@@ -105,6 +111,7 @@ describe("loadInvestmentValuation", () => {
       data: {
         byAccount: { broker: { current: 1100, cost: 1050 } },
         byMonth: expect.objectContaining({ 3: { currentValue: 1100, costBasis: 1050 } }),
+        fxRateDate: null,
       },
     });
   });
@@ -142,6 +149,7 @@ describe("loadInvestmentValuation", () => {
           exchange: { current: expect.closeTo(99, 6), cost: expect.closeTo(99, 6) },
         },
         byMonth: null,
+        fxRateDate: "2026-09-15",
       },
     });
   });

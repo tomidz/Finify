@@ -5,7 +5,7 @@ import { forEachLimited } from "@/lib/concurrency";
 import { fetchCryptoPrices } from "@/lib/coingecko";
 import { today } from "@/lib/dates";
 import type { ServerContext } from "@/lib/server/context";
-import { getOrFetchFxRate } from "@/lib/server/fx";
+import { getFxQuote } from "@/lib/server/fx";
 import { chunk, IN_LIST_CHUNK } from "@/lib/server/paginate";
 import { fetchTwelveDataPrices } from "@/lib/twelvedata";
 
@@ -18,6 +18,8 @@ export type ResolvedPrices = {
   manualDates: Record<string, string>;
   /** One unit of each requested currency in the base currency, where a rate is known. */
   ratesToBase: Record<string, number>;
+  /** The date each of ratesToBase was quoted for. */
+  rateDatesToBase: Record<string, string>;
 };
 
 type PriceSource = "coingecko" | "twelvedata" | "yahoo" | "manual";
@@ -129,24 +131,30 @@ export async function resolvePricesWithSources(
     const prices: Record<string, number> = {};
     const manualDates: Record<string, string> = {};
     const ratesToBase: Record<string, number> = {};
+    const rateDatesToBase: Record<string, string> = {};
 
-    const rates = new Map<string, Promise<number | null>>();
-    const fxRate = (from: string, to: string): Promise<number | null> => {
-      if (from === to) return Promise.resolve(1);
+    const todayStr = today();
+    const quotes = new Map<string, Promise<{ rate: number; rateDate: string } | null>>();
+    const fxQuote = (from: string, to: string) => {
+      if (from === to) return Promise.resolve({ rate: 1, rateDate: todayStr });
       const pair = `${from}:${to}`;
-      if (!rates.has(pair)) {
-        rates.set(
+      if (!quotes.has(pair)) {
+        quotes.set(
           pair,
-          getOrFetchFxRate({ date: today(), from, to }).then((fx) => ("error" in fx ? null : fx.data)),
+          getFxQuote({ date: todayStr, from, to }).then((fx) => ("error" in fx ? null : fx.data)),
         );
       }
-      return rates.get(pair)!;
+      return quotes.get(pair)!;
     };
+    const fxRate = async (from: string, to: string) => (await fxQuote(from, to))?.rate ?? null;
     const currencyOf = (request: PriceRequest) => request.currency ?? baseCurrency;
 
     for (const currency of new Set(requests.map(currencyOf))) {
-      const rate = await fxRate(currency, baseCurrency);
-      if (rate != null) ratesToBase[currency] = rate;
+      const quote = await fxQuote(currency, baseCurrency);
+      if (quote) {
+        ratesToBase[currency] = quote.rate;
+        rateDatesToBase[currency] = quote.rateDate;
+      }
     }
 
     // Cash and stablecoins: one unit is worth one unit of their currency,
@@ -264,7 +272,7 @@ export async function resolvePricesWithSources(
         if (manualDate) manualDates[request.key] = manualDate;
       }
     }
-    return { data: { prices, manualDates, ratesToBase } };
+    return { data: { prices, manualDates, ratesToBase, rateDatesToBase } };
   } catch (e) {
     console.error("resolvePricesWithSources:", e);
     return { error: "Error al obtener precios actuales" };

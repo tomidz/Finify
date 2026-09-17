@@ -11,6 +11,7 @@ import {
   loadAccountNetWorth,
   loadLiabilitiesForYear,
   loadNetWorthEvolution,
+  warmTodayRates,
 } from "@/lib/server/net-worth";
 import { loadOpeningBalances } from "@/lib/server/opening-balances";
 import { loadTransactionsForMonths } from "@/lib/server/transactions";
@@ -180,6 +181,7 @@ export async function getNetWorthData(input: {
       };
     }
 
+    await warmTodayRates(ctx, baseCurrency);
     const [accounts, liabilities, evolution] = await Promise.all([
       loadAccountNetWorth(ctx, year).then(unwrap),
       loadLiabilitiesForYear(ctx, year).then(unwrap),

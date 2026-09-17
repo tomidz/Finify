@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { today } from "@/lib/dates";
 import type { TransactionWithRelations } from "@/types/transactions";
 import type { OpeningBalance } from "@/types/months";
 
@@ -21,6 +22,8 @@ export interface MonthSummary {
   netMonth: number;
   closingBase: number;
   categoryBreakdown: CategoryDetail[];
+  /** Movements valued at a rate quoted before their date (the provider had none). */
+  olderRates: number;
 }
 
 export interface AccountBalance {
@@ -56,6 +59,8 @@ export function useMonthSummary(
     let savings = 0;
     let investments = 0;
     let netMonth = 0;
+    let olderRates = 0;
+    const todayStr = today();
     const categoryMap = new Map<string, CategoryDetail>();
 
     for (const ob of openingBalances ?? []) {
@@ -74,6 +79,11 @@ export function useMonthSummary(
       const primaryLine = getPrimaryLine(tx);
       const primaryBase =
         primaryLine?.current_base_amount ?? primaryLine?.base_amount ?? 0;
+      // A future movement takes today's rate by design.
+      const expectedRateDate = tx.date < todayStr ? tx.date : todayStr;
+      if (primaryLine?.current_rate_date && primaryLine.current_rate_date < expectedRateDate) {
+        olderRates += 1;
+      }
 
       if (tx.transaction_type !== "transfer") {
         netMonth += primaryBase;
@@ -156,6 +166,7 @@ export function useMonthSummary(
         netMonth,
         closingBase: openingBase + netMonth,
         categoryBreakdown: Array.from(categoryMap.values()).sort((a, b) => b.amount - a.amount),
+        olderRates,
       },
       accountMonthlyBalances: Array.from(byAccount.values()).sort((a, b) =>
         a.name.localeCompare(b.name),

@@ -1,4 +1,5 @@
-import { fetchArsPerUsd } from "@/lib/dolarapi";
+import { fetchArsPerUsd, fetchArsPerUsdOn } from "@/lib/dolarapi";
+import { today } from "@/lib/dates";
 
 /**
  * Fetch an exchange rate. Frankfurter (ECB, fiat) covers most pairs; ARS is
@@ -6,7 +7,7 @@ import { fetchArsPerUsd } from "@/lib/dolarapi";
  *
  * Returns the rate to convert 1 unit of `from` into `to`.
  * When `date` is provided (yyyy-MM-dd) it fetches the historical rate for that
- * day (the ARS leg is current-only — dolarapi has no history).
+ * day; without it, the latest.
  * Returns null if the request fails or the pair is unsupported.
  */
 export async function fetchExchangeRate(
@@ -56,7 +57,8 @@ async function fetchArsRate(
   to: string,
   date?: string
 ): Promise<number | null> {
-  const arsPerUsd = await fetchArsPerUsd();
+  // The history only has past days; today and later take today's quote.
+  const arsPerUsd = date && date < today() ? await fetchArsPerUsdOn(date) : await fetchArsPerUsd();
   if (!arsPerUsd) return null;
 
   if (from === "ARS" && to === "USD") return 1 / arsPerUsd;

@@ -83,16 +83,21 @@ export function SalesHistoryTable() {
   }, [sales, search, assetTypeFilter, yearFilter]);
 
   const totals = useMemo(() => {
+    // A sale without an exchange rate is left out of the totals.
     return filtered.reduce(
       (acc, s) => {
-        acc.proceeds += s.total_proceeds_base;
-        acc.fees += s.fees_base;
-        acc.tax += s.tax_base;
-        acc.cost += s.cost_basis_base;
+        if (s.realized_pnl_base === null) {
+          acc.withoutRate += 1;
+          return acc;
+        }
+        acc.proceeds += s.total_proceeds_base ?? 0;
+        acc.fees += s.fees_base ?? 0;
+        acc.tax += s.tax_base ?? 0;
+        acc.cost += s.cost_basis_base ?? 0;
         acc.pnl += s.realized_pnl_base;
         return acc;
       },
-      { proceeds: 0, fees: 0, tax: 0, cost: 0, pnl: 0 },
+      { proceeds: 0, fees: 0, tax: 0, cost: 0, pnl: 0, withoutRate: 0 },
     );
   }, [filtered]);
 
@@ -136,6 +141,11 @@ export function SalesHistoryTable() {
           </CardHeader>
           <CardContent className="px-4 pb-4">
             <p className="text-2xl font-bold">{filtered.length}</p>
+            {totals.withoutRate > 0 && (
+              <p className="text-muted-foreground mt-1 text-xs">
+                {totals.withoutRate} sin cotización, fuera de los totales
+              </p>
+            )}
           </CardContent>
         </Card>
         <Card className="gap-0 py-0">

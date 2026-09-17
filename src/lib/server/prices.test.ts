@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { argsOf, fakeSupabase, type RecordedQuery } from "../../../tests/support/fake-supabase";
 
 const fetchCryptoPrices = vi.fn();
-const getOrFetchFxRate = vi.fn();
+const getFxQuote = vi.fn();
 const fetchTwelveDataPrices = vi.fn();
 const yahooQuote = vi.fn();
 
@@ -14,7 +14,7 @@ vi.mock("@/lib/twelvedata", () => ({
   fetchTwelveDataPrices: (...args: unknown[]) => fetchTwelveDataPrices(...args),
 }));
 vi.mock("@/lib/server/fx", () => ({
-  getOrFetchFxRate: (...args: unknown[]) => getOrFetchFxRate(...args),
+  getFxQuote: (...args: unknown[]) => getFxQuote(...args),
 }));
 vi.mock("yahoo-finance2", () => ({
   default: { quote: (...args: unknown[]) => yahooQuote(...args) },
@@ -49,11 +49,11 @@ describe("resolveCurrentPrices", () => {
     fetchCryptoPrices.mockReset().mockResolvedValue({});
     fetchTwelveDataPrices.mockReset().mockResolvedValue({});
     yahooQuote.mockReset();
-    getOrFetchFxRate.mockReset().mockImplementation(async ({ from, to }: { from: string; to: string }) =>
+    getFxQuote.mockReset().mockImplementation(async ({ from, to }: { from: string; to: string }) =>
       from === "EUR" && to === "USD"
-        ? { data: 1.1 }
+        ? { data: { rate: 1.1, rateDate: "2026-09-14", source: "frankfurter" } }
         : from === "USD" && to === "EUR"
-          ? { data: 0.9 }
+          ? { data: { rate: 0.9, rateDate: "2026-09-14", source: "frankfurter" } }
           : { error: "sin cotización" },
     );
   });
@@ -237,7 +237,12 @@ describe("resolveCurrentPrices", () => {
     ]);
     const result = await resolvePricesWithSources([{ key: "GGALD", ticker: "GGALD", assetType: "stock" }], "USD", ctx);
     expect(result).toEqual({
-      data: { prices: { GGALD: 1500 }, manualDates: { GGALD: "2026-09-01" }, ratesToBase: { USD: 1 } },
+      data: {
+        prices: { GGALD: 1500 },
+        manualDates: { GGALD: "2026-09-01" },
+        ratesToBase: { USD: 1 },
+        rateDatesToBase: { USD: expect.any(String) },
+      },
     });
   });
 
@@ -288,7 +293,12 @@ describe("resolveCurrentPrices", () => {
       ctx,
     );
     expect(result).toEqual({
-      data: { prices: { "btc-usd": 100_000, "btc-eur": 90_000 }, manualDates: {}, ratesToBase: { USD: 1, EUR: 1.1 } },
+      data: {
+        prices: { "btc-usd": 100_000, "btc-eur": 90_000 },
+        manualDates: {},
+        ratesToBase: { USD: 1, EUR: 1.1 },
+        rateDatesToBase: { USD: expect.any(String), EUR: "2026-09-14" },
+      },
     });
     expect(fetchCryptoPrices).toHaveBeenCalledTimes(1);
   });
@@ -304,6 +314,8 @@ describe("resolveCurrentPrices", () => {
       ctx,
       { fresh: true },
     );
-    expect(result).toEqual({ data: { prices: { GGALD: 1600 }, manualDates: {}, ratesToBase: { USD: 1 } } });
+    expect(result).toEqual({
+      data: { prices: { GGALD: 1600 }, manualDates: {}, ratesToBase: { USD: 1 }, rateDatesToBase: { USD: expect.any(String) } },
+    });
   });
 });
