@@ -68,4 +68,42 @@ describe("accountBalancePayload", () => {
       }),
     ).toEqual({ initial_amount: 10, exchange_rate: 1, base_amount: 10 });
   });
+
+  it("sends no balance for an empty initial amount when creating, never 0", () => {
+    expect(
+      accountBalancePayload({
+        mode: "create",
+        values: { initial_amount: "", exchange_rate: "1", base_amount: "" },
+      }),
+    ).toEqual({});
+  });
+
+  it("leaves out an empty rate and base amount instead of sending 0", () => {
+    expect(
+      accountBalancePayload({
+        mode: "create",
+        values: { initial_amount: "250", exchange_rate: "", base_amount: "" },
+      }),
+    ).toEqual({ initial_amount: 250 });
+  });
+
+  it("sends nothing when an edit clears the initial amount", () => {
+    expect(
+      accountBalancePayload({
+        mode: "edit",
+        values: { initial_amount: "", exchange_rate: "0,0008", base_amount: "1,2" },
+        stored,
+        edited: true,
+      }),
+    ).toEqual({});
+  });
+
+  it("treats a lone sign or comma as empty", () => {
+    expect(
+      accountBalancePayload({
+        mode: "create",
+        values: { initial_amount: ",", exchange_rate: "-", base_amount: "" },
+      }),
+    ).toEqual({});
+  });
 });

@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
+import { toast } from "sonner";
 import { DefaultChatTransport } from "ai";
 import type { InferAgentUIMessage } from "ai";
 import {
   AlertTriangle,
   History,
-  Loader2,
   Plus,
   Send,
   Sparkles,
@@ -39,6 +39,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
+import { useConfirm } from "@/hooks/use-confirm";
 import { cn } from "@/lib/utils";
 
 // Model output never loads remote images: a markdown image is a GET to any
@@ -123,17 +125,27 @@ function toolLabel(partType: string): string | null {
 
 export function AicfoChat({
   initialSessions,
+  initialSessionsError,
 }: {
   initialSessions: AiSessionSummary[];
+  /** Why the history could not be read on the server, if it could not. */
+  initialSessionsError: string | null;
 }) {
+  const confirm = useConfirm();
   const [sessions, setSessions] = useState(initialSessions);
+  const [sessionsError, setSessionsError] = useState(initialSessionsError);
   const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
   const [initialMessages, setInitialMessages] = useState<AicfoUIMessage[]>([]);
   const [loadingSession, setLoadingSession] = useState(false);
 
   const refreshSessions = useCallback(async () => {
     const result = await getAiSessions();
-    if ("data" in result) setSessions(result.data);
+    if ("error" in result) {
+      setSessionsError(result.error);
+      return;
+    }
+    setSessions(result.data);
+    setSessionsError(null);
   }, []);
 
   const newChat = useCallback(() => {
@@ -145,7 +157,8 @@ export function AicfoChat({
     setLoadingSession(true);
     try {
       const result = await getAiSessionMessages(id);
-      if ("data" in result) {
+      if ("error" in result) toast.error(result.error);
+      else {
         setInitialMessages(
           result.data.map((row) => ({
             id: row.id,
@@ -162,14 +175,24 @@ export function AicfoChat({
 
   const removeSession = useCallback(
     async (id: string) => {
-      await deleteAiSession(id);
+      const confirmed = await confirm({
+        title: "¿Borrar la conversación?",
+        description: "Se borran sus mensajes; el uso de IA ya registrado se mantiene.",
+        destructive: true,
+      });
+      if (!confirmed) return;
+      const result = await deleteAiSession(id);
+      if ("error" in result) {
+        toast.error(result.error);
+        return;
+      }
       await refreshSessions();
       if (id === sessionId) {
         setSessionId(crypto.randomUUID());
         setInitialMessages([]);
       }
     },
-    [refreshSessions, sessionId],
+    [confirm, refreshSessions, sessionId],
   );
 
   const hasCurrentSession = sessions.some((s) => s.id === sessionId);
@@ -181,7 +204,7 @@ export function AicfoChat({
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm" disabled={loadingSession}>
               {loadingSession ? (
-                <Loader2 className="size-4 animate-spin" />
+                <Spinner className="size-4" />
               ) : (
                 <History className="size-4" />
               )}
@@ -191,11 +214,15 @@ export function AicfoChat({
           <DropdownMenuContent align="start" className="w-72">
             <DropdownMenuLabel>Conversaciones</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            {sessions.length === 0 && (
+            {sessionsError ? (
+              <DropdownMenuItem onSelect={() => void refreshSessions()}>
+                <span className="text-muted-foreground">No se pudo cargar. Reintentar</span>
+              </DropdownMenuItem>
+            ) : sessions.length === 0 ? (
               <DropdownMenuItem disabled>
                 Todavía no hay conversaciones
               </DropdownMenuItem>
-            )}
+            ) : null}
             {sessions.map((session) => (
               <DropdownMenuItem
                 key={session.id}
@@ -385,7 +412,7 @@ function ChatPanel({
 
         {status === "submitted" && (
           <div className="text-muted-foreground flex items-center gap-2 text-sm">
-            <Loader2 className="size-4 animate-spin" />
+            <Spinner className="size-4" />
             Pensando…
           </div>
         )}
@@ -423,7 +450,7 @@ function ChatPanel({
         />
         <Button type="submit" size="icon" disabled={busy || !input.trim()}>
           {busy ? (
-            <Loader2 className="size-4 animate-spin" />
+            <Spinner className="size-4" />
           ) : (
             <Send className="size-4" />
           )}
@@ -454,7 +481,7 @@ function ChatError({
   return (
     <div className="bg-muted/50 space-y-3 rounded-lg border p-3 text-sm">
       <div className="flex items-start gap-2">
-        <AlertTriangle className="text-amber-500 mt-0.5 size-4 shrink-0" />
+        <AlertTriangle className="text-muted-foreground mt-0.5 size-4 shrink-0" />
         <div className="space-y-1">
           <p className="font-medium">{message}</p>
           {isQuota && usage && (
@@ -476,7 +503,7 @@ function ChatError({
         {canExtend && (
           <Button size="sm" disabled={extending} onClick={() => void onExtend()}>
             {extending ? (
-              <Loader2 className="size-4 animate-spin" />
+              <Spinner className="size-4" />
             ) : (
               <Zap className="size-4" />
             )}

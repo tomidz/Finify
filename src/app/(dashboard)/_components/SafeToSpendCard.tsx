@@ -1,19 +1,15 @@
 "use client";
 
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-} from "@/components/ui/card";
-import { formatAmount } from "@/lib/format";
+import { StatCard } from "@/components/stat-card";
+import { formatAmount, amountTone } from "@/lib/format";
 import { remainingPlannedExpenses } from "@/lib/finance/budget-status";
 import type { PeriodSummary } from "@/lib/finance/period-summary";
 import type { BudgetSummaryVsActual } from "@/types/budget";
 
 interface SafeToSpendCardProps {
   summary: PeriodSummary;
-  budgetSummary: BudgetSummaryVsActual | undefined;
+  /** Null when the budget could not be read: the amount is unknown, not the whole balance. */
+  budgetSummary: BudgetSummaryVsActual | null;
   currencySymbol: string;
 }
 
@@ -22,49 +18,34 @@ export function SafeToSpendCard({
   budgetSummary,
   currencySymbol,
 }: SafeToSpendCardProps) {
-  const remainingPlanned = remainingPlannedExpenses(budgetSummary?.categories ?? []);
+  const remainingPlanned = !budgetSummary ? null : remainingPlannedExpenses(budgetSummary.categories);
 
   // Safe to spend = closing balance - remaining planned expenses
-  const safeToSpend = summary.closingBase - remainingPlanned;
-
-  const color =
-    safeToSpend > 0
-      ? "text-green-600"
-      : safeToSpend === 0
-        ? "text-yellow-600"
-        : "text-red-600";
-
-  const bgColor =
-    safeToSpend > 0
-      ? "bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-900"
-      : safeToSpend === 0
-        ? "bg-yellow-50 dark:bg-yellow-950/20 border-yellow-200 dark:border-yellow-900"
-        : "bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-900";
+  const safeToSpend = remainingPlanned === null ? null : summary.closingBase - remainingPlanned;
 
   return (
-    <Card className={`gap-0 py-0 ${bgColor}`}>
-      <CardHeader className="px-4 pt-4 pb-1">
-        <CardDescription className="text-xs font-medium uppercase tracking-wide">
-          Disponible real
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="px-4 pb-4">
-        <p className={`text-3xl font-bold ${color}`}>
-          {currencySymbol} {formatAmount(Math.abs(safeToSpend))}
-          {safeToSpend < 0 && (
-            <span className="text-sm font-normal ml-1">(déficit)</span>
-          )}
-        </p>
-        <p className="text-muted-foreground text-xs mt-1">
-          Saldo actual menos gastos pendientes del presupuesto
-        </p>
-        {remainingPlanned > 0 && (
-          <p className="text-muted-foreground text-xs">
-            {currencySymbol} {formatAmount(remainingPlanned)} pendiente de
-            gastar
-          </p>
-        )}
-      </CardContent>
-    </Card>
+    <StatCard
+      label="Disponible real"
+      value={safeToSpend}
+      currency={currencySymbol}
+      signTone
+      format={(n) => formatAmount(Math.abs(n))}
+      // Rounded like the amount next to it.
+      suffix={safeToSpend !== null && amountTone(safeToSpend) === "text-destructive" ? "(déficit)" : undefined}
+      sub={
+        remainingPlanned === null ? (
+          <span>Presupuesto no disponible</span>
+        ) : (
+          <>
+            <span>Saldo actual menos gastos pendientes del presupuesto</span>
+            {remainingPlanned > 0 && (
+              <span>
+                {currencySymbol} {formatAmount(remainingPlanned)} pendiente de gastar
+              </span>
+            )}
+          </>
+        )
+      }
+    />
   );
 }

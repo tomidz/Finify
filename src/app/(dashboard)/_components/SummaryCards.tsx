@@ -1,123 +1,110 @@
 "use client";
 
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-} from "@/components/ui/card";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { formatAmount, amountTone, formatDayMonth } from "@/lib/format";
+import { StatCard, StatGrid } from "@/components/stat-card";
+import { formatAmount, formatDayMonth } from "@/lib/format";
 import type { PeriodSummary } from "@/lib/finance/period-summary";
 
 interface SummaryCardsProps {
-  summary: PeriodSummary;
+  /** Null while it loads: the cards show "—", never 0. */
+  summary: PeriodSummary | null;
   currencySymbol: string;
   /** Expenses by category type instead of their total and the result. */
   detailed?: boolean;
+  /** Skeletons in place of the amounts. */
+  loading?: boolean;
 }
 
-export function SummaryCards({ summary, currencySymbol, detailed = false }: SummaryCardsProps) {
-  const otherLines = (
-    [
-      ["Inversiones", summary.other.investments],
-      ["Correcciones", summary.other.corrections],
-      ["Comisiones", summary.other.transferFees],
-      ["Cambio en transferencias", summary.other.transferFx],
-      ["Diferencia de cambio", summary.other.revaluation],
-    ] as const
-  ).filter(([, value]) => Math.abs(value) >= 0.005);
+interface SummaryCard {
+  label: string;
+  value: number | undefined;
+  signTone?: boolean;
+  hint?: React.ReactNode;
+}
 
-  const cards = [
-    {
-      label: "Saldo apertura",
-      value: summary.openingBase,
-      color: amountTone(summary.openingBase),
-    },
-    { label: "Ingresos", value: summary.income, color: "text-green-600" },
+export function SummaryCards({ summary, currencySymbol, detailed = false, loading = false }: SummaryCardsProps) {
+  const otherLines = !summary
+    ? []
+    : (
+        [
+          ["Inversiones", summary.other.investments],
+          ["Correcciones", summary.other.corrections],
+          ["Comisiones", summary.other.transferFees],
+          ["Cambio en transferencias", summary.other.transferFx],
+          ["Diferencia de cambio", summary.other.revaluation],
+        ] as const
+      ).filter(([, value]) => Math.abs(value) >= 0.005);
+
+  const cards: SummaryCard[] = [
+    { label: "Saldo apertura", value: summary?.openingBase, signTone: true },
+    { label: "Ingresos", value: summary?.income },
     ...(!detailed
       ? [
-          { label: "Total gastos", value: summary.totalExpenses, color: "text-red-600" },
-          { label: "Resultado del mes", value: summary.netMonth, color: amountTone(summary.netMonth) },
+          { label: "Total gastos", value: summary?.totalExpenses },
+          { label: "Resultado", value: summary?.netMonth, signTone: true },
         ]
       : [
-          { label: "Gastos Esenciales", value: summary.essentialExpenses, color: "text-red-600" },
-          { label: "Gastos Discrecionales", value: summary.discretionaryExpenses, color: "text-orange-600" },
-          { label: "Pago de Deudas", value: summary.debtPayments, color: "text-rose-600" },
-          { label: "Ahorros", value: summary.savings, color: "text-cyan-600" },
-          { label: "Inversiones", value: summary.investments, color: "text-indigo-600" },
-          ...(summary.uncategorizedExpenses !== 0
-            ? [{ label: "Sin categoría", value: summary.uncategorizedExpenses, color: "text-red-600" }]
+          { label: "Gastos Esenciales", value: summary?.essentialExpenses },
+          { label: "Gastos Discrecionales", value: summary?.discretionaryExpenses },
+          { label: "Pago de Deudas", value: summary?.debtPayments },
+          { label: "Ahorros", value: summary?.savings },
+          { label: "Inversiones", value: summary?.investments },
+          ...(summary && summary.uncategorizedExpenses !== 0
+            ? [{ label: "Sin categoría", value: summary.uncategorizedExpenses }]
             : []),
         ]),
     {
       label: "Otros movimientos",
-      value: summary.other.total,
-      color: amountTone(summary.other.total),
-      detail: otherLines,
+      value: summary?.other.total,
+      signTone: true,
+      hint:
+        otherLines.length === 0 ? undefined : (
+          <div className="flex flex-col gap-0.5 text-xs">
+            {otherLines.map(([label, value]) => (
+              <div key={label} className="flex justify-between gap-4">
+                <span>{label}</span>
+                <span className="tabular-nums">
+                  {currencySymbol} {formatAmount(value)}
+                </span>
+              </div>
+            ))}
+          </div>
+        ),
     },
-    {
-      label: "Saldo cierre",
-      value: summary.closingBase,
-      color: amountTone(summary.closingBase),
-    },
+    { label: "Saldo cierre", value: summary?.closingBase, signTone: true },
   ];
 
-  const notes = [
-    summary.olderRates === 1
-      ? "1 movimiento valuado con un TC anterior a su fecha."
-      : summary.olderRates > 1
-        ? `${summary.olderRates} movimientos valuados con un TC anterior a su fecha.`
-        : null,
-    summary.closingRateDate ? `Saldos al TC del ${formatDayMonth(summary.closingRateDate)}.` : null,
-    summary.fxMissing > 0 ? "Hay saldos sin cotización: van sin diferencia de cambio." : null,
-    !summary.ties
-      ? `${currencySymbol} ${formatAmount(summary.unexplained)} de movimientos no entran en ninguna línea.`
-      : null,
-  ].filter(Boolean);
+  const notes = !summary
+    ? []
+    : [
+        summary.olderRates === 1
+          ? "1 movimiento valuado con un TC anterior a su fecha."
+          : summary.olderRates > 1
+            ? `${summary.olderRates} movimientos valuados con un TC anterior a su fecha.`
+            : null,
+        summary.closingRateDate ? `Saldos al TC del ${formatDayMonth(summary.closingRateDate)}.` : null,
+        summary.fxMissing > 0 ? "Hay saldos sin cotización: van sin diferencia de cambio." : null,
+        !summary.ties
+          ? `${currencySymbol} ${formatAmount(summary.unexplained)} de movimientos no entran en ninguna línea.`
+          : null,
+      ].filter((note): note is string => note !== null);
 
   return (
-    <div className="flex flex-col gap-1">
-      <div
-        className={`grid gap-3 grid-cols-2 lg:grid-cols-3 ${detailed ? "xl:grid-cols-5" : "xl:grid-cols-6"}`}
-      >
+    <div className="flex flex-col gap-1.5">
+      <StatGrid columns={detailed ? 5 : 6}>
         {cards.map((card) => (
-          <Card key={card.label} className="gap-0 py-0">
-            <CardHeader className="px-4 pt-4 pb-2">
-              {!card.detail?.length ? (
-                <CardDescription>{card.label}</CardDescription>
-              ) : (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <CardDescription className="w-fit cursor-default underline decoration-dotted underline-offset-2">
-                      {card.label}
-                    </CardDescription>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <div className="flex flex-col gap-0.5 text-xs">
-                      {card.detail.map(([label, value]) => (
-                        <div key={label} className="flex justify-between gap-4">
-                          <span>{label}</span>
-                          <span>
-                            {currencySymbol} {formatAmount(value)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </TooltipContent>
-                </Tooltip>
-              )}
-            </CardHeader>
-            <CardContent className="px-4 pb-4">
-              <p className={`text-2xl font-semibold ${card.color}`}>
-                {currencySymbol} {formatAmount(card.value)}
-              </p>
-            </CardContent>
-          </Card>
+          <StatCard
+            key={card.label}
+            label={card.label}
+            value={card.value}
+            currency={currencySymbol}
+            signTone={card.signTone}
+            hint={card.hint}
+            loading={loading}
+          />
         ))}
-      </div>
+      </StatGrid>
       {notes.map((note) => (
-        <p key={note} className="text-muted-foreground text-xs">
+        <p key={note} className="text-muted-foreground text-[11px]">
           {note}
         </p>
       ))}

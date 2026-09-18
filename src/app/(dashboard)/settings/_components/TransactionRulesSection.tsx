@@ -2,18 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
-import { Plus, Pencil, Trash2 } from "lucide-react";
+import { ListFilter, Plus, Pencil, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { CategoryCombobox } from "@/components/category-combobox";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -45,7 +38,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
+import { NumericCell } from "@/components/numeric-cell";
+import { PageButton } from "@/components/page-button";
+import { RowActions } from "@/components/row-actions";
+import { Section } from "@/components/section";
+import { StateCard } from "@/components/state-card";
+import { TruncatedText } from "@/components/truncated-text";
+import { useConfirm } from "@/hooks/use-confirm";
 import {
   useTransactionRules,
   useCreateTransactionRule,
@@ -178,16 +178,14 @@ function RuleDialog({
             {isEditing ? "Editar regla" : "Nueva regla"}
           </DialogTitle>
           <DialogDescription>
-            {isEditing
-              ? "Modificá los datos de la regla de auto-categorización."
-              : "Creá una regla para categorizar transacciones automáticamente."}
+            {isEditing ? "Qué busca y qué aplica." : "Se aplica al cargar una transacción que coincide."}
           </DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
           <form
             onSubmit={form.handleSubmit(onSubmit)}
-            className="space-y-4"
+            className="flex flex-col gap-4"
             noValidate
           >
             <FormField
@@ -215,24 +213,24 @@ function RuleDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Campo a buscar</FormLabel>
-                    <FormControl>
-                      <Select
-                        value={field.value}
-                        onValueChange={field.onChange}
-                        disabled={isPending}
-                      >
+                    <Select
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      disabled={isPending}
+                    >
+                      <FormControl>
                         <SelectTrigger className="w-full">
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent>
-                          {MATCH_FIELDS.map((f) => (
-                            <SelectItem key={f} value={f}>
-                              {MATCH_FIELD_LABELS[f]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </FormControl>
+                      </FormControl>
+                      <SelectContent>
+                        {MATCH_FIELDS.map((f) => (
+                          <SelectItem key={f} value={f}>
+                            {MATCH_FIELD_LABELS[f]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -244,24 +242,24 @@ function RuleDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Tipo de coincidencia</FormLabel>
-                    <FormControl>
-                      <Select
-                        value={field.value}
-                        onValueChange={field.onChange}
-                        disabled={isPending}
-                      >
+                    <Select
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      disabled={isPending}
+                    >
+                      <FormControl>
                         <SelectTrigger className="w-full">
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent>
-                          {MATCH_TYPES.map((t) => (
-                            <SelectItem key={t} value={t}>
-                              {MATCH_TYPE_LABELS[t]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </FormControl>
+                      </FormControl>
+                      <SelectContent>
+                        {MATCH_TYPES.map((t) => (
+                          <SelectItem key={t} value={t}>
+                            {MATCH_TYPE_LABELS[t]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -365,11 +363,12 @@ function RuleDialog({
             />
 
             <DialogFooter>
-              <Button type="submit" disabled={isPending}>
+              <Button type="submit" size="sm" disabled={isPending}>
+                {isPending ? <Spinner className="size-3.5" /> : null}
                 {isPending
-                  ? "Guardando..."
+                  ? "Guardando…"
                   : isEditing
-                    ? "Guardar cambios"
+                    ? "Guardar"
                     : "Crear regla"}
               </Button>
             </DialogFooter>
@@ -381,13 +380,12 @@ function RuleDialog({
 }
 
 export function TransactionRulesSection() {
-  const { data: rules, isLoading, isError } = useTransactionRules();
+  const { data: rules, isLoading, isError, error, refetch } = useTransactionRules();
   const deleteMutation = useDeleteTransactionRule();
+  const confirm = useConfirm();
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingRule, setEditingRule] =
-    useState<TransactionRuleWithCategory | null>(null);
-  const [deletingRule, setDeletingRule] =
     useState<TransactionRuleWithCategory | null>(null);
 
   const handleCreate = () => {
@@ -400,175 +398,139 @@ export function TransactionRulesSection() {
     setDialogOpen(true);
   };
 
-  const handleDelete = async () => {
-    if (!deletingRule) return;
+  const handleDelete = async (rule: TransactionRuleWithCategory) => {
+    // Rules only suggest values while a transaction is entered; nothing
+    // references them afterwards.
+    const confirmed = await confirm({
+      title: `¿Borrar la regla "${rule.name}"?`,
+      description: "Las transacciones ya cargadas no cambian.",
+      destructive: true,
+    });
+    if (!confirmed) return;
     try {
-      await deleteMutation.mutateAsync(deletingRule.id);
-      setDeletingRule(null);
+      await deleteMutation.mutateAsync(rule.id);
     } catch {
       // Error handled by mutation onError (toast)
     }
   };
 
-  if (isLoading) {
-    return <Skeleton className="h-64 w-full" />;
-  }
-
-  // A failed refresh keeps what is on screen (QueryProvider says it failed).
-  if (isError && !rules) {
+  const renderContent = () => {
+    if (isLoading) return <StateCard variant="loading" className="min-h-48" />;
+    // A failed refresh keeps what is on screen (QueryProvider says it failed).
+    if (isError && !rules) {
+      return <StateCard variant="error" error={error} onRetry={() => refetch()} className="min-h-48" />;
+    }
+    if (!rules || rules.length === 0) {
+      return (
+        <StateCard
+          variant="empty"
+          icon={ListFilter}
+          title="Sin reglas"
+          description="Categorizan, asignan cuenta o renombran según la descripción o las notas."
+          className="min-h-48"
+        />
+      );
+    }
     return (
-      <Card>
-        <CardContent className="py-8 text-center">
-          <p className="text-muted-foreground text-sm">
-            Error al cargar las reglas. Intentá recargar la página.
-          </p>
-        </CardContent>
-      </Card>
+      <div className="rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Nombre</TableHead>
+              <TableHead>Condición</TableHead>
+              <TableHead>Categoría</TableHead>
+              <TableHead>Cuenta</TableHead>
+              <TableHead>Renombrar</TableHead>
+              <TableHead className="w-14 text-right">Prio</TableHead>
+              <TableHead className="w-10">
+                <span className="sr-only">Acciones</span>
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rules.map((rule) => (
+              <TableRow key={rule.id}>
+                <TableCell className="font-medium">
+                  <div className="flex max-w-56 items-center gap-2">
+                    <TruncatedText>{rule.name}</TruncatedText>
+                    {!rule.is_active && (
+                      <Badge variant="outline" className="shrink-0">
+                        Inactiva
+                      </Badge>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <div className="flex max-w-72 items-center gap-1.5">
+                    <span className="shrink-0 text-muted-foreground">
+                      {MATCH_FIELD_LABELS[rule.match_field]}
+                    </span>
+                    <Badge variant="secondary" className="shrink-0">
+                      {MATCH_TYPE_LABELS[rule.match_type]}
+                    </Badge>
+                    <TruncatedText className="font-mono text-xs">
+                      &quot;{rule.match_value}&quot;
+                    </TruncatedText>
+                  </div>
+                </TableCell>
+                <TableCell>
+                  {rule.category_name ? (
+                    <TruncatedText className="max-w-40">{rule.category_name}</TruncatedText>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  {rule.account_name ? (
+                    <TruncatedText className="max-w-40">{rule.account_name}</TruncatedText>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  <TruncatedText className="max-w-40">{rule.action_rename ?? "—"}</TruncatedText>
+                </TableCell>
+                <TableCell>
+                  <NumericCell value={rule.priority} decimals={0} />
+                </TableCell>
+                <TableCell className="text-right">
+                  <RowActions
+                    actions={[
+                      { label: "Editar", icon: Pencil, onSelect: () => handleEdit(rule) },
+                      {
+                        label: "Borrar",
+                        icon: Trash2,
+                        destructive: true,
+                        onSelect: () => void handleDelete(rule),
+                      },
+                    ]}
+                  />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
     );
-  }
+  };
 
   return (
-    <>
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle>Reglas de auto-categorización</CardTitle>
-              <CardDescription>
-                Definí reglas para categorizar transacciones automáticamente
-                según su descripción o notas.
-              </CardDescription>
-            </div>
-            <Button onClick={handleCreate} size="sm">
-              <Plus className="mr-1 size-4" />
-              Nueva regla
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {!rules || rules.length === 0 ? (
-            <p className="text-muted-foreground text-sm text-center py-8">
-              No hay reglas definidas. Creá una para empezar a categorizar
-              automáticamente.
-            </p>
-          ) : (
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Nombre</TableHead>
-                    <TableHead>Condición</TableHead>
-                    <TableHead>Categoría</TableHead>
-                    <TableHead>Cuenta</TableHead>
-                    <TableHead>Renombrar</TableHead>
-                    <TableHead className="w-16 text-center">Prio</TableHead>
-                    <TableHead className="w-24 text-right">Acciones</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rules.map((rule) => (
-                    <TableRow key={rule.id}>
-                      <TableCell className="font-medium">
-                        {rule.name}
-                        {!rule.is_active && (
-                          <Badge variant="outline" className="ml-2">
-                            Inactiva
-                          </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-sm">
-                        <span className="text-muted-foreground">
-                          {MATCH_FIELD_LABELS[rule.match_field]}{" "}
-                        </span>
-                        <Badge variant="secondary" className="text-xs">
-                          {MATCH_TYPE_LABELS[rule.match_type]}
-                        </Badge>{" "}
-                        <span className="font-mono text-xs">
-                          &quot;{rule.match_value}&quot;
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-sm">
-                        {rule.category_name ?? (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-sm">
-                        {rule.account_name ?? (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {rule.action_rename ?? "—"}
-                      </TableCell>
-                      <TableCell className="text-center text-sm">
-                        {rule.priority}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            aria-label="Editar regla"
-                            onClick={() => handleEdit(rule)}
-                          >
-                            <Pencil className="size-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            aria-label="Eliminar regla"
-                            onClick={() => setDeletingRule(rule)}
-                          >
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+    <Section
+      title="Reglas"
+      description="Completan categoría, cuenta o nombre al cargar una transacción que coincide."
+      actions={
+        <PageButton variant="outline" icon={Plus} onClick={handleCreate}>
+          Nueva regla
+        </PageButton>
+      }
+    >
+      {renderContent()}
 
       <RuleDialog
         rule={editingRule}
         open={dialogOpen}
         onOpenChange={setDialogOpen}
       />
-
-      <Dialog
-        open={!!deletingRule}
-        onOpenChange={(open) => !open && setDeletingRule(null)}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Eliminar regla</DialogTitle>
-            <DialogDescription>
-              ¿Estás seguro de que querés eliminar la regla{" "}
-              <span className="font-semibold">{deletingRule?.name}</span>?
-              Esta acción no se puede deshacer.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button
-              variant="outline"
-              onClick={() => setDeletingRule(null)}
-              disabled={deleteMutation.isPending}
-            >
-              Cancelar
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleDelete}
-              disabled={deleteMutation.isPending}
-            >
-              {deleteMutation.isPending ? "Eliminando..." : "Eliminar"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+    </Section>
   );
 }

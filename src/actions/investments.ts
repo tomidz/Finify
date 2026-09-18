@@ -758,8 +758,8 @@ export async function getInvestmentSales(): Promise<
  * Deletes an investment_sale, reverses its auto-credit correction, and
  * restores the lots that were proportionally reduced when the sale was
  * recorded. This is a best-effort restoration: we re-insert a single lot
- * with the cost_basis stored on the sale, dated at the original purchase
- * date. If the sale was a partial exit, this collapses the remaining
+ * with the cost_basis stored on the sale, dated at the sale date
+ * (delete_investment_sale, 0051). If the sale was a partial exit, this collapses the remaining
  * partial lots into a single lot — accounting-wise correct but loses lot
  * detail.
  */

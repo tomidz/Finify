@@ -1,11 +1,5 @@
-import { Skeleton } from "@/components/ui/skeleton";
+import { TransactionsPageSkeleton } from "./_components/TransactionsPageSkeleton";
 
 export default function TransactionsLoading() {
-  return (
-    <div className="space-y-4">
-      <Skeleton className="h-10 w-64" />
-      <Skeleton className="h-28 w-full" />
-      <Skeleton className="h-96 w-full" />
-    </div>
-  );
+  return <TransactionsPageSkeleton />;
 }

@@ -35,7 +35,9 @@ import {
   useCreateSavingsGoal,
   useUpdateSavingsGoal,
 } from "@/hooks/useSavingsGoals";
-import { formatMoneyInput, formatMoneyDisplay, parseMoneyInput } from "@/lib/format";
+import { parseMoney, toMoneyInput } from "@/lib/format";
+import { MoneyInput } from "@/components/money-input";
+import { Spinner } from "@/components/ui/spinner";
 import type { SavingsGoalWithRelations } from "@/types/savings-goals";
 
 interface GoalDialogProps {
@@ -91,18 +93,23 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
     () => (accounts ?? []).find((a) => a.id === selectedAccountId) ?? null,
     [accounts, selectedAccountId]
   );
+  const selectedCurrency = form.watch("currency");
+  const decimals =
+    currencies?.find((c) => c.code === selectedCurrency)?.decimals ?? 2;
 
+  // Filled when the dialog opens, not when the base currency refetches: that
+  // would wipe what the user typed.
+  const formKey = open ? (goal?.id ?? "new") : null;
   useEffect(() => {
-    if (!open) return;
+    if (formKey === null) return;
     if (goal) {
       form.reset({
         name: goal.name,
-        target_amount: formatMoneyDisplay(
-          String(goal.target_amount).replace(".", ",")
-        ),
+        // Up to 8 places: a prefill never rounds a stored amount.
+        target_amount: toMoneyInput(goal.target_amount, 8),
         current_amount: goal.account_id
           ? ""
-          : formatMoneyDisplay(String(goal.current_amount).replace(".", ",")),
+          : toMoneyInput(goal.current_amount, 8),
         currency: goal.currency,
         deadline: goal.deadline?.slice(0, 10) ?? "",
         account_id: goal.account_id ?? "",
@@ -113,13 +120,21 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
         name: "",
         target_amount: "",
         current_amount: "",
-        currency: baseCurrency ?? "EUR",
+        currency: "",
         deadline: "",
         account_id: "",
         color: "#60a5fa",
       });
     }
-  }, [goal, open, form, baseCurrency]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formKey]);
+  // A new goal's currency defaults to the base one once it loads, unless
+  // already chosen.
+  useEffect(() => {
+    if (formKey === "new" && baseCurrency && !form.getValues("currency")) {
+      form.setValue("currency", baseCurrency);
+    }
+  }, [formKey, baseCurrency, form]);
 
   const onSubmit = async (values: GoalFormValues) => {
     let hasError = false;
@@ -127,20 +142,23 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
       form.setError("name", { message: "El nombre es obligatorio" });
       hasError = true;
     }
-    const targetAmount = parseMoneyInput(values.target_amount) ?? 0;
-    if (targetAmount <= 0) {
+    const targetAmount = parseMoney(values.target_amount);
+    if (targetAmount == null) {
+      form.setError("target_amount", { message: "Ingresá el monto objetivo" });
+      hasError = true;
+    } else if (targetAmount <= 0) {
       form.setError("target_amount", {
         message: "El monto objetivo debe ser mayor a 0",
       });
       hasError = true;
     }
-    if (hasError) return;
+    if (hasError || targetAmount == null) return;
 
     // Account-linked goals derive progress from the account balance, so any
     // manually-typed current amount is ignored.
     const currentAmount = values.account_id
       ? 0
-      : parseMoneyInput(values.current_amount) ?? 0;
+      : parseMoney(values.current_amount) ?? 0;
 
     try {
       if (isEditing) {
@@ -188,16 +206,14 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
             {isEditing ? "Editar meta" : "Nueva meta de ahorro"}
           </DialogTitle>
           <DialogDescription>
-            {isEditing
-              ? "Modificá los datos de tu meta de ahorro."
-              : "Creá una meta para motivar y trackear tu ahorro."}
+            {isEditing ? "Monto, fecha y cuenta de la meta." : "Un monto a juntar, con fecha si querés."}
           </DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
           <form
             onSubmit={form.handleSubmit(onSubmit)}
-            className="space-y-4"
+            className="flex flex-col gap-4"
             noValidate
           >
             <FormField
@@ -208,7 +224,7 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
                   <FormLabel>Nombre</FormLabel>
                   <FormControl>
                     <Input
-                      placeholder="Ej: Vacaciones Europa, Fondo de emergencia..."
+                      placeholder="Ej: Vacaciones, fondo de emergencia"
                       disabled={isPending}
                       {...field}
                     />
@@ -226,18 +242,10 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
                   <FormItem>
                     <FormLabel>Monto objetivo</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="0,00"
+                      <MoneyInput
+                        {...field}
+                        decimals={decimals}
                         disabled={isPending}
-                        value={field.value}
-                        onChange={(e) =>
-                          form.setValue(
-                            "target_amount",
-                            formatMoneyInput(e.target.value)
-                          )
-                        }
                       />
                     </FormControl>
                     <FormMessage />
@@ -251,39 +259,39 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Moneda</FormLabel>
-                    <FormControl>
-                      <Select
-                        value={field.value}
-                        onValueChange={field.onChange}
-                        disabled={isPending || !!linkedAccount}
-                      >
+                    <Select
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      disabled={isPending || !!linkedAccount}
+                    >
+                      <FormControl>
                         <SelectTrigger className="w-full">
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent>
-                          {fiatCurrencies.length > 0 && (
-                            <SelectGroup>
-                              <SelectLabel>Fiat</SelectLabel>
-                              {fiatCurrencies.map((c) => (
-                                <SelectItem key={c.code} value={c.code}>
-                                  {c.symbol} {c.code}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          )}
-                          {cryptoCurrencies.length > 0 && (
-                            <SelectGroup>
-                              <SelectLabel>Crypto</SelectLabel>
-                              {cryptoCurrencies.map((c) => (
-                                <SelectItem key={c.code} value={c.code}>
-                                  {c.symbol} {c.code}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          )}
-                        </SelectContent>
-                      </Select>
-                    </FormControl>
+                      </FormControl>
+                      <SelectContent>
+                        {fiatCurrencies.length > 0 && (
+                          <SelectGroup>
+                            <SelectLabel>Fiat</SelectLabel>
+                            {fiatCurrencies.map((c) => (
+                              <SelectItem key={c.code} value={c.code}>
+                                {c.symbol} {c.code}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        )}
+                        {cryptoCurrencies.length > 0 && (
+                          <SelectGroup>
+                            <SelectLabel>Crypto</SelectLabel>
+                            {cryptoCurrencies.map((c) => (
+                              <SelectItem key={c.code} value={c.code}>
+                                {c.symbol} {c.code}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        )}
+                      </SelectContent>
+                    </Select>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -298,18 +306,10 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
                   <FormItem>
                     <FormLabel>Monto actual ahorrado (opcional)</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="0,00"
+                      <MoneyInput
+                        {...field}
+                        decimals={decimals}
                         disabled={isPending}
-                        value={field.value}
-                        onChange={(e) =>
-                          form.setValue(
-                            "current_amount",
-                            formatMoneyInput(e.target.value)
-                          )
-                        }
                       />
                     </FormControl>
                     <FormMessage />
@@ -338,38 +338,38 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Cuenta asociada (opcional)</FormLabel>
-                  <FormControl>
-                    <Select
-                      value={field.value || "none"}
-                      onValueChange={(val) => {
-                        const accountId = val === "none" ? "" : val;
-                        field.onChange(accountId);
-                        const account = (accounts ?? []).find(
-                          (a) => a.id === accountId
-                        );
-                        if (account) {
-                          form.setValue("currency", account.currency);
-                        }
-                      }}
-                      disabled={isPending}
-                    >
+                  <Select
+                    value={field.value || "none"}
+                    onValueChange={(val) => {
+                      const accountId = val === "none" ? "" : val;
+                      field.onChange(accountId);
+                      const account = (accounts ?? []).find(
+                        (a) => a.id === accountId
+                      );
+                      if (account) {
+                        form.setValue("currency", account.currency);
+                      }
+                    }}
+                    disabled={isPending}
+                  >
+                    <FormControl>
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="Sin cuenta específica" />
                       </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">Sin cuenta específica</SelectItem>
-                        {(accounts ?? []).map((a) => (
-                          <SelectItem key={a.id} value={a.id}>
-                            {a.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </FormControl>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="none">Sin cuenta específica</SelectItem>
+                      {(accounts ?? []).map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   <p className="text-muted-foreground text-xs">
                     {linkedAccount
-                      ? "El progreso se calcula automáticamente desde el saldo de esta cuenta."
-                      : "Asociá una cuenta para trackear el progreso automáticamente desde su saldo."}
+                      ? "El progreso sale del saldo de la cuenta, en su moneda."
+                      : "Con una cuenta, el progreso sale de su saldo."}
                   </p>
                   <FormMessage />
                 </FormItem>
@@ -388,15 +388,17 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
                         <button
                           key={c.value}
                           type="button"
-                          className={`size-8 rounded-full border-2 transition-all ${
+                          className={`size-7 rounded-full border-2 ${
                             field.value === c.value
-                              ? "border-foreground scale-110"
+                              ? "border-foreground"
                               : "border-transparent"
                           }`}
                           style={{ backgroundColor: c.value }}
                           onClick={() => form.setValue("color", c.value)}
                           disabled={isPending}
                           title={c.label}
+                          aria-label={c.label}
+                          aria-pressed={field.value === c.value}
                         />
                       ))}
                     </div>
@@ -407,11 +409,12 @@ export function GoalDialog({ goal, open, onOpenChange }: GoalDialogProps) {
             />
 
             <DialogFooter>
-              <Button type="submit" disabled={isPending}>
+              <Button type="submit" size="sm" disabled={isPending}>
+                {isPending ? <Spinner className="size-3.5" /> : null}
                 {isPending
-                  ? "Guardando..."
+                  ? "Guardando…"
                   : isEditing
-                    ? "Guardar cambios"
+                    ? "Guardar"
                     : "Crear meta"}
               </Button>
             </DialogFooter>

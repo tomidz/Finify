@@ -184,6 +184,18 @@ export function useUpdateTransaction() {
   });
 }
 
+function isFeedData(value: unknown): value is { pages: { items: unknown[] }[] } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "pages" in value &&
+    Array.isArray(value.pages) &&
+    value.pages.every(
+      (page: unknown) => typeof page === "object" && page !== null && "items" in page && Array.isArray(page.items),
+    )
+  );
+}
+
 export function useDeleteTransaction() {
   const queryClient = useQueryClient();
   const restore = useRestoreTransaction();
@@ -195,14 +207,20 @@ export function useDeleteTransaction() {
         queryKey: TRANSACTION_KEYS.all,
       });
 
+      const keep = (tx: unknown) =>
+        typeof tx === "object" && tx !== null && "id" in tx ? tx.id !== id : true;
       for (const [key, value] of snapshots) {
-        if (!Array.isArray(value)) continue;
-        queryClient.setQueryData(
-          key,
-          value.filter((tx) =>
-            typeof tx === "object" && tx !== null && "id" in tx ? tx.id !== id : true,
-          ),
-        );
+        if (Array.isArray(value)) {
+          queryClient.setQueryData(key, value.filter(keep));
+          continue;
+        }
+        // The feed's pages ({ pages: [{ items }] }).
+        if (isFeedData(value)) {
+          queryClient.setQueryData(key, {
+            ...value,
+            pages: value.pages.map((page) => ({ ...page, items: page.items.filter(keep) })),
+          });
+        }
       }
 
       return { snapshots };

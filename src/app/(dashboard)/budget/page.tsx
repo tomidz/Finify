@@ -1,17 +1,24 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pencil, Save, ChevronLeft, ChevronRight } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
+import { useEffect, useMemo, useState } from "react";
+import { CalendarPlus, Plus, Tags } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { BUDGET_STATUS_COLORS } from "@/components/charts/palette";
+import { MonthSwitcher } from "@/components/month-switcher";
+import { PageButton } from "@/components/page-button";
+import { RenderErrorBoundary } from "@/components/render-error-boundary";
+import { StatCard, StatGrid } from "@/components/stat-card";
+import { StateCard } from "@/components/state-card";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-} from "@/components/ui/card";
+  PageHeader,
+  PageHeaderActions,
+  PageHeaderDescription,
+  PageHeaderTitle,
+  PageHeaderTitleGroup,
+} from "@/components/ui/page-header";
+import { Spinner } from "@/components/ui/spinner";
 import {
   BUDGET_KEYS,
   useBudgetCategories,
@@ -25,45 +32,32 @@ import { useEnsureCurrentMonth, useMonths } from "@/hooks/useMonths";
 import { useBaseCurrency, useTransactions } from "@/hooks/useTransactions";
 import { netInvestmentContributions } from "@/lib/investment-contributions";
 import { useCurrencies } from "@/hooks/useAccounts";
-import { useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
 import { errorMessage } from "@/lib/action-result";
 import { BUDGET_CATEGORY_LABELS, type BudgetCategory } from "@/types/budget";
 import type { BudgetLineWithPlan } from "@/types/budget";
-import {
-  MONTH_NAMES,
-  formatAmount,
-  parseMoneyInput,
-  formatMoneyDisplay,
-} from "@/lib/format";
+import { formatAmount } from "@/lib/format";
+import { useShortcut } from "@/lib/keyboard";
+import { adjacentMonth, monthLabel } from "@/lib/month-grid";
 import {
   BUDGET_GROUP_OF,
-  BUDGET_STATUS_TONE,
   budgetExecution,
   budgetTotalsByGroup,
 } from "@/lib/finance/budget-status";
-
-const CATEGORY_HEADER_STYLES: Record<string, string> = {
-  income: "bg-teal-700 text-white",
-  essential_expenses: "bg-amber-700 text-white",
-  discretionary_expenses: "bg-amber-600 text-white",
-  debt_payments: "bg-rose-700 text-white",
-  savings: "bg-sky-700 text-white",
-  investments: "bg-emerald-700 text-white",
-};
+import { BudgetContentSkeleton } from "./_components/BudgetContentSkeleton";
+import { BudgetGroupCard, StatusPercent } from "./_components/BudgetGroupCard";
+import { CategoryTransactionsSheet } from "./_components/CategoryTransactionsSheet";
 
 export default function BudgetPage() {
   const [selectedMonthId, setSelectedMonthId] = useState<string | null>(null);
-  const { data: months } = useMonths();
+  const {
+    data: months,
+    error: monthsError,
+    isFetching: monthsFetching,
+    refetch: refetchMonths,
+  } = useMonths();
   const { data: baseCurrency } = useBaseCurrency();
   const { data: currencies } = useCurrencies();
   const queryClient = useQueryClient();
-  const [amountDraftByCategoryId, setAmountDraftByCategoryId] = useState<
-    Record<string, string>
-  >({});
-  const [editingCategoryIds, setEditingCategoryIds] = useState<
-    Record<string, boolean>
-  >({});
 
   const ensureCurrentMonth = useEnsureCurrentMonth();
   const sortedMonths = useMemo(
@@ -71,11 +65,12 @@ export default function BudgetPage() {
     [months]
   );
 
-  const currencySymbol = useMemo(() => {
-    if (!baseCurrency) return "$";
-    const found = currencies?.find((c) => c.code === baseCurrency);
-    return found?.symbol ?? baseCurrency;
-  }, [baseCurrency, currencies]);
+  const baseCurrencyInfo = useMemo(
+    () => currencies?.find((c) => c.code === baseCurrency),
+    [baseCurrency, currencies],
+  );
+  const currencySymbol = !baseCurrency ? "$" : (baseCurrencyInfo?.symbol ?? baseCurrency);
+  const decimals = baseCurrencyInfo?.decimals ?? 2;
   const selectedMonth =
     sortedMonths.find((month) => month.id === selectedMonthId) ?? null;
 
@@ -87,43 +82,17 @@ export default function BudgetPage() {
 
   useEffect(() => {
     if (!sortedMonths.length) return;
-    if (
-      !selectedMonthId ||
-      !sortedMonths.some((month) => month.id === selectedMonthId)
-    ) {
-      setSelectedMonthId(sortedMonths[0].id);
-    }
-  }, [selectedMonthId, sortedMonths]);
+    // A month just created ("Crear mes siguiente") is selected before the
+    // months refetch lists it: wait for the refetch instead of falling back.
+    const known = sortedMonths.some((month) => month.id === selectedMonthId);
+    if (selectedMonthId && (known || monthsFetching)) return;
+    setSelectedMonthId(sortedMonths[0].id);
+  }, [selectedMonthId, sortedMonths, monthsFetching]);
 
-  const createLine = useCreateBudgetLine(selectedMonthId);
   const createNextBudgetFromCurrent = useCreateBudgetNextMonthFromSource(
     selectedMonthId,
   );
-  const upsertPlan = useUpsertBudgetMonthPlan();
-
-  const ensureLineForCategory = async (category: BudgetCategory) => {
-    const existing = queryClient
-      .getQueryData<BudgetLineWithPlan[]>(BUDGET_KEYS.lines(selectedMonthId ?? ""))
-      ?.find((line) => line.category_id === category.id);
-    if (existing) return existing;
-    return createLine.mutateAsync({
-      category_id: category.id,
-      name: category.name,
-      display_order: category.display_order ?? 0,
-      is_active: true,
-    });
-  };
-
-  const handleDraftAmountChange = useCallback((categoryId: string, value: string) => {
-    setAmountDraftByCategoryId((prev) => ({ ...prev, [categoryId]: value }));
-  }, []);
-
-  const handleDraftAmountBlur = useCallback((categoryId: string) => {
-    setAmountDraftByCategoryId((prev) => ({
-      ...prev,
-      [categoryId]: formatMoneyDisplay(prev[categoryId] ?? ""),
-    }));
-  }, []);
+  const creatingNext = createNextBudgetFromCurrent.isPending;
 
   const handleCreateNextBudget = async () => {
     if (!selectedMonthId) return;
@@ -164,122 +133,112 @@ export default function BudgetPage() {
     }
   };
 
-  if (!selectedMonthId) {
-    return (
-      <div className="space-y-4">
-        <Skeleton className="h-10 w-64" />
-        <Skeleton className="h-28 w-full" />
-        <Skeleton className="h-64 w-full" />
-      </div>
-    );
-  }
+  const stepMonth = (direction: -1 | 1) => {
+    const target = adjacentMonth(sortedMonths, selectedMonthId, direction);
+    if (target) setSelectedMonthId(target.id);
+  };
+  useShortcut("ArrowLeft", () => stepMonth(-1), { enabled: !creatingNext });
+  useShortcut("ArrowRight", () => stepMonth(1), { enabled: !creatingNext });
+
+  const content = (() => {
+    if (selectedMonthId) {
+      return (
+        <BudgetMonthContent
+          key={selectedMonthId}
+          selectedMonthId={selectedMonthId}
+          monthName={!selectedMonth ? "" : monthLabel(selectedMonth)}
+          currencySymbol={currencySymbol}
+          decimals={decimals}
+        />
+      );
+    }
+    if (!months && monthsError) {
+      return (
+        <StateCard
+          variant="error"
+          title="No se pudieron cargar los meses"
+          error={monthsError}
+          onRetry={() => void refetchMonths()}
+        />
+      );
+    }
+    if (months?.length === 0 && ensureCurrentMonth.isError) {
+      return (
+        <StateCard
+          variant="error"
+          title="No se pudo crear el mes"
+          error={ensureCurrentMonth.error}
+          onRetry={() => ensureCurrentMonth.mutate()}
+        />
+      );
+    }
+    return <BudgetContentSkeleton />;
+  })();
 
   return (
-    <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Presupuesto</h1>
-        <p className="text-muted-foreground text-sm">
-          Planificá tus categorías por mes y compará plan vs real.
-        </p>
-      </div>
-
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Button
+    <div className="flex flex-col gap-6">
+      <PageHeader>
+        <PageHeaderTitleGroup>
+          <PageHeaderTitle>Presupuesto</PageHeaderTitle>
+          <PageHeaderDescription>Plan vs real por categoría.</PageHeaderDescription>
+        </PageHeaderTitleGroup>
+        <PageHeaderActions>
+          <MonthSwitcher
+            months={sortedMonths}
+            value={selectedMonthId}
+            onChange={(monthId) => setSelectedMonthId(monthId)}
+            disabled={creatingNext}
+          />
+          <PageButton
             variant="outline"
-            size="icon"
-            onClick={() => {
-              const idx = sortedMonths.findIndex((m) => m.id === selectedMonthId);
-              if (idx < sortedMonths.length - 1) setSelectedMonthId(sortedMonths[idx + 1].id);
-            }}
-            disabled={
-              !selectedMonthId ||
-              sortedMonths.findIndex((m) => m.id === selectedMonthId) >= sortedMonths.length - 1
-            }
-          >
-            <ChevronLeft className="size-4" />
-          </Button>
-          <span className="min-w-[160px] text-center text-sm font-medium">
-            {selectedMonth
-              ? `${MONTH_NAMES[selectedMonth.month - 1]} ${selectedMonth.year}`
-              : "—"}
-          </span>
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={() => {
-              const idx = sortedMonths.findIndex((m) => m.id === selectedMonthId);
-              if (idx > 0) setSelectedMonthId(sortedMonths[idx - 1].id);
-            }}
-            disabled={
-              !selectedMonthId ||
-              sortedMonths.findIndex((m) => m.id === selectedMonthId) <= 0
-            }
-          >
-            <ChevronRight className="size-4" />
-          </Button>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button asChild size="sm" variant="outline">
-            <Link href="/budget/categories">Categorías</Link>
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
+            icon={creatingNext ? undefined : CalendarPlus}
             onClick={handleCreateNextBudget}
-            disabled={!selectedMonthId || createNextBudgetFromCurrent.isPending}
+            disabled={!selectedMonthId || creatingNext}
           >
+            {!creatingNext ? null : <Spinner className="size-3.5" />}
             Crear mes siguiente
-          </Button>
-        </div>
-      </div>
+          </PageButton>
+          <PageButton asChild variant="outline" icon={Tags}>
+            <Link href="/budget/categories">Categorías</Link>
+          </PageButton>
+        </PageHeaderActions>
+      </PageHeader>
 
-      <BudgetMonthContent
-        selectedMonthId={selectedMonthId}
-        currencySymbol={currencySymbol}
-        amountDraftByCategoryId={amountDraftByCategoryId}
-        editingCategoryIds={editingCategoryIds}
-        createLine={createLine}
-        upsertPlan={upsertPlan}
-        onDraftAmountChange={handleDraftAmountChange}
-        onDraftAmountBlur={handleDraftAmountBlur}
-        onSetDrafts={setAmountDraftByCategoryId}
-        onSetEditingCategoryIds={setEditingCategoryIds}
-        onEnsureLineForCategory={ensureLineForCategory}
-      />
-
+      {content}
     </div>
   );
 }
 
+const TYPE_ORDER: Record<string, number> = {
+  income: 0,
+  essential_expenses: 1,
+  discretionary_expenses: 2,
+  investments: 3,
+  debt_payments: 4,
+  savings: 5,
+};
+
 function BudgetMonthContent({
   selectedMonthId,
+  monthName,
   currencySymbol,
-  amountDraftByCategoryId,
-  editingCategoryIds,
-  createLine,
-  upsertPlan,
-  onDraftAmountChange,
-  onDraftAmountBlur,
-  onSetDrafts,
-  onSetEditingCategoryIds,
-  onEnsureLineForCategory,
+  decimals,
 }: {
   selectedMonthId: string;
+  monthName: string;
   currencySymbol: string;
-  amountDraftByCategoryId: Record<string, string>;
-  editingCategoryIds: Record<string, boolean>;
-  createLine: ReturnType<typeof useCreateBudgetLine>;
-  upsertPlan: ReturnType<typeof useUpsertBudgetMonthPlan>;
-  onDraftAmountChange: (categoryId: string, value: string) => void;
-  onDraftAmountBlur: (categoryId: string) => void;
-  onSetDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  onSetEditingCategoryIds: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
-  onEnsureLineForCategory: (category: BudgetCategory) => Promise<BudgetLineWithPlan | { id: string }>;
+  decimals: number;
 }) {
-  const { data: categories, isLoading: categoriesLoading, error: categoriesError } = useBudgetCategories();
-  const { data: lines, isLoading: linesLoading, error: linesError } = useBudgetLines(selectedMonthId);
-  const { data: summary, isLoading: summaryLoading, error: summaryError } = useBudgetSummary(selectedMonthId);
+  const queryClient = useQueryClient();
+  const categoriesQuery = useBudgetCategories();
+  const linesQuery = useBudgetLines(selectedMonthId);
+  const summaryQuery = useBudgetSummary(selectedMonthId);
+  const { data: categories, isLoading: categoriesLoading, error: categoriesError } = categoriesQuery;
+  const { data: lines, isLoading: linesLoading, error: linesError } = linesQuery;
+  const { data: summary, isLoading: summaryLoading, error: summaryError } = summaryQuery;
+  const createLine = useCreateBudgetLine(selectedMonthId);
+  const upsertPlan = useUpsertBudgetMonthPlan();
+  const [drillCategory, setDrillCategory] = useState<BudgetCategory | null>(null);
   const safeCategories = useMemo(() => categories ?? [], [categories]);
   const safeLines = useMemo(() => lines ?? [], [lines]);
   const summaryCategories = useMemo(() => summary?.categories ?? [], [summary]);
@@ -316,7 +275,7 @@ function BudgetMonthContent({
           const summaryValues = summaryByCategoryId.get(category.id);
           const planned = line?.planned_amount ?? summaryValues?.planned ?? 0;
           const actual = summaryValues?.actual ?? 0;
-          return { category, line, planned, actual, variance: planned - actual };
+          return { category, line, planned, actual };
         }),
     [safeCategories, lineByCategoryId, summaryByCategoryId],
   );
@@ -329,14 +288,6 @@ function BudgetMonthContent({
       current.push(row);
       map.set(type, current);
     }
-    const TYPE_ORDER: Record<string, number> = {
-      income: 0,
-      essential_expenses: 1,
-      discretionary_expenses: 2,
-      investments: 3,
-      debt_payments: 4,
-      savings: 5,
-    };
     return Array.from(map.entries())
       .map(([type, rows]) => ({
         type,
@@ -344,26 +295,9 @@ function BudgetMonthContent({
         rows: rows.sort((a, b) => a.category.name.localeCompare(b.category.name)),
         plannedTotal: rows.reduce((acc, row) => acc + row.planned, 0),
         actualTotal: rows.reduce((acc, row) => acc + row.actual, 0),
-        varianceTotal: rows.reduce((acc, row) => acc + row.variance, 0),
       }))
       .sort((a, b) => (TYPE_ORDER[a.type] ?? 99) - (TYPE_ORDER[b.type] ?? 99));
   }, [categoryRows]);
-
-  useEffect(() => {
-    const nextDrafts: Record<string, string> = {};
-    for (const row of categoryRows) {
-      nextDrafts[row.category.id] = formatAmount(row.planned);
-    }
-    onSetDrafts((prev) => {
-      const prevKeys = Object.keys(prev);
-      const nextKeys = Object.keys(nextDrafts);
-      if (prevKeys.length === nextKeys.length) {
-        const isSame = nextKeys.every((key) => prev[key] === nextDrafts[key]);
-        if (isSame) return prev;
-      }
-      return nextDrafts;
-    });
-  }, [categoryRows, onSetDrafts]);
 
   // Cash actually put into investments this month (purchases minus sales).
   const { data: monthTransactions, error: transactionsError } = useTransactions(selectedMonthId);
@@ -395,7 +329,8 @@ function BudgetMonthContent({
   // Invested this month and the leftover come from the month's transactions:
   // until they load (or when they fail) those two show "—", not 0.
   const investedKnown = monthTransactions != null;
-  const money = (known: boolean, amount: number) => (known ? `${currencySymbol} ${formatAmount(amount)}` : "—");
+  const money = (amount: number) => `${currencySymbol} ${formatAmount(amount, decimals)}`;
+  const formatValue = (amount: number) => formatAmount(amount, decimals);
 
   if (categoriesLoading || linesLoading || summaryLoading || !categories || !lines || !summary) {
     const loadError =
@@ -404,21 +339,37 @@ function BudgetMonthContent({
       (!summary && summaryError);
     if (loadError) {
       return (
-        <div className="rounded-md border border-destructive/40 p-4 text-sm">
-          <p className="font-medium">No se pudo cargar el presupuesto.</p>
-          <p className="text-muted-foreground text-xs">{errorMessage(loadError)}</p>
-        </div>
+        <StateCard
+          variant="error"
+          title="No se pudo cargar el presupuesto"
+          error={loadError}
+          onRetry={() => {
+            if (!categories) void categoriesQuery.refetch();
+            if (!lines) void linesQuery.refetch();
+            if (!summary) void summaryQuery.refetch();
+          }}
+        />
       );
     }
-    return <BudgetContentFallback />;
+    return <BudgetContentSkeleton />;
   }
 
-  const handleSaveCategoryAmount = async (category: BudgetCategory) => {
-    const amount = parseMoneyInput(amountDraftByCategoryId[category.id] ?? "");
-    if (amount == null) return false;
+  const ensureLineForCategory = async (category: BudgetCategory) => {
+    const existing = queryClient
+      .getQueryData<BudgetLineWithPlan[]>(BUDGET_KEYS.lines(selectedMonthId))
+      ?.find((line) => line.category_id === category.id);
+    if (existing) return existing;
+    return createLine.mutateAsync({
+      category_id: category.id,
+      name: category.name,
+      display_order: category.display_order ?? 0,
+      is_active: true,
+    });
+  };
 
+  const handleSaveCategoryAmount = async (category: BudgetCategory, amount: number) => {
     try {
-      const ensuredLine = await onEnsureLineForCategory(category);
+      const ensuredLine = await ensureLineForCategory(category);
       await upsertPlan.mutateAsync({
         line_id: ensuredLine.id,
         month_id: selectedMonthId,
@@ -430,156 +381,120 @@ function BudgetMonthContent({
     }
   };
 
+  const { income, expenses, investments, savings, leftover } = groupedTotals;
+
   return (
     <>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="gap-0 py-0">
-          <CardHeader className="px-4 pt-4 pb-1"><CardDescription>Ingresos</CardDescription></CardHeader>
-          <CardContent className="px-4 pb-4">
-            <p className={`text-2xl font-semibold ${BUDGET_STATUS_TONE[groupedTotals.income.status]}`}>{currencySymbol} {formatAmount(groupedTotals.income.actual)}</p>
-            <p className="text-muted-foreground text-xs">Plan: {currencySymbol} {formatAmount(groupedTotals.income.planned)}</p>
-          </CardContent>
-        </Card>
-        <Card className="gap-0 py-0">
-          <CardHeader className="px-4 pt-4 pb-1"><CardDescription>Gastos</CardDescription></CardHeader>
-          <CardContent className="px-4 pb-4">
-            <p className={`text-2xl font-semibold ${BUDGET_STATUS_TONE[groupedTotals.expenses.status]}`}>{currencySymbol} {formatAmount(groupedTotals.expenses.actual)}</p>
-            <p className="text-muted-foreground text-xs">Plan: {currencySymbol} {formatAmount(groupedTotals.expenses.planned)}</p>
-          </CardContent>
-        </Card>
-        <Card className="gap-0 py-0">
-          <CardHeader className="px-4 pt-4 pb-1"><CardDescription>Inversiones</CardDescription></CardHeader>
-          <CardContent className="px-4 pb-4">
-            <p className={`text-2xl font-semibold ${investedKnown && groupedTotals.investments.actual > 0 ? "text-emerald-600" : "text-muted-foreground"}`}>{money(investedKnown, groupedTotals.investments.actual)}</p>
-            <p className="text-muted-foreground text-xs">Plan: {currencySymbol} {formatAmount(groupedTotals.investments.planned)}</p>
-            {!transactionsError ? null : (
-              <p className="text-destructive text-xs">{errorMessage(transactionsError)}</p>
-            )}
-          </CardContent>
-        </Card>
-        <Card className="gap-0 py-0">
-          <CardHeader className="px-4 pt-4 pb-1"><CardDescription>Ahorro</CardDescription></CardHeader>
-          <CardContent className="px-4 pb-4">
-            <p className={`text-2xl font-semibold ${groupedTotals.savings.actual >= 0 ? "text-cyan-600" : "text-red-600"}`}>{currencySymbol} {formatAmount(groupedTotals.savings.actual)}</p>
-            <p className="text-muted-foreground text-xs">Plan: {currencySymbol} {formatAmount(groupedTotals.savings.planned)}</p>
-            {groupedTotals.savings.planned > 0 && (
-              <p className={`text-xs font-medium ${BUDGET_STATUS_TONE[groupedTotals.savings.status]}`}>
-                {groupedTotals.savings.favorableVariance >= 0 ? "+" : ""}{currencySymbol} {formatAmount(groupedTotals.savings.favorableVariance)} vs plan
-              </p>
-            )}
-            <p className="text-muted-foreground text-xs">
-              Sobrante del mes: {money(investedKnown, groupedTotals.leftover)}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+      <StatGrid columns={4}>
+        <StatCard
+          label="Ingresos"
+          value={income.actual}
+          currency={currencySymbol}
+          format={formatValue}
+          sub={
+            <span>
+              Plan {money(income.planned)} · <StatusPercent execution={income} />
+            </span>
+          }
+        />
+        <StatCard
+          label="Gastos"
+          value={expenses.actual}
+          currency={currencySymbol}
+          format={formatValue}
+          sub={
+            <span>
+              Plan {money(expenses.planned)} · <StatusPercent execution={expenses} />
+            </span>
+          }
+        />
+        <StatCard
+          label="Inversiones"
+          hint="Compras menos ventas del mes."
+          value={investedKnown ? investments.actual : null}
+          currency={currencySymbol}
+          format={formatValue}
+          sub={
+            <>
+              <span>
+                Plan {money(investments.planned)} · <StatusPercent execution={investments} known={investedKnown} />
+              </span>
+              {!transactionsError ? null : (
+                <span className="text-destructive">{errorMessage(transactionsError)}</span>
+              )}
+            </>
+          }
+        />
+        <StatCard
+          label="Ahorro"
+          hint="Sobrante: ingresos menos gastos, inversiones y ahorro."
+          value={savings.actual}
+          currency={currencySymbol}
+          format={formatValue}
+          sub={
+            <>
+              <span>
+                Plan {money(savings.planned)}
+                {savings.planned > 0 && (
+                  <>
+                    {" · "}
+                    <span className="tabular-nums" style={{ color: BUDGET_STATUS_COLORS[savings.status] }}>
+                      {savings.favorableVariance >= 0 ? "+" : ""}
+                      {money(savings.favorableVariance)} vs plan
+                    </span>
+                  </>
+                )}
+              </span>
+              <span>Sobrante {investedKnown ? money(leftover) : "—"}</span>
+            </>
+          }
+        />
+      </StatGrid>
 
-      <div className="space-y-3">
-        {rowsByType.length === 0 ? (
-          <div className="rounded-md border border-dashed p-6 text-center">
-            <p className="text-muted-foreground mb-3 text-sm">No hay categorías de presupuesto para este mes.</p>
-          </div>
-        ) : (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      {rowsByType.length === 0 ? (
+        <StateCard
+          variant="empty"
+          icon={Tags}
+          title="Sin categorías"
+          action={
+            <PageButton asChild variant="outline" icon={Plus}>
+              <Link href="/budget/categories">Crear categoría</Link>
+            </PageButton>
+          }
+        />
+      ) : (
+        <RenderErrorBoundary name="budget-groups" resetKeys={[rowsByType]} className="min-h-72">
+          <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-3">
             {rowsByType.map((group) => {
               // Investments execute from the investments module; every other
               // group (savings included) executes from its own categories.
               const isInvestments = group.type === "investments";
-              const effectiveActual = isInvestments ? monthInvestmentTotal
-                : group.actualTotal;
-              const groupExecution = budgetExecution(BUDGET_GROUP_OF[group.type], group.plannedTotal, effectiveActual);
+              const effectiveActual = isInvestments ? monthInvestmentTotal : group.actualTotal;
               const actualKnown = !isInvestments || investedKnown;
-              const groupTone = actualKnown ? BUDGET_STATUS_TONE[groupExecution.status] : "text-muted-foreground";
               return (
-                <div key={group.type} className="overflow-hidden rounded-md border bg-card">
-                  <div className={`px-3 py-2 text-xs font-semibold ${CATEGORY_HEADER_STYLES[group.type] ?? "bg-muted text-foreground"}`}>{group.label}</div>
-                  <div className="grid grid-cols-[1fr_auto_auto] gap-2 border-b bg-muted/20 px-3 py-2 text-xs font-medium">
-                    <span>Subcategoría</span>
-                    <span className="w-32 text-right">Plan</span>
-                    <span className="w-24 text-right">Ejecutado</span>
-                  </div>
-                  <div className="max-h-72 overflow-auto">
-                    {group.rows.length === 0 ? (
-                      <div className="text-muted-foreground px-3 py-2 text-xs">Sin categorías cargadas.</div>
-                    ) : (
-                      group.rows.map((row) => {
-                        const rowExecution = budgetExecution(BUDGET_GROUP_OF[group.type], row.planned, row.actual);
-                        return (
-                          <div key={row.category.id} className="grid grid-cols-[1fr_auto_auto] gap-2 border-b px-3 py-2 text-xs">
-                            <Link
-                              href={`/transactions?month=${selectedMonthId}&category=${row.category.id}`}
-                              className="truncate self-center hover:underline"
-                            >
-                              {row.category.name}
-                            </Link>
-                            <div className="flex items-center gap-1">
-                              <Input className="h-8 w-32 text-right" value={amountDraftByCategoryId[row.category.id] ?? formatAmount(row.planned)} onChange={(event) => onDraftAmountChange(row.category.id, event.target.value)} onBlur={() => onDraftAmountBlur(row.category.id)} inputMode="decimal" placeholder="0,00" disabled={!editingCategoryIds[row.category.id]} />
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-8 w-8 p-0"
-                                title={editingCategoryIds[row.category.id] ? "Guardar monto" : "Editar monto"}
-                                onClick={async () => {
-                                  if (!editingCategoryIds[row.category.id]) {
-                                    onSetEditingCategoryIds((prev) => ({ ...prev, [row.category.id]: true }));
-                                    return;
-                                  }
-                                  const saved = await handleSaveCategoryAmount(row.category);
-                                  if (saved) {
-                                    onSetEditingCategoryIds((prev) => ({ ...prev, [row.category.id]: false }));
-                                  }
-                                }}
-                                disabled={upsertPlan.isPending || createLine.isPending}
-                              >
-                                {editingCategoryIds[row.category.id] ? <Save className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
-                              </Button>
-                            </div>
-                            <div className="flex w-24 flex-col items-end justify-center">
-                              <span className={`font-medium ${row.actual === 0 ? "text-muted-foreground" : BUDGET_STATUS_TONE[rowExecution.status]}`}>
-                                {currencySymbol} {formatAmount(row.actual)}
-                              </span>
-                              {row.actual !== 0 && (
-                                <span className={`text-[10px] ${BUDGET_STATUS_TONE[rowExecution.status]}`}>
-                                  {rowExecution.percent != null ? `${rowExecution.percent.toFixed(0)}%` : "sin plan"}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                  <div className="border-t bg-muted/30 px-3 py-2">
-                    <div className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs font-medium">
-                      <span>Total</span>
-                      <span className="w-32 text-right">{currencySymbol} {formatAmount(group.plannedTotal)}</span>
-                      <span className={`w-24 text-right ${groupTone}`}>{money(actualKnown, effectiveActual)}</span>
-                    </div>
-                    <div className="mt-1 flex items-center justify-end text-xs">
-                      <span className={groupTone}>
-                        {!actualKnown ? "—" : groupExecution.percent != null ? `${groupExecution.percent.toFixed(0)}%` : "sin plan"}
-                      </span>
-                    </div>
-                  </div>
-                </div>
+                <BudgetGroupCard
+                  key={group.type}
+                  label={group.label}
+                  group={BUDGET_GROUP_OF[group.type]}
+                  rows={group.rows}
+                  plannedTotal={group.plannedTotal}
+                  actualTotal={actualKnown ? effectiveActual : null}
+                  decimals={decimals}
+                  onOpenCategory={setDrillCategory}
+                  onSavePlan={handleSaveCategoryAmount}
+                />
               );
             })}
           </div>
-        )}
-      </div>
-    </>
-  );
-}
+        </RenderErrorBoundary>
+      )}
 
-function BudgetContentFallback() {
-  return (
-    <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, index) => (
-          <Skeleton key={index} className="h-24 w-full" />
-        ))}
-      </div>
-      <Skeleton className="h-96 w-full" />
-    </div>
+      <CategoryTransactionsSheet
+        monthId={selectedMonthId}
+        monthName={monthName}
+        category={drillCategory}
+        onClose={() => setDrillCategory(null)}
+      />
+    </>
   );
 }

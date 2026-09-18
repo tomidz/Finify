@@ -28,12 +28,14 @@ import {
 } from "@/hooks/useTransactions";
 import { AccountCombobox } from "@/components/account-combobox";
 import { CreateTransferSchema } from "@/lib/validations/transaction.schema";
-import { formatNumberInput, parseNumberInput } from "@/lib/utils";
+import { parseMoney, toMoneyInput } from "@/lib/format";
 import { fetchExchangeRate } from "@/lib/frankfurter";
 import type { TransactionWithRelations } from "@/types/transactions";
 import type { AccountType } from "@/types/accounts";
 import { format } from "date-fns";
-import { Loader2 } from "lucide-react";
+import { MoneyInput } from "@/components/money-input";
+import { Spinner } from "@/components/ui/spinner";
+import { uiScale } from "@/lib/ui-scale";
 
 interface TransferDialogProps {
   transfer: TransactionWithRelations | null;
@@ -131,6 +133,8 @@ export function TransferDialog({
   // Converted amounts keep the destination currency's precision (crypto: 8).
   const destinationDecimals =
     currencies?.find((c) => c.code === destinationCurrency)?.decimals ?? 2;
+  const sourceDecimals =
+    currencies?.find((c) => c.code === sourceAccount?.currency)?.decimals ?? 2;
   const destinationDecimalsRef = useRef(destinationDecimals);
   destinationDecimalsRef.current = destinationDecimals;
   const toDestination = useCallback(
@@ -151,11 +155,11 @@ export function TransferDialog({
     const targetCurrency = destAccount.currency;
     if (sourceCurrency === targetCurrency) {
       form.setValue("exchange_rate", "1");
-      const amt = parseNumberInput(amountRef.current);
-      if (!isNaN(amt) && amt > 0) {
+      const amt = parseMoney(amountRef.current);
+      if (amt != null && amt > 0) {
         form.setValue(
           "destination_amount",
-          formatNumberInput(String(amt).replace(".", ","))
+          toMoneyInput(amt, destinationDecimalsRef.current)
         );
       }
       return;
@@ -188,15 +192,14 @@ export function TransferDialog({
         clearRate();
         return;
       }
-      const formattedRate = formatNumberInput(String(rate).replace(".", ","));
-      form.setValue("exchange_rate", formattedRate);
+      form.setValue("exchange_rate", toMoneyInput(rate, 8));
       destinationManuallyEdited.current = false;
-      const amt = parseNumberInput(amountRef.current);
-      if (!isNaN(amt) && amt > 0) {
+      const amt = parseMoney(amountRef.current);
+      if (amt != null && amt > 0) {
         const base = toDestination(amt * rate);
         form.setValue(
           "destination_amount",
-          formatNumberInput(String(base).replace(".", ","))
+          toMoneyInput(base, destinationDecimalsRef.current)
         );
       }
     });
@@ -240,21 +243,16 @@ export function TransferDialog({
       const existingFee = Number(transfer.fee ?? 0);
       const sourceAbs = Math.abs(sourceLine?.amount ?? 0);
       const netAmount = Math.max(0, sourceAbs - existingFee);
+      // Stored amounts load at full precision: a cosmetic edit keeps them.
       form.reset({
         date: transfer.date,
         source_account_id: sourceLine?.account_id ?? "",
         destination_account_id: destinationLine?.account_id ?? "",
         description: transfer.description,
-        amount: formatNumberInput(String(netAmount).replace(".", ",")),
-        exchange_rate: formatNumberInput(
-          String(sourceLine?.exchange_rate ?? 1).replace(".", ",")
-        ),
-        destination_amount: formatNumberInput(
-          String(Math.abs(destinationLine?.amount ?? 0)).replace(".", ",")
-        ),
-        fee: existingFee > 0
-          ? formatNumberInput(String(existingFee).replace(".", ","))
-          : "",
+        amount: toMoneyInput(netAmount, 8),
+        exchange_rate: toMoneyInput(sourceLine?.exchange_rate ?? 1, 8),
+        destination_amount: toMoneyInput(Math.abs(destinationLine?.amount ?? 0), 8),
+        fee: existingFee > 0 ? toMoneyInput(existingFee, 8) : "",
         notes: transfer.notes ?? "",
       });
     } else {
@@ -276,76 +274,76 @@ export function TransferDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transfer, open, activeAccounts.length, form]);
 
+  // The fields hand over the sanitized text (MoneyInput).
   const handleAmountChange = useCallback((val: string) => {
-    const formatted = formatNumberInput(val);
-    form.setValue("amount", formatted);
-    const amt = parseNumberInput(formatted);
+    form.setValue("amount", val);
+    const amt = parseMoney(val);
     if (destinationManuallyEdited.current) {
-      const base = parseNumberInput(form.getValues("destination_amount"));
-      if (!isNaN(amt) && amt > 0 && !isNaN(base) && base > 0) {
+      const base = parseMoney(form.getValues("destination_amount"));
+      if (amt != null && amt > 0 && base != null && base > 0) {
         const newRate = Math.round((base / amt) * 100000000) / 100000000;
-        form.setValue(
-          "exchange_rate",
-          formatNumberInput(String(newRate).replace(".", ","))
-        );
+        form.setValue("exchange_rate", toMoneyInput(newRate, 8));
       }
     } else {
-      const rate = parseNumberInput(form.getValues("exchange_rate"));
-      if (!isNaN(amt) && amt > 0 && !isNaN(rate) && rate > 0) {
+      const rate = parseMoney(form.getValues("exchange_rate"));
+      if (amt != null && amt > 0 && rate != null && rate > 0) {
         const newBase = toDestination(amt * rate);
         form.setValue(
           "destination_amount",
-          formatNumberInput(String(newBase).replace(".", ","))
+          toMoneyInput(newBase, destinationDecimalsRef.current)
         );
       }
     }
   }, [form, toDestination]);
 
   const handleRateChange = useCallback((val: string) => {
-    const formatted = formatNumberInput(val);
-    form.setValue("exchange_rate", formatted);
+    form.setValue("exchange_rate", val);
     destinationManuallyEdited.current = false;
-    const amt = parseNumberInput(form.getValues("amount"));
-    const rate = parseNumberInput(formatted);
-    if (!isNaN(amt) && amt > 0 && !isNaN(rate) && rate > 0) {
+    const amt = parseMoney(form.getValues("amount"));
+    const rate = parseMoney(val);
+    if (amt != null && amt > 0 && rate != null && rate > 0) {
       const newBase = toDestination(amt * rate);
       form.setValue(
         "destination_amount",
-        formatNumberInput(String(newBase).replace(".", ","))
+        toMoneyInput(newBase, destinationDecimalsRef.current)
       );
     }
   }, [form, toDestination]);
 
   const handleDestinationAmountChange = useCallback((val: string) => {
     destinationManuallyEdited.current = true;
-    const formatted = formatNumberInput(val);
-    form.setValue("destination_amount", formatted);
-    const amt = parseNumberInput(form.getValues("amount"));
-    const base = parseNumberInput(formatted);
-    if (!isNaN(amt) && amt > 0 && !isNaN(base)) {
+    form.setValue("destination_amount", val);
+    const amt = parseMoney(form.getValues("amount"));
+    const base = parseMoney(val);
+    if (amt != null && amt > 0 && base != null) {
       const newRate = Math.round((base / amt) * 100000000) / 100000000;
-      form.setValue(
-        "exchange_rate",
-        formatNumberInput(String(newRate).replace(".", ","))
-      );
+      form.setValue("exchange_rate", toMoneyInput(newRate, 8));
     }
   }, [form]);
 
   const onSubmit = async (values: TransferFormValues) => {
     form.clearErrors();
 
-    const amountNum = parseNumberInput(values.amount);
-    const destinationNum = sameCurrency ? amountNum : parseNumberInput(values.destination_amount);
+    // Empty is missing, never 0.
+    const amountNum = parseMoney(values.amount);
+    const destinationNum = sameCurrency ? amountNum : parseMoney(values.destination_amount);
+    if (amountNum == null || destinationNum == null) {
+      if (amountNum == null) form.setError("amount", { message: "Ingresá el monto" });
+      if (destinationNum == null) {
+        form.setError("destination_amount", { message: "Ingresá el monto destino" });
+      }
+      return;
+    }
     // The rate is the one between the two amounts, implied when left empty.
-    const enteredRate = sameCurrency ? 1 : parseNumberInput(values.exchange_rate);
+    const enteredRate = sameCurrency ? 1 : parseMoney(values.exchange_rate);
     const rateNum =
-      !isNaN(enteredRate) && enteredRate > 0
+      enteredRate != null && enteredRate > 0
         ? enteredRate
         : amountNum > 0 && destinationNum > 0
           ? destinationNum / amountNum
-          : NaN;
-    const feeRaw = parseNumberInput(values.fee);
-    const feeNum = isNaN(feeRaw) ? 0 : Math.max(0, feeRaw);
+          : null;
+    // The fee is optional: empty is none.
+    const feeNum = Math.max(0, parseMoney(values.fee) ?? 0);
 
     if (isEditing) {
       try {
@@ -353,9 +351,9 @@ export function TransferDialog({
           id: transfer.id,
           date: values.date,
           description: values.description,
-          amount: isNaN(amountNum) ? 0 : amountNum,
-          exchange_rate: isNaN(rateNum) ? undefined : rateNum,
-          base_amount: isNaN(destinationNum) ? 0 : destinationNum,
+          amount: amountNum,
+          exchange_rate: rateNum ?? undefined,
+          base_amount: destinationNum,
           source_account_id: values.source_account_id,
           destination_account_id: values.destination_account_id,
           fee: feeNum,
@@ -374,9 +372,10 @@ export function TransferDialog({
       source_account_id: values.source_account_id,
       destination_account_id: values.destination_account_id,
       description: values.description,
-      amount: isNaN(amountNum) ? 0 : amountNum,
-      exchange_rate: rateNum,
-      base_amount: isNaN(destinationNum) ? 0 : destinationNum,
+      amount: amountNum,
+      // No rate: the schema turns NaN down, on the rate field.
+      exchange_rate: rateNum ?? Number.NaN,
+      base_amount: destinationNum,
       fee: feeNum,
       notes: values.notes,
     };
@@ -424,7 +423,7 @@ export function TransferDialog({
         <Form {...form}>
           <form
             onSubmit={form.handleSubmit(onSubmit)}
-            className="space-y-4"
+            className="flex flex-col gap-4"
             noValidate
           >
             <FormField
@@ -511,17 +510,14 @@ export function TransferDialog({
                 name="amount"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>
-                      Monto{sourceAccount ? ` (${sourceAccount.currency})` : ""}
-                    </FormLabel>
+                    <FormLabel>Monto</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="0,00"
+                      <MoneyInput
+                        currency={sourceAccount?.currency}
+                        decimals={sourceDecimals}
                         disabled={isPending}
                         value={field.value}
-                        onChange={(e) => handleAmountChange(e.target.value)}
+                        onValueChange={handleAmountChange}
                       />
                     </FormControl>
                     <FormMessage />
@@ -535,20 +531,17 @@ export function TransferDialog({
                 name="exchange_rate"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>
+                    <FormLabel className="flex items-center gap-1">
                       Tipo de cambio
-                      {fetchingRate && (
-                        <Loader2 className="ml-1 inline size-3 animate-spin" />
-                      )}
+                      {!fetchingRate ? null : <Spinner className="size-3" />}
                     </FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
+                      <MoneyInput
+                        decimals={8}
                         placeholder="1"
                         disabled={isPending}
                         value={field.value}
-                        onChange={(e) => handleRateChange(e.target.value)}
+                        onValueChange={handleRateChange}
                       />
                     </FormControl>
                     <FormMessage />
@@ -560,25 +553,16 @@ export function TransferDialog({
                 name="destination_amount"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>
-                      Monto destino
-                      {destinationCurrency ? ` (${destinationCurrency})` : ""}
-                    </FormLabel>
+                    <FormLabel>Monto destino</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="0,00"
+                      <MoneyInput
+                        currency={destinationCurrency || undefined}
+                        decimals={destinationDecimals}
                         disabled={isPending}
                         value={field.value}
-                        onChange={(e) =>
-                          handleDestinationAmountChange(e.target.value)
-                        }
+                        onValueChange={handleDestinationAmountChange}
                       />
                     </FormControl>
-                    <p className="text-muted-foreground text-xs">
-                      Monto en la moneda de la cuenta destino.
-                    </p>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -592,24 +576,18 @@ export function TransferDialog({
               name="fee"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>
-                    Comisión (opcional)
-                    {sourceAccount ? ` (${sourceAccount.currency})` : ""}
-                  </FormLabel>
+                  <FormLabel>Comisión (opcional)</FormLabel>
                   <FormControl>
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      placeholder="0,00"
+                    <MoneyInput
+                      currency={sourceAccount?.currency}
+                      decimals={sourceDecimals}
                       disabled={isPending}
                       value={field.value}
-                      onChange={(e) =>
-                        form.setValue("fee", formatNumberInput(e.target.value))
-                      }
+                      onValueChange={(next) => form.setValue("fee", next)}
                     />
                   </FormControl>
-                  <p className="text-muted-foreground text-xs">
-                    Costo adicional cobrado al origen (red, banco). Se descuenta del origen además del monto.
+                  <p className="text-muted-foreground text-[11px]">
+                    Se descuenta del origen además del monto.
                   </p>
                   <FormMessage />
                 </FormItem>
@@ -638,16 +616,15 @@ export function TransferDialog({
               <Button
                 type="button"
                 variant="outline"
+                size="sm"
+                className={uiScale.button}
                 onClick={() => onOpenChange(false)}
               >
                 Cancelar
               </Button>
-              <Button type="submit" disabled={isPending}>
-                {isPending
-                  ? "Guardando..."
-                  : isEditing
-                    ? "Guardar cambios"
-                    : "Crear transferencia"}
+              <Button type="submit" size="sm" className={uiScale.button} disabled={isPending}>
+                {!isPending ? null : <Spinner className="size-3.5" />}
+                {isEditing ? "Guardar" : "Crear"}
               </Button>
             </DialogFooter>
           </form>

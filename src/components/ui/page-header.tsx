@@ -1,5 +1,9 @@
 import * as React from "react";
+import Link from "next/link";
+
 import { cn } from "@/lib/utils";
+
+export type PageHeaderCrumb = { label: string; href: string };
 
 function PageHeader({
   className,
@@ -10,7 +14,7 @@ function PageHeader({
     <div
       data-slot="page-header"
       className={cn(
-        "flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between",
+        "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between",
         className,
       )}
       {...props}
@@ -27,25 +31,52 @@ function PageHeaderTitleGroup({
   return (
     <div
       data-slot="page-header-title-group"
-      className={cn("space-y-1", className)}
+      className={cn("flex min-w-0 flex-col gap-1", className)}
       {...props}
     />
   );
 }
 
+/**
+ * The page's h1. `breadcrumb` lists the pages above it, rendered on the same
+ * line as links: "Cuentas / Banco X".
+ */
 function PageHeaderTitle({
   className,
+  breadcrumb,
   ...props
-}: React.ComponentProps<"h1">) {
-  return (
+}: React.ComponentProps<"h1"> & { breadcrumb?: readonly PageHeaderCrumb[] }) {
+  const title = (
     <h1
       data-slot="page-header-title"
       className={cn(
-        "text-2xl font-semibold tracking-tight text-foreground",
+        "text-lg font-semibold tracking-tight text-foreground",
         className,
       )}
       {...props}
     />
+  );
+  if (!breadcrumb?.length) return title;
+
+  return (
+    <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+      <nav aria-label="Ruta" className="flex items-baseline gap-x-1.5">
+        {breadcrumb.map((crumb) => (
+          <React.Fragment key={crumb.href}>
+            <Link
+              href={crumb.href}
+              className="text-lg font-semibold tracking-tight text-muted-foreground hover:text-foreground"
+            >
+              {crumb.label}
+            </Link>
+            <span aria-hidden className="text-lg text-muted-foreground/60">
+              /
+            </span>
+          </React.Fragment>
+        ))}
+      </nav>
+      {title}
+    </div>
   );
 }
 
@@ -69,7 +100,7 @@ function PageHeaderActions({
   return (
     <div
       data-slot="page-header-actions"
-      className={cn("flex items-center gap-2", className)}
+      className={cn("flex flex-wrap items-center gap-2", className)}
       {...props}
     />
   );

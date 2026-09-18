@@ -1,16 +1,19 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
-import { Trash2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { useCallback, useMemo, useState } from "react";
+import { History, SearchX, Trash2, Undo2 } from "lucide-react";
+import { DataTableToolbar } from "@/components/data-table-toolbar";
+import { FilterChipBar, FilterDropdown, type FilterChip } from "@/components/filter-dropdown";
+import { NumericCell } from "@/components/numeric-cell";
+import { PageButton } from "@/components/page-button";
+import { RenderErrorBoundary } from "@/components/render-error-boundary";
+import { RowActions } from "@/components/row-actions";
+import { SearchInput } from "@/components/search-input";
+import { StatCard, StatGrid } from "@/components/stat-card";
+import { StateCard } from "@/components/state-card";
+import { TruncatedText } from "@/components/truncated-text";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-} from "@/components/ui/card";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Table,
   TableBody,
@@ -19,68 +22,42 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
+import { useConfirm } from "@/hooks/use-confirm";
 import {
   useInvestmentSales,
   useDeleteInvestmentSale,
 } from "@/hooks/useInvestments";
-import { formatAmount, amountTone } from "@/lib/format";
-import { errorMessage } from "@/lib/action-result";
+import { formatAmount } from "@/lib/format";
 import { ASSET_TYPE_LABELS } from "@/types/investments";
 import type { InvestmentSaleWithAccount, AssetType } from "@/types/investments";
+import { ASSET_TYPE_OPTIONS, saleMatches, saleYear } from "./investment-filters";
+import { formatExactQuantity, quantityDecimals, unitPriceDecimals } from "./investment-format";
+
+const formatCount = (value: number) => value.toLocaleString("es-AR");
 
 export function SalesHistoryTable() {
-  const { data: sales, isLoading, isError, error, refetch } = useInvestmentSales();
+  const { data: sales, isLoading, error, refetch } = useInvestmentSales();
   const deleteMutation = useDeleteInvestmentSale();
+  const { mutateAsync: deleteSale } = deleteMutation;
+  const confirm = useConfirm();
 
   const [search, setSearch] = useState("");
-  const [assetTypeFilter, setAssetTypeFilter] = useState<string>("all");
-  const [yearFilter, setYearFilter] = useState<string>("all");
-  const [deleting, setDeleting] = useState<InvestmentSaleWithAccount | null>(
-    null,
-  );
+  const [assetTypeFilter, setAssetTypeFilter] = useState<string | null>(null);
+  const [yearFilter, setYearFilter] = useState<string | null>(null);
 
-  const years = useMemo(() => {
+  const yearOptions = useMemo(() => {
     if (!sales) return [];
-    const set = new Set<number>();
-    for (const s of sales) {
-      set.add(new Date(`${s.sale_date}T00:00:00`).getFullYear());
-    }
-    return Array.from(set).sort((a, b) => b - a);
+    const years = new Set(sales.map((s) => saleYear(s.sale_date)));
+    return Array.from(years)
+      .sort((a, b) => b - a)
+      .map((year) => ({ value: String(year), label: String(year) }));
   }, [sales]);
 
   const filtered = useMemo(() => {
     if (!sales) return [];
-    const term = search.trim().toLowerCase();
-    return sales.filter((s) => {
-      if (assetTypeFilter !== "all" && s.asset_type !== assetTypeFilter)
-        return false;
-      if (
-        yearFilter !== "all" &&
-        new Date(`${s.sale_date}T00:00:00`).getFullYear() !== Number(yearFilter)
-      )
-        return false;
-      if (!term) return true;
-      return [s.asset_name, s.ticker ?? "", s.account_name, s.currency]
-        .join(" ")
-        .toLowerCase()
-        .includes(term);
-    });
+    return sales.filter((s) =>
+      saleMatches(s, { query: search, assetType: assetTypeFilter, year: yearFilter }),
+    );
   }, [sales, search, assetTypeFilter, yearFilter]);
 
   const totals = useMemo(() => {
@@ -110,242 +87,252 @@ export function SalesHistoryTable() {
           : filtered[0].base_currency)
     : "$";
 
+  const clearFilters = useCallback(() => {
+    setSearch("");
+    setAssetTypeFilter(null);
+    setYearFilter(null);
+  }, []);
+
+  const filterChips = useMemo(() => {
+    const chips: FilterChip[] = [];
+    if (assetTypeFilter !== null) {
+      chips.push({
+        id: "type",
+        label: "Tipo",
+        value: ASSET_TYPE_LABELS[assetTypeFilter as AssetType] ?? assetTypeFilter,
+        onRemove: () => setAssetTypeFilter(null),
+      });
+    }
+    if (yearFilter !== null) {
+      chips.push({ id: "year", label: "Año", value: yearFilter, onRemove: () => setYearFilter(null) });
+    }
+    return chips;
+  }, [assetTypeFilter, yearFilter]);
+
+  // delete_investment_sale takes back the sale's credit (if it made one) and
+  // restores one lot at the sale's cost basis, dated on the sale; a swap also
+  // deletes the lot it bought, and refuses once that lot was sold, moved or
+  // its cost edited.
+  const handleDelete = useCallback(
+    async (sale: InvestmentSaleWithAccount) => {
+      const restored = `${formatExactQuantity(sale.quantity_sold)} ${sale.ticker ?? sale.asset_name}`;
+      const cost = `${sale.currency_symbol} ${formatAmount(sale.cost_basis)}`;
+      const confirmed = await confirm(
+        sale.swap_lot_id
+          ? {
+              title: "¿Deshacer el intercambio?",
+              description: `Se borra lo que recibiste y vuelven ${restored} como un lote del ${sale.sale_date} con costo ${cost}. No se puede si ya lo vendiste, transferiste o editaste.`,
+              confirmLabel: "Deshacer",
+              destructive: true,
+            }
+          : {
+              title: `¿Borrar la venta de ${sale.asset_name}?`,
+              description: `Vuelven ${restored} como un lote del ${sale.sale_date} con costo ${cost}. Si la venta acreditó efectivo, se quita de la cuenta.`,
+              destructive: true,
+            },
+      );
+      if (!confirmed) return;
+      try {
+        await deleteSale(sale.id);
+      } catch {
+        // toast handled in hook
+      }
+    },
+    [confirm, deleteSale],
+  );
+
   if (isLoading) {
-    return (
-      <div className="space-y-3">
-        <Skeleton className="h-24 w-full" />
-        <Skeleton className="h-64 w-full" />
-      </div>
-    );
+    return <StateCard variant="loading" className="min-h-96" />;
   }
 
   // A failed refresh keeps what is on screen (QueryProvider says it failed).
-  if (isError && error && !sales) {
+  if (error && !sales) {
     return (
-      <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-center">
-        <p className="text-destructive font-medium">
-          Error al cargar el historial de ventas
-        </p>
-        <p className="text-muted-foreground mt-1 text-sm">{errorMessage(error)}</p>
-        <Button variant="outline" size="sm" className="mt-3" onClick={() => refetch()}>
-          Reintentar
-        </Button>
-      </div>
+      <StateCard
+        variant="error"
+        title="No se pudo cargar el historial de ventas"
+        error={error}
+        className="min-h-96"
+        onRetry={() => void refetch()}
+      />
     );
   }
 
+  if (!sales || sales.length === 0) {
+    return (
+      <StateCard
+        variant="empty"
+        icon={History}
+        title="Sin ventas"
+        description="Las ventas e intercambios que registres aparecen acá."
+        className="min-h-96"
+      />
+    );
+  }
+
+  const deletingId = deleteMutation.isPending ? deleteMutation.variables : null;
+
   return (
-    <div className="space-y-4">
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card className="gap-0 py-0">
-          <CardHeader className="px-4 pt-4 pb-2">
-            <CardDescription>Operaciones</CardDescription>
-          </CardHeader>
-          <CardContent className="px-4 pb-4">
-            <p className="text-2xl font-bold">{filtered.length}</p>
-            {totals.withoutRate > 0 && (
-              <p className="text-muted-foreground mt-1 text-xs">
-                {totals.withoutRate} sin cotización, fuera de los totales
-              </p>
-            )}
-          </CardContent>
-        </Card>
-        <Card className="gap-0 py-0">
-          <CardHeader className="px-4 pt-4 pb-2">
-            <CardDescription>Proceeds bruto</CardDescription>
-          </CardHeader>
-          <CardContent className="px-4 pb-4">
-            <p className="text-2xl font-bold">
-              {baseCurrencySymbol} {formatAmount(totals.proceeds)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card className="gap-0 py-0">
-          <CardHeader className="px-4 pt-4 pb-2">
-            <CardDescription>Fees + Tax</CardDescription>
-          </CardHeader>
-          <CardContent className="px-4 pb-4">
-            <p className="text-2xl font-bold">
-              {baseCurrencySymbol} {formatAmount(totals.fees + totals.tax)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card className="gap-0 py-0">
-          <CardHeader className="px-4 pt-4 pb-2">
-            <CardDescription>P&L realizado</CardDescription>
-          </CardHeader>
-          <CardContent className="px-4 pb-4">
-            <p className={`text-2xl font-bold ${amountTone(totals.pnl)}`}>
-              {baseCurrencySymbol} {formatAmount(totals.pnl)}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+    <div className="flex flex-col gap-4">
+      <RenderErrorBoundary name="sales-summary" resetKeys={[totals]}>
+        <StatGrid columns={4}>
+          <StatCard
+            label="Operaciones"
+            value={filtered.length}
+            format={formatCount}
+            sub={
+              totals.withoutRate === 0
+                ? undefined
+                : `${totals.withoutRate} sin cotización, fuera de los totales`
+            }
+          />
+          <StatCard label="Bruto" value={totals.proceeds} currency={baseCurrencySymbol} />
+          <StatCard
+            label="Comisiones e impuestos"
+            value={totals.fees + totals.tax}
+            currency={baseCurrencySymbol}
+          />
+          <StatCard label="Resultado" value={totals.pnl} currency={baseCurrencySymbol} signTone />
+        </StatGrid>
+      </RenderErrorBoundary>
 
-      <div className="flex flex-col gap-3 sm:flex-row">
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Buscar activo, ticker, cuenta"
-          className="sm:max-w-sm"
-        />
-        <Select value={assetTypeFilter} onValueChange={setAssetTypeFilter}>
-          <SelectTrigger className="w-full sm:w-44">
-            <SelectValue placeholder="Tipo" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todos los tipos</SelectItem>
-            {Object.entries(ASSET_TYPE_LABELS).map(([value, label]) => (
-              <SelectItem key={value} value={value}>
-                {label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={yearFilter} onValueChange={setYearFilter}>
-          <SelectTrigger className="w-full sm:w-32">
-            <SelectValue placeholder="Año" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todos</SelectItem>
-            {years.map((y) => (
-              <SelectItem key={y} value={String(y)}>
-                {y}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <DataTableToolbar
+        search={
+          <SearchInput
+            value={search}
+            onValueChange={setSearch}
+            resultCount={filtered.length}
+            shortcut
+            placeholder="Buscar activo, ticker o cuenta"
+          />
+        }
+        filters={
+          <>
+            <FilterDropdown
+              label="Tipo"
+              options={ASSET_TYPE_OPTIONS}
+              value={assetTypeFilter}
+              onValueChange={setAssetTypeFilter}
+            />
+            <FilterDropdown
+              label="Año"
+              options={yearOptions}
+              value={yearFilter}
+              onValueChange={setYearFilter}
+            />
+          </>
+        }
+      >
+        <FilterChipBar chips={filterChips} onClearAll={clearFilters} />
+      </DataTableToolbar>
 
-      <div className="rounded-md border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Fecha</TableHead>
-              <TableHead>Activo</TableHead>
-              <TableHead>Ticker</TableHead>
-              <TableHead>Tipo</TableHead>
-              <TableHead>Cuenta</TableHead>
-              <TableHead className="text-right">Cant.</TableHead>
-              <TableHead className="text-right">Precio</TableHead>
-              <TableHead className="text-right">Bruto</TableHead>
-              <TableHead className="text-right">Fees</TableHead>
-              <TableHead className="text-right">Tax</TableHead>
-              <TableHead className="text-right">Costo</TableHead>
-              <TableHead className="text-right">P&L</TableHead>
-              <TableHead className="w-12" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filtered.length === 0 ? (
-              <TableRow>
-                <TableCell
-                  colSpan={13}
-                  className="h-32 text-center text-muted-foreground text-sm"
-                >
-                  No hay ventas registradas todavía.
-                </TableCell>
-              </TableRow>
-            ) : (
-              filtered.map((s) => (
-                <TableRow key={s.id}>
-                  <TableCell className="text-xs">{s.sale_date}</TableCell>
-                  <TableCell className="font-medium">{s.asset_name}</TableCell>
-                  <TableCell>
-                    {s.ticker && <Badge variant="secondary">{s.ticker}</Badge>}
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    {ASSET_TYPE_LABELS[s.asset_type as AssetType]}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {s.account_name}
-                  </TableCell>
-                  <TableCell className="text-right text-xs">
-                    {formatAmount(s.quantity_sold)}
-                  </TableCell>
-                  <TableCell className="text-right text-xs">
-                    {s.currency_symbol} {formatAmount(s.price_per_unit)}
-                  </TableCell>
-                  <TableCell className="text-right text-xs">
-                    {s.currency_symbol} {formatAmount(s.total_proceeds)}
-                  </TableCell>
-                  <TableCell className="text-right text-xs">
-                    {formatAmount(s.fees)}
-                  </TableCell>
-                  <TableCell className="text-right text-xs">
-                    {formatAmount(s.tax)}
-                  </TableCell>
-                  <TableCell className="text-right text-xs">
-                    {formatAmount(s.cost_basis)}
-                  </TableCell>
-                  <TableCell className={`text-right text-sm font-medium ${amountTone(s.realized_pnl)}`}>
-                    {formatAmount(s.realized_pnl)}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label="Eliminar venta"
-                      onClick={() => setDeleting(s)}
-                    >
-                      <Trash2 className="size-4" />
-                    </Button>
-                  </TableCell>
+      <RenderErrorBoundary name="sales-table" resetKeys={[filtered]} className="min-h-72">
+        {filtered.length === 0 ? (
+          <StateCard
+            variant="empty"
+            icon={SearchX}
+            title="Sin resultados"
+            action={
+              <PageButton variant="outline" onClick={clearFilters}>
+                Limpiar filtros
+              </PageButton>
+            }
+          />
+        ) : (
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Fecha</TableHead>
+                  <TableHead>Activo</TableHead>
+                  <TableHead>Ticker</TableHead>
+                  <TableHead>Tipo</TableHead>
+                  <TableHead>Cuenta</TableHead>
+                  <TableHead className="text-right">Cantidad</TableHead>
+                  <TableHead className="text-right">Precio</TableHead>
+                  <TableHead className="text-right">Bruto</TableHead>
+                  <TableHead className="text-right">Comis.</TableHead>
+                  <TableHead className="text-right">Imp.</TableHead>
+                  <TableHead className="text-right">Costo</TableHead>
+                  <TableHead className="text-right">Resultado</TableHead>
+                  <TableHead className="w-10">
+                    <span className="sr-only">Acciones</span>
+                  </TableHead>
                 </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
-
-      <Dialog open={!!deleting} onOpenChange={(open) => !open && setDeleting(null)}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>{deleting?.swap_lot_id ? "Deshacer intercambio" : "Eliminar venta"}</DialogTitle>
-            <DialogDescription>
-              {deleting?.swap_lot_id ? (
-                <>
-                  Vas a deshacer el intercambio de{" "}
-                  <span className="font-semibold">{deleting.asset_name}</span> del{" "}
-                  {deleting.sale_date}. Se elimina lo que recibiste y vuelve un lote
-                  con el costo base original.
-                </>
-              ) : (
-                <>
-                  Vas a eliminar la venta de{" "}
-                  <span className="font-semibold">{deleting?.asset_name}</span> del{" "}
-                  {deleting?.sale_date}. La app va a revertir el auto-crédito en la
-                  cuenta y restaurar un lote con el costo base original.
-                </>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button
-              variant="outline"
-              onClick={() => setDeleting(null)}
-              disabled={deleteMutation.isPending}
-            >
-              Cancelar
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={deleteMutation.isPending}
-              onClick={async () => {
-                if (!deleting) return;
-                try {
-                  await deleteMutation.mutateAsync(deleting.id);
-                  setDeleting(null);
-                } catch {
-                  // toast handled in hook
-                }
-              }}
-            >
-              {deleteMutation.isPending ? "Eliminando..." : "Eliminar"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              </TableHeader>
+              <TableBody>
+                {filtered.map((s) => (
+                  <TableRow key={s.id}>
+                    <TableCell className="text-xs tabular-nums whitespace-nowrap">{s.sale_date}</TableCell>
+                    <TableCell className="font-medium">
+                      <TruncatedText className="max-w-48">{s.asset_name}</TruncatedText>
+                      {!s.swap_lot_id ? null : (
+                        <span className="text-muted-foreground block text-[11px] font-normal">intercambio</span>
+                      )}
+                    </TableCell>
+                    <TableCell>{!s.ticker ? null : <Badge variant="secondary">{s.ticker}</Badge>}</TableCell>
+                    <TableCell className="text-xs">{ASSET_TYPE_LABELS[s.asset_type as AssetType]}</TableCell>
+                    <TableCell className="text-muted-foreground text-xs">
+                      <TruncatedText className="max-w-40">{s.account_name}</TruncatedText>
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <NumericCell
+                        value={s.quantity_sold}
+                        decimals={quantityDecimals(s.quantity_sold, s.asset_type)}
+                      />
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <NumericCell
+                        value={s.price_per_unit}
+                        currency={s.currency_symbol}
+                        decimals={unitPriceDecimals(s.price_per_unit)}
+                      />
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <NumericCell value={s.total_proceeds} currency={s.currency_symbol} />
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <NumericCell value={s.fees} />
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <NumericCell value={s.tax} />
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <NumericCell value={s.cost_basis} />
+                    </TableCell>
+                    <TableCell className="font-medium">
+                      <NumericCell value={s.realized_pnl} tone />
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {deletingId === s.id ? (
+                        <Spinner className="text-muted-foreground mx-auto size-3.5" />
+                      ) : (
+                        <RowActions
+                          actions={[
+                            s.swap_lot_id
+                              ? {
+                                  label: "Deshacer intercambio",
+                                  icon: Undo2,
+                                  onSelect: () => void handleDelete(s),
+                                  destructive: true,
+                                }
+                              : {
+                                  label: "Borrar venta",
+                                  icon: Trash2,
+                                  onSelect: () => void handleDelete(s),
+                                  destructive: true,
+                                },
+                          ]}
+                        />
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </RenderErrorBoundary>
     </div>
   );
 }

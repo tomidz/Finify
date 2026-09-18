@@ -44,8 +44,7 @@ import { AccountCombobox } from "@/components/account-combobox";
 import { useMatchRules, useCreateTransactionRule } from "@/hooks/useTransactionRules";
 import { Checkbox } from "@/components/ui/checkbox";
 import { CreateTransactionSchema } from "@/lib/validations/transaction.schema";
-import { formatNumberInput, parseNumberInput } from "@/lib/utils";
-import { formatAmount } from "@/lib/format";
+import { amountTone, formatAmount, parseMoney, toMoneyInput } from "@/lib/format";
 import { errorMessage } from "@/lib/action-result";
 import { fetchExchangeRate } from "@/lib/frankfurter";
 import {
@@ -54,9 +53,12 @@ import {
   type TransactionWithRelations,
 } from "@/types/transactions";
 import { format } from "date-fns";
-import { Loader2, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { CategoryCombobox } from "@/components/category-combobox";
+import { MoneyInput } from "@/components/money-input";
+import { Spinner } from "@/components/ui/spinner";
+import { uiScale } from "@/lib/ui-scale";
 
 interface TransactionDialogProps {
   transaction: TransactionWithRelations | null;
@@ -172,6 +174,12 @@ export function TransactionDialog({
   });
 
   const selectedAccount = activeAccounts.find((a) => a.id === watchAccountId);
+  // An edited transaction's account can be inactive: its currency still sets the decimals.
+  const accountCurrencyCode = accounts?.find((a) => a.id === watchAccountId)?.currency;
+  const amountDecimals =
+    currencies?.find((c) => c.code === accountCurrencyCode)?.decimals ?? 2;
+  const baseDecimals =
+    currencies?.find((c) => c.code === baseCurrency)?.decimals ?? 2;
 
   // Correction = balance adjustment: enter the account's actual current balance
   // and the delta vs. the recorded balance is computed automatically.
@@ -190,14 +198,15 @@ export function TransactionDialog({
   // A failed read is no balance, not 0 (the adjustment would be the whole
   // target) nor the cached one (it can predate a save).
   const recordedBalance = balanceError ? null : (currentBalance?.amount ?? null);
-  const targetBalanceNum = parseNumberInput(watchTargetBalance);
+  const targetBalanceNum = parseMoney(watchTargetBalance);
   const adjustment =
     isBalanceAdjustment &&
     !isBalanceLoading &&
     recordedBalance != null &&
-    watchTargetBalance.trim() !== "" &&
-    !isNaN(targetBalanceNum)
-      ? Math.round((targetBalanceNum - recordedBalance) * 100) / 100
+    targetBalanceNum != null
+      ? // Rounded to the account's currency, not to cents: a crypto balance
+        // has up to 8 decimals.
+        Number((targetBalanceNum - recordedBalance).toFixed(amountDecimals))
       : null;
 
   const showCategory = watchTransactionType !== "transfer" && !isCorrection;
@@ -259,18 +268,12 @@ export function TransactionDialog({
         clearRate();
         return;
       }
-      const formattedRate = formatNumberInput(
-        String(rate).replace(".", ","),
-      );
-      form.setValue("exchange_rate", formattedRate);
+      form.setValue("exchange_rate", toMoneyInput(rate, 8));
       baseManuallyEdited.current = false;
-      const amt = parseNumberInput(amountRef.current);
-      if (!isNaN(amt) && amt > 0) {
+      const amt = parseMoney(amountRef.current);
+      if (amt != null && amt > 0) {
         const base = Math.round(amt * rate * 100) / 100;
-        form.setValue(
-          "base_amount",
-          formatNumberInput(String(base).replace(".", ",")),
-        );
+        form.setValue("base_amount", toMoneyInput(base));
       }
     });
 
@@ -289,15 +292,10 @@ export function TransactionDialog({
         account_id: line?.account_id ?? "",
         category_id: transaction.category_id ?? "",
         description: transaction.description,
-        amount: formatNumberInput(
-          String(Math.abs(line?.amount ?? 0)).replace(".", ","),
-        ),
-        exchange_rate: formatNumberInput(
-          String(line?.exchange_rate ?? 1).replace(".", ","),
-        ),
-        base_amount: formatNumberInput(
-          String(Math.abs(line?.base_amount ?? 0)).replace(".", ","),
-        ),
+        // Stored amounts load at full precision: a cosmetic edit keeps them.
+        amount: toMoneyInput(Math.abs(line?.amount ?? 0), 8),
+        exchange_rate: toMoneyInput(line?.exchange_rate ?? 1, 8),
+        base_amount: toMoneyInput(Math.abs(line?.base_amount ?? 0), 8),
         target_balance: "",
         notes: transaction.notes ?? "",
       });
@@ -324,58 +322,44 @@ export function TransactionDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transaction, open, activeAccounts.length]);
 
+  // The fields hand over the sanitized text (MoneyInput).
   const handleAmountChange = useCallback((val: string) => {
-    const formatted = formatNumberInput(val);
-    form.setValue("amount", formatted);
-    const amt = parseNumberInput(formatted);
+    form.setValue("amount", val);
+    const amt = parseMoney(val);
     if (baseManuallyEdited.current) {
-      const base = parseNumberInput(form.getValues("base_amount"));
-      if (!isNaN(amt) && amt > 0 && !isNaN(base) && base > 0) {
+      const base = parseMoney(form.getValues("base_amount"));
+      if (amt != null && amt > 0 && base != null && base > 0) {
         const newRate = Math.round((base / amt) * 100000000) / 100000000;
-        form.setValue(
-          "exchange_rate",
-          formatNumberInput(String(newRate).replace(".", ",")),
-        );
+        form.setValue("exchange_rate", toMoneyInput(newRate, 8));
       }
     } else {
-      const rate = parseNumberInput(form.getValues("exchange_rate"));
-      if (!isNaN(amt) && amt > 0 && !isNaN(rate) && rate > 0) {
+      const rate = parseMoney(form.getValues("exchange_rate"));
+      if (amt != null && amt > 0 && rate != null && rate > 0) {
         const newBase = Math.round(amt * rate * 100) / 100;
-        form.setValue(
-          "base_amount",
-          formatNumberInput(String(newBase).replace(".", ",")),
-        );
+        form.setValue("base_amount", toMoneyInput(newBase));
       }
     }
   }, [form]);
 
   const handleRateChange = useCallback((val: string) => {
-    const formatted = formatNumberInput(val);
-    form.setValue("exchange_rate", formatted);
+    form.setValue("exchange_rate", val);
     baseManuallyEdited.current = false;
-    const amt = parseNumberInput(form.getValues("amount"));
-    const rate = parseNumberInput(formatted);
-    if (!isNaN(amt) && amt > 0 && !isNaN(rate) && rate > 0) {
+    const amt = parseMoney(form.getValues("amount"));
+    const rate = parseMoney(val);
+    if (amt != null && amt > 0 && rate != null && rate > 0) {
       const newBase = Math.round(amt * rate * 100) / 100;
-      form.setValue(
-        "base_amount",
-        formatNumberInput(String(newBase).replace(".", ",")),
-      );
+      form.setValue("base_amount", toMoneyInput(newBase));
     }
   }, [form]);
 
   const handleBaseAmountChange = useCallback((val: string) => {
     baseManuallyEdited.current = true;
-    const formatted = formatNumberInput(val);
-    form.setValue("base_amount", formatted);
-    const amt = parseNumberInput(form.getValues("amount"));
-    const base = parseNumberInput(formatted);
-    if (!isNaN(amt) && amt > 0 && !isNaN(base)) {
+    form.setValue("base_amount", val);
+    const amt = parseMoney(form.getValues("amount"));
+    const base = parseMoney(val);
+    if (amt != null && amt > 0 && base != null) {
       const newRate = Math.round((base / amt) * 100000000) / 100000000;
-      form.setValue(
-        "exchange_rate",
-        formatNumberInput(String(newRate).replace(".", ",")),
-      );
+      form.setValue("exchange_rate", toMoneyInput(newRate, 8));
     }
   }, [form]);
 
@@ -428,8 +412,8 @@ export function TransactionDialog({
 
     const accountCurrency = accounts?.find((a) => a.id === values.account_id)?.currency;
     const needsRate = accountCurrency != null && baseCurrency != null && accountCurrency !== baseCurrency;
-    const rateNum = parseNumberInput(values.exchange_rate);
-    const enteredRate = !isNaN(rateNum) && rateNum > 0 ? rateNum : null;
+    const rateNum = parseMoney(values.exchange_rate);
+    const enteredRate = rateNum != null && rateNum > 0 ? rateNum : null;
     const rateRequired = () =>
       form.setError("exchange_rate", { message: "Ingresá el tipo de cambio" });
 
@@ -463,14 +447,23 @@ export function TransactionDialog({
       }
       safeRate = rate;
       amountNum = adjustment;
-      baseNum = Math.round(adjustment * safeRate * 100) / 100;
+      // At the ledger's 8 decimals: a sub-cent crypto correction keeps a base.
+      baseNum = Number((adjustment * safeRate).toFixed(8));
       description = values.description.trim() || "Ajuste de saldo";
     } else {
-      amountNum = parseNumberInput(values.amount);
-      baseNum = parseNumberInput(values.base_amount);
+      const amount = parseMoney(values.amount);
+      const base = parseMoney(values.base_amount);
+      // Empty is missing, never 0.
+      if (amount == null || base == null) {
+        if (amount == null) form.setError("amount", { message: "Ingresá el monto" });
+        if (base == null) form.setError("base_amount", { message: "Ingresá el monto base" });
+        return;
+      }
+      amountNum = amount;
+      baseNum = base;
       // A base amount typed without a rate implies the rate.
       const impliedRate =
-        !isNaN(amountNum) && amountNum !== 0 && !isNaN(baseNum) && baseNum !== 0
+        amountNum !== 0 && baseNum !== 0
           ? Math.abs(baseNum / amountNum)
           : null;
       const rate = needsRate ? (enteredRate ?? impliedRate) : 1;
@@ -489,9 +482,9 @@ export function TransactionDialog({
       amounts: [
         {
           account_id: values.account_id,
-          amount: isNaN(amountNum) ? 0 : amountNum,
+          amount: amountNum,
           exchange_rate: safeRate,
-          base_amount: isNaN(baseNum) ? 0 : baseNum,
+          base_amount: baseNum,
         },
       ],
       notes: values.notes,
@@ -510,7 +503,9 @@ export function TransactionDialog({
               exchange_rate: "exchange_rate",
               base_amount: "base_amount",
             };
-            const key = map[lineField];
+            // A correction only shows the target balance: its line's errors
+            // go there, or nothing would say why saving failed.
+            const key = isBalanceAdjustment && lineField !== "account_id" ? "target_balance" : map[lineField];
             if (key) {
               form.setError(key, { message: issue.message });
             }
@@ -617,7 +612,7 @@ export function TransactionDialog({
         <Form {...form}>
           <form
             onSubmit={form.handleSubmit(onSubmit)}
-            className="space-y-4"
+            className="flex flex-col gap-4"
             noValidate
           >
           {/* Row 1: Fecha + Tipo */}
@@ -641,29 +636,29 @@ export function TransactionDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormFieldLabel>Tipo</FormFieldLabel>
-                    <FormControl>
-                      <Select
-                        value={field.value}
-                        onValueChange={(val) => {
-                          field.onChange(val);
-                          // Clear category when switching type (selected one may not belong to new type)
-                          form.setValue("category_id", "");
-                          pickedByHandRef.current.category = false;
-                        }}
-                        disabled={isPending || isEditing}
-                      >
+                    <Select
+                      value={field.value}
+                      onValueChange={(val) => {
+                        field.onChange(val);
+                        // Clear category when switching type (selected one may not belong to new type)
+                        form.setValue("category_id", "");
+                        pickedByHandRef.current.category = false;
+                      }}
+                      disabled={isPending || isEditing}
+                    >
+                      <FormControl>
                         <SelectTrigger className="w-full">
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent>
-                          {DIALOG_TRANSACTION_TYPES.map((type) => (
-                            <SelectItem key={type} value={type}>
-                              {TRANSACTION_TYPE_LABELS[type]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </FormControl>
+                      </FormControl>
+                      <SelectContent>
+                        {DIALOG_TRANSACTION_TYPES.map((type) => (
+                          <SelectItem key={type} value={type}>
+                            {TRANSACTION_TYPE_LABELS[type]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -756,7 +751,7 @@ export function TransactionDialog({
 
           {/* Row 4: Monto + TC + Monto base — o ajuste de saldo para correcciones */}
           {isBalanceAdjustment ? (
-            <div className="space-y-3">
+            <div className="flex flex-col gap-3">
               <div
                 className={`grid gap-4 ${
                   selectedAccount && selectedAccount.currency !== baseCurrency
@@ -767,25 +762,18 @@ export function TransactionDialog({
                 <FormField
                   control={form.control}
                   name="target_balance"
-                  render={() => (
+                  render={({ field }) => (
                     <FormItem>
-                      <FormFieldLabel>
-                        Saldo actual
-                        {selectedAccount ? ` (${selectedAccount.currency})` : ""}
-                      </FormFieldLabel>
+                      <FormFieldLabel>Saldo actual</FormFieldLabel>
                       <FormControl>
-                        <Input
-                          type="text"
-                          inputMode="decimal"
-                          placeholder="0,00"
+                        {/* A card or a debt can stand below zero. */}
+                        <MoneyInput
+                          currency={accountCurrencyCode}
+                          decimals={amountDecimals}
+                          allowNegative
                           disabled={isPending}
-                          value={watchTargetBalance}
-                          onChange={(e) =>
-                            form.setValue(
-                              "target_balance",
-                              formatNumberInput(e.target.value),
-                            )
-                          }
+                          value={field.value}
+                          onValueChange={(next) => form.setValue("target_balance", next)}
                         />
                       </FormControl>
                       <FormMessage />
@@ -799,20 +787,14 @@ export function TransactionDialog({
                       name="exchange_rate"
                       render={({ field }) => (
                         <FormItem>
-                          <FormFieldLabel>
-                            Tipo de cambio
-                            {fetchingRateRef.current && (
-                              <Loader2 className="ml-1 inline size-3 animate-spin" />
-                            )}
-                          </FormFieldLabel>
+                          <RateLabel fetching={fetchingRateRef.current} />
                           <FormControl>
-                            <Input
-                              type="text"
-                              inputMode="decimal"
+                            <MoneyInput
+                              decimals={8}
                               placeholder="1"
                               disabled={isPending}
                               value={field.value}
-                              onChange={(e) => handleRateChange(e.target.value)}
+                              onValueChange={handleRateChange}
                             />
                           </FormControl>
                           <FormMessage />
@@ -822,31 +804,27 @@ export function TransactionDialog({
                   )}
               </div>
 
-              <div className="bg-muted/30 space-y-1.5 rounded-md border px-3 py-2.5 text-sm">
+              <div className="bg-muted/30 flex flex-col gap-1.5 rounded-md border px-3 py-2.5 text-xs">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-muted-foreground">Saldo registrado</span>
-                  <span className="font-medium">
+                  <span className="font-medium tabular-nums">
                     {isBalanceLoading
                       ? "…"
                       : recordedBalance == null
                         ? "—"
-                        : `${selectedAccount?.currency ?? ""} ${formatAmount(recordedBalance)}`}
+                        : `${accountCurrencyCode ?? ""} ${formatAmount(recordedBalance, amountDecimals)}`}
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground">Ajuste a registrar</span>
+                  <span className="text-muted-foreground">Ajuste</span>
                   <span
-                    className={`font-semibold ${
-                      adjustment == null || adjustment === 0
-                        ? "text-muted-foreground"
-                        : adjustment > 0
-                          ? "text-emerald-600"
-                          : "text-red-600"
+                    className={`font-semibold tabular-nums ${
+                      adjustment == null ? "text-muted-foreground" : amountTone(adjustment)
                     }`}
                   >
                     {adjustment == null
                       ? "—"
-                      : `${adjustment > 0 ? "+" : adjustment < 0 ? "−" : ""}${selectedAccount?.currency ?? ""} ${formatAmount(Math.abs(adjustment))}`}
+                      : `${adjustment > 0 ? "+" : adjustment < 0 ? "−" : ""}${accountCurrencyCode ?? ""} ${formatAmount(Math.abs(adjustment), amountDecimals)}`}
                   </span>
                 </div>
               </div>
@@ -858,18 +836,14 @@ export function TransactionDialog({
               name="amount"
               render={({ field }) => (
                 <FormItem>
-                  <FormFieldLabel>
-                    Monto
-                    {selectedAccount ? ` (${selectedAccount.currency})` : ""}
-                  </FormFieldLabel>
+                  <FormFieldLabel>Monto</FormFieldLabel>
                   <FormControl>
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      placeholder="0,00"
+                    <MoneyInput
+                      currency={accountCurrencyCode}
+                      decimals={amountDecimals}
                       disabled={isPending}
                       value={field.value}
-                      onChange={(e) => handleAmountChange(e.target.value)}
+                      onValueChange={handleAmountChange}
                     />
                   </FormControl>
                   <FormMessage />
@@ -881,20 +855,14 @@ export function TransactionDialog({
               name="exchange_rate"
               render={({ field }) => (
                 <FormItem>
-                  <FormFieldLabel>
-                    Tipo de cambio
-                    {fetchingRateRef.current && (
-                      <Loader2 className="ml-1 inline size-3 animate-spin" />
-                    )}
-                  </FormFieldLabel>
+                  <RateLabel fetching={fetchingRateRef.current} />
                   <FormControl>
-                    <Input
-                      type="text"
-                      inputMode="decimal"
+                    <MoneyInput
+                      decimals={8}
                       placeholder="1"
                       disabled={isPending}
                       value={field.value}
-                      onChange={(e) => handleRateChange(e.target.value)}
+                      onValueChange={handleRateChange}
                     />
                   </FormControl>
                   <FormMessage />
@@ -906,19 +874,14 @@ export function TransactionDialog({
               name="base_amount"
               render={({ field }) => (
                 <FormItem>
-                  <FormFieldLabel>
-                    Monto base{baseCurrency ? ` (${baseCurrency})` : ""}
-                  </FormFieldLabel>
+                  <FormFieldLabel>Monto base</FormFieldLabel>
                   <FormControl>
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      placeholder="0,00"
+                    <MoneyInput
+                      currency={baseCurrency ?? undefined}
+                      decimals={baseDecimals}
                       disabled={isPending}
                       value={field.value}
-                      onChange={(e) =>
-                        handleBaseAmountChange(e.target.value)
-                      }
+                      onValueChange={handleBaseAmountChange}
                     />
                   </FormControl>
                   <FormMessage />
@@ -953,15 +916,15 @@ export function TransactionDialog({
             )}
           />
 
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center gap-2">
             <Checkbox
               id="create-rule"
               onCheckedChange={(checked) => {
                 createRuleRef.current = checked === true;
               }}
             />
-            <Label htmlFor="create-rule" className="text-sm font-normal cursor-pointer">
-              Crear regla de auto-categorización con esta transacción
+            <Label htmlFor="create-rule" className="cursor-pointer text-xs font-normal">
+              Crear regla de auto-categorización
             </Label>
           </div>
 
@@ -969,21 +932,34 @@ export function TransactionDialog({
             <Button
               type="button"
               variant="outline"
+              size="sm"
+              className={uiScale.button}
               onClick={() => onOpenChange(false)}
             >
               Cancelar
             </Button>
-            <Button type="submit" disabled={isPending || (isBalanceAdjustment && isBalanceLoading)}>
-              {isPending
-                ? "Guardando..."
-                : isEditing
-                  ? "Guardar cambios"
-                  : "Crear transacción"}
+            <Button
+              type="submit"
+              size="sm"
+              className={uiScale.button}
+              disabled={isPending || (isBalanceAdjustment && isBalanceLoading)}
+            >
+              {!isPending ? null : <Spinner className="size-3.5" />}
+              {isEditing ? "Guardar" : "Crear"}
             </Button>
           </DialogFooter>
         </form>
         </Form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function RateLabel({ fetching }: { fetching: boolean }) {
+  return (
+    <FormFieldLabel className="flex items-center gap-1">
+      Tipo de cambio
+      {!fetching ? null : <Spinner className="size-3" />}
+    </FormFieldLabel>
   );
 }

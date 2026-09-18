@@ -3,23 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import {
-  Home,
-  Landmark,
-  Settings,
-  LogOut,
-  type LucideIcon,
-  BarChart3,
-  CalendarDays,
-  Wallet,
-  Layers,
-  ArrowLeftRight,
-  CreditCard,
-  TrendingUp,
-  Repeat,
-  Sparkles,
-  Target,
-} from "lucide-react";
+import { LogOut, Wallet } from "lucide-react";
 
 import {
   Sidebar,
@@ -33,33 +17,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
-
-type NavItem = {
-  href: string;
-  icon: LucideIcon;
-  label: string;
-};
-
-const PRIMARY_NAV: NavItem[] = [
-  { href: "/", icon: Home, label: "Dashboard" },
-  { href: "/aicfo", icon: Sparkles, label: "AI CFO" },
-  { href: "/transactions", icon: ArrowLeftRight, label: "Transacciones" },
-  { href: "/budget", icon: CalendarDays, label: "Presupuesto" },
-  { href: "/recurring", icon: Repeat, label: "Recurrentes" },
-];
-
-const ASSETS_NAV: NavItem[] = [
-  { href: "/accounts", icon: Landmark, label: "Cuentas" },
-  { href: "/investments", icon: TrendingUp, label: "Inversiones" },
-  { href: "/debts", icon: CreditCard, label: "Deudas" },
-  { href: "/savings", icon: Target, label: "Metas de Ahorro" },
-  { href: "/net-worth", icon: BarChart3, label: "Patrimonio" },
-];
-
-const CONFIG_NAV: NavItem[] = [
-  { href: "/budget/categories", icon: Layers, label: "Categorías" },
-  { href: "/settings", icon: Settings, label: "Configuración" },
-];
+import { NAV_SECTIONS, type NavItem } from "@/lib/nav";
 
 /**
  * The sidebar is on every page, and default prefetching fetched every dynamic
@@ -94,7 +52,7 @@ function NavSection({
   pathname,
 }: {
   label: string;
-  items: NavItem[];
+  items: readonly NavItem[];
   pathname: string;
 }) {
   return (
@@ -157,9 +115,14 @@ export function AppSidebar({ userEmail }: { userEmail?: string }) {
       </SidebarHeader>
 
       <SidebarContent>
-        <NavSection label="General" items={PRIMARY_NAV} pathname={pathname} />
-        <NavSection label="Patrimonio" items={ASSETS_NAV} pathname={pathname} />
-        <NavSection label="Ajustes" items={CONFIG_NAV} pathname={pathname} />
+        {NAV_SECTIONS.map((section) => (
+          <NavSection
+            key={section.label}
+            label={section.label}
+            items={section.items}
+            pathname={pathname}
+          />
+        ))}
       </SidebarContent>
 
       <SidebarFooter className="border-t">

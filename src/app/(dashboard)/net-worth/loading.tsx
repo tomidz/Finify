@@ -1,16 +1,41 @@
+import { Section } from "@/components/section";
+import { StatCard, StatGrid } from "@/components/stat-card";
+import {
+  PageHeader,
+  PageHeaderActions,
+  PageHeaderTitle,
+  PageHeaderTitleGroup,
+} from "@/components/ui/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
+import { NetWorthEvolutionChart } from "./_components/NetWorthEvolutionChart";
 
+/** The route's loading state, and the page's until its first figures arrive. */
 export default function NetWorthLoading() {
   return (
-    <div className="space-y-4">
-      <Skeleton className="h-10 w-48" />
-      <div className="grid gap-3 md:grid-cols-3">
-        {Array.from({ length: 3 }).map((_, index) => (
-          <Skeleton key={index} className="h-24 w-full" />
-        ))}
+    <div className="flex flex-col gap-6">
+      <PageHeader>
+        <PageHeaderTitleGroup>
+          <PageHeaderTitle>Patrimonio neto</PageHeaderTitle>
+          <Skeleton className="h-5 w-40" />
+        </PageHeaderTitleGroup>
+        <PageHeaderActions>
+          <Skeleton className="h-8 w-24" />
+        </PageHeaderActions>
+      </PageHeader>
+      <StatGrid columns={3}>
+        <StatCard label="Total activos" value={null} loading />
+        <StatCard label="Total pasivos" value={null} loading />
+        <StatCard label="Patrimonio neto" value={null} loading />
+      </StatGrid>
+      <NetWorthEvolutionChart data={[]} currencySymbol="" loading />
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Section title="Activos">
+          <Skeleton className="h-40 rounded-lg" />
+        </Section>
+        <Section title="Pasivos">
+          <Skeleton className="h-40 rounded-lg" />
+        </Section>
       </div>
-      <Skeleton className="h-72 w-full" />
-      <Skeleton className="h-80 w-full" />
     </div>
   );
 }

@@ -12,10 +12,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MoneyInput } from "@/components/money-input";
+import { Spinner } from "@/components/ui/spinner";
 import { useSetManualPrice } from "@/hooks/useInvestments";
 import { today } from "@/lib/dates";
-import { formatNumberInput, parseNumberInput } from "@/lib/utils";
+import { parseMoney, toMoneyInput } from "@/lib/format";
 import type { HoldingPosition } from "@/types/investments";
+import { UNIT_PRICE_DECIMALS } from "./investment-format";
 
 interface ManualPriceDialogProps {
   holding: HoldingPosition | null;
@@ -35,9 +38,7 @@ export function ManualPriceDialog({ holding, onOpenChange }: ManualPriceDialogPr
   useEffect(() => {
     if (!holding) return;
     setPriceInput(
-      holding.current_price != null
-        ? formatNumberInput(String(holding.current_price).replace(".", ","), 8)
-        : "",
+      holding.current_price != null ? toMoneyInput(holding.current_price, UNIT_PRICE_DECIMALS) : "",
     );
     setDate(holding.manual_price_date ?? today());
     setError(null);
@@ -47,8 +48,8 @@ export function ManualPriceDialog({ holding, onOpenChange }: ManualPriceDialogPr
 
 
   const onSubmit = async () => {
-    const value = parseNumberInput(price);
-    if (!value || value <= 0) {
+    const value = parseMoney(price);
+    if (value == null || value <= 0) {
       setError("Ingresá un precio mayor a 0");
       return;
     }
@@ -89,15 +90,15 @@ export function ManualPriceDialog({ holding, onOpenChange }: ManualPriceDialogPr
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
             <Label htmlFor="manual-price">Precio por unidad ({holding.currency})</Label>
-            <Input
+            <MoneyInput
               id="manual-price"
-              type="text"
-              inputMode="decimal"
-              placeholder="0,00"
+              currency={holding.currency_symbol}
+              decimals={UNIT_PRICE_DECIMALS}
               value={price}
               disabled={setPrice.isPending}
-              onChange={(e) => {
-                setPriceInput(formatNumberInput(e.target.value, 8));
+              aria-invalid={error !== null || undefined}
+              onValueChange={(next) => {
+                setPriceInput(next);
                 setError(null);
               }}
             />
@@ -121,7 +122,8 @@ export function ManualPriceDialog({ holding, onOpenChange }: ManualPriceDialogPr
             Cancelar
           </Button>
           <Button onClick={onSubmit} disabled={setPrice.isPending || !date}>
-            {setPrice.isPending ? "Guardando..." : "Guardar precio"}
+            {!setPrice.isPending ? null : <Spinner />}
+            Guardar precio
           </Button>
         </DialogFooter>
       </DialogContent>

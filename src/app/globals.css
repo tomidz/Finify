@@ -151,3 +151,9 @@
     font-variant-numeric: tabular-nums;
   }
 }
+
+/* No animations anywhere: toasts appear and leave in place. */
+[data-sonner-toast] {
+  transition: none !important;
+  animation: none !important;
+}

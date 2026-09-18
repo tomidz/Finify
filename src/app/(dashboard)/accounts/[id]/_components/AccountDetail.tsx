@@ -1,15 +1,6 @@
 "use client";
 
-import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-} from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -18,174 +9,194 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Skeleton } from "@/components/ui/skeleton";
+import {
+  PageHeader,
+  PageHeaderDescription,
+  PageHeaderTitle,
+  PageHeaderTitleGroup,
+} from "@/components/ui/page-header";
+import { NumericCell } from "@/components/numeric-cell";
+import { Section } from "@/components/section";
+import { StatCard, StatGrid } from "@/components/stat-card";
+import { StateCard } from "@/components/state-card";
 import {
   useAccountById,
   useAccountBalanceHistory,
   useCurrencies,
 } from "@/hooks/useAccounts";
 import { useBaseCurrency } from "@/hooks/useTransactions";
-import { errorMessage } from "@/lib/action-result";
-import { formatAmount, amountTone, MONTH_NAMES } from "@/lib/format";
+import { formatAmount, MONTH_NAMES } from "@/lib/format";
 import { ACCOUNT_TYPE_LABELS } from "@/types/accounts";
 
+const CRUMBS = [{ label: "Cuentas", href: "/accounts" }];
+
 export function AccountDetail({ accountId }: { accountId: string }) {
-  const { data: account, isLoading: loadingAccount } = useAccountById(accountId);
-  const { data: history, isLoading: loadingHistory, error: historyError } =
-    useAccountBalanceHistory(accountId);
+  const {
+    data: account,
+    isLoading: loadingAccount,
+    error: accountError,
+    refetch: refetchAccount,
+  } = useAccountById(accountId);
+  const {
+    data: history,
+    isLoading: loadingHistory,
+    error: historyError,
+    refetch: refetchHistory,
+  } = useAccountBalanceHistory(accountId);
   const { data: currencies } = useCurrencies();
   const { data: baseCurrency } = useBaseCurrency();
 
-  if (loadingAccount || !account) {
+  if (!account) {
     return (
-      <div className="space-y-3">
-        <Skeleton className="h-12 w-64" />
-        <Skeleton className="h-24 w-full" />
-        <Skeleton className="h-80 w-full" />
-      </div>
+      <>
+        <PageHeader>
+          <PageHeaderTitleGroup>
+            <PageHeaderTitle breadcrumb={CRUMBS}>Cuenta</PageHeaderTitle>
+          </PageHeaderTitleGroup>
+        </PageHeader>
+        {loadingAccount || !accountError ? (
+          <StateCard variant="loading" className="min-h-80" />
+        ) : (
+          <StateCard
+            variant="error"
+            error={accountError}
+            onRetry={() => refetchAccount()}
+            className="min-h-80"
+          />
+        )}
+      </>
     );
   }
 
-  const symbol =
-    currencies?.find((c) => c.code === account.currency)?.symbol ?? account.currency;
-  const baseSymbol =
-    currencies?.find((c) => c.code === baseCurrency)?.symbol ?? baseCurrency ?? "$";
+  const currency = currencies?.find((c) => c.code === account.currency);
+  const symbol = currency?.symbol ?? account.currency;
+  const decimals = currency?.decimals ?? 2;
+  const base = currencies?.find((c) => c.code === baseCurrency);
+  // Unknown until the base currency loads: no label or symbol is guessed.
+  const baseSymbol = base?.symbol ?? baseCurrency;
+  const baseDecimals = base?.decimals ?? 2;
+  const baseLabel = baseCurrency ?? "base";
 
   const currentBalance = history?.[0];
 
+  const renderHistory = () => {
+    if (loadingHistory) return <StateCard variant="loading" className="min-h-64" />;
+    if (!history && historyError) {
+      return (
+        <StateCard
+          variant="error"
+          error={historyError}
+          onRetry={() => refetchHistory()}
+          className="min-h-64"
+        />
+      );
+    }
+    if (!history || history.length === 0) {
+      return (
+        <StateCard
+          variant="empty"
+          title="Sin historial"
+          description="Aún no hay meses con datos para esta cuenta."
+          className="min-h-64"
+        />
+      );
+    }
+    return (
+      <div className="rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Mes</TableHead>
+              <TableHead className="text-right">Apertura ({account.currency})</TableHead>
+              <TableHead className="text-right">Movimientos</TableHead>
+              <TableHead className="text-right">Cierre ({account.currency})</TableHead>
+              <TableHead className="text-right">Cierre ({baseLabel})</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {history.map((row) => (
+              <TableRow key={`${row.year}-${row.month}`}>
+                <TableCell className="font-medium">
+                  {MONTH_NAMES[row.month - 1]} {row.year}
+                </TableCell>
+                <TableCell>
+                  <NumericCell value={row.opening_amount} currency={symbol} decimals={decimals} />
+                </TableCell>
+                <TableCell>
+                  <NumericCell value={row.month_movements} currency={symbol} decimals={decimals} tone />
+                </TableCell>
+                <TableCell>
+                  <NumericCell
+                    value={row.closing_amount}
+                    currency={symbol}
+                    decimals={decimals}
+                    className="font-medium"
+                  />
+                </TableCell>
+                <TableCell className="text-right text-xs text-muted-foreground">
+                  <NumericCell
+                    value={row.closing_base_amount}
+                    currency={baseSymbol}
+                    decimals={baseDecimals}
+                    className="inline"
+                  />
+                  {row.closing_rate_missing && " (sin cotización)"}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    );
+  };
+
   return (
     <>
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" size="icon" asChild>
-          <Link href="/accounts" aria-label="Volver">
-            <ArrowLeft className="size-4" />
-          </Link>
-        </Button>
-        <div className="flex-1">
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-semibold tracking-tight">
-              {account.name}
-            </h1>
-            <Badge variant="secondary">
-              {ACCOUNT_TYPE_LABELS[account.account_type]}
-            </Badge>
+      <PageHeader>
+        <PageHeaderTitleGroup>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <PageHeaderTitle breadcrumb={CRUMBS}>{account.name}</PageHeaderTitle>
+            <Badge variant="secondary">{ACCOUNT_TYPE_LABELS[account.account_type]}</Badge>
             <Badge variant="outline">{account.currency}</Badge>
             {!account.is_active && <Badge variant="outline">Inactiva</Badge>}
           </div>
-          {account.notes && (
-            <p className="text-muted-foreground mt-1 text-sm">{account.notes}</p>
-          )}
-        </div>
-      </div>
+          {account.notes && <PageHeaderDescription>{account.notes}</PageHeaderDescription>}
+        </PageHeaderTitleGroup>
+      </PageHeader>
 
-      {currentBalance && (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <Card className="gap-0 py-0">
-            <CardHeader className="px-4 pt-4 pb-2">
-              <CardDescription>Saldo actual ({account.currency})</CardDescription>
-            </CardHeader>
-            <CardContent className="px-4 pb-4">
-              <p className="text-2xl font-bold">
-                {symbol} {formatAmount(currentBalance.closing_amount)}
-              </p>
-            </CardContent>
-          </Card>
-          <Card className="gap-0 py-0">
-            <CardHeader className="px-4 pt-4 pb-2">
-              <CardDescription>
-                Saldo actual ({baseCurrency ?? "USD"})
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="px-4 pb-4">
-              <p className="text-2xl font-bold">
-                {baseSymbol} {formatAmount(currentBalance.closing_base_amount)}
-                {currentBalance.closing_rate_missing && (
-                  <span className="text-muted-foreground ml-2 text-xs font-normal">sin cotización</span>
-                )}
-              </p>
-            </CardContent>
-          </Card>
-          <Card className="gap-0 py-0">
-            <CardHeader className="px-4 pt-4 pb-2">
-              <CardDescription>Movimientos del mes</CardDescription>
-            </CardHeader>
-            <CardContent className="px-4 pb-4">
-              <p
-                className={`text-2xl font-bold ${amountTone(currentBalance.month_movements)}`}
-              >
-                {symbol} {formatAmount(currentBalance.month_movements)}
-              </p>
-            </CardContent>
-          </Card>
-        </div>
+      {!(loadingHistory || currentBalance) ? null : (
+        <StatGrid columns={3}>
+          <StatCard
+            label={`Saldo (${account.currency})`}
+            value={currentBalance?.closing_amount}
+            currency={symbol}
+            format={(value) => formatAmount(value, decimals)}
+            loading={loadingHistory}
+          />
+          <StatCard
+            label={`Saldo (${baseLabel})`}
+            value={currentBalance?.closing_base_amount}
+            currency={baseSymbol}
+            format={(value) => formatAmount(value, baseDecimals)}
+            suffix={
+              !currentBalance?.closing_rate_missing ? undefined : (
+                <span className="font-normal text-muted-foreground">sin cotización</span>
+              )
+            }
+            loading={loadingHistory}
+          />
+          <StatCard
+            label="Movimientos del mes"
+            value={currentBalance?.month_movements}
+            currency={symbol}
+            format={(value) => formatAmount(value, decimals)}
+            signTone
+            loading={loadingHistory}
+          />
+        </StatGrid>
       )}
 
-      <div className="space-y-2">
-        <h2 className="text-lg font-semibold">Historial mensual</h2>
-        <div className="rounded-md border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Mes</TableHead>
-                <TableHead className="text-right">
-                  Apertura ({account.currency})
-                </TableHead>
-                <TableHead className="text-right">Movimientos</TableHead>
-                <TableHead className="text-right">
-                  Cierre ({account.currency})
-                </TableHead>
-                <TableHead className="text-right">
-                  Cierre ({baseCurrency ?? "USD"})
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loadingHistory ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="h-32 text-center text-muted-foreground">
-                    Cargando...
-                  </TableCell>
-                </TableRow>
-              ) : !history && historyError ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="h-32 text-center text-destructive text-sm">
-                    {errorMessage(historyError)}
-                  </TableCell>
-                </TableRow>
-              ) : (history?.length ?? 0) === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="h-32 text-center text-muted-foreground text-sm">
-                    Aún no hay datos para esta cuenta.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                history?.map((row) => (
-                  <TableRow key={`${row.year}-${row.month}`}>
-                    <TableCell className="font-medium">
-                      {MONTH_NAMES[row.month - 1]} {row.year}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {symbol} {formatAmount(row.opening_amount)}
-                    </TableCell>
-                    <TableCell
-                      className={`text-right ${amountTone(row.month_movements)}`}
-                    >
-                      {symbol} {formatAmount(row.month_movements)}
-                    </TableCell>
-                    <TableCell className="text-right font-medium">
-                      {symbol} {formatAmount(row.closing_amount)}
-                    </TableCell>
-                    <TableCell className="text-right text-muted-foreground text-xs">
-                      {baseSymbol} {formatAmount(row.closing_base_amount)}
-                      {row.closing_rate_missing && " (sin cotización)"}
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </div>
+      <Section title="Historial mensual">{renderHistory()}</Section>
     </>
   );
 }

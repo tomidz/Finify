@@ -93,17 +93,3 @@ export function remainingPlannedExpenses(
     .filter((category) => BUDGET_GROUP_OF[category.category_type] === "expenses")
     .reduce((sum, category) => sum + Math.max(0, category.planned_amount - category.actual_amount), 0);
 }
-
-export const BUDGET_STATUS_TONE: Record<BudgetStatus, string> = {
-  "no-plan": "text-muted-foreground",
-  favorable: "text-green-600",
-  watch: "text-yellow-600",
-  unfavorable: "text-red-600",
-};
-
-export const BUDGET_STATUS_FILL: Record<BudgetStatus, string> = {
-  "no-plan": "#94a3b8",
-  favorable: "#16a34a",
-  watch: "#ca8a04",
-  unfavorable: "#dc2626",
-};

@@ -2,18 +2,17 @@
 
 import { memo, useCallback, useEffect, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
+import { MonthRangePicker } from "@/components/month-range-picker";
+import { RenderErrorBoundary } from "@/components/render-error-boundary";
+import { StateCard } from "@/components/state-card";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
+  PageHeader,
+  PageHeaderActions,
+  PageHeaderTitle,
+  PageHeaderTitleGroup,
+} from "@/components/ui/page-header";
 import { useEnsureCurrentMonth } from "@/hooks/useMonths";
 import { useDashboardData } from "@/hooks/useScreens";
-import { errorMessage } from "@/lib/action-result";
-import { MONTH_NAMES } from "@/lib/format";
 import type { ForecastPoint } from "@/types/forecast";
 import type { Month } from "@/types/months";
 
@@ -43,7 +42,7 @@ export function DashboardClient() {
     window.history.replaceState(null, "", query ? `?${query}` : window.location.pathname);
   }, []);
 
-  const { data, isPending, isPlaceholderData, error } = useDashboardData(
+  const { data, isPending, isPlaceholderData, isFetching, error, refetch } = useDashboardData(
     requestedRange.from,
     requestedRange.to,
   );
@@ -56,25 +55,13 @@ export function DashboardClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [months]);
 
-  const sortedMonths = useMemo(
-    () => [...(months ?? [])].sort((a, b) => (b.year * 100 + b.month) - (a.year * 100 + a.month)),
-    [months]
-  );
   const monthById = useMemo(
-    () => new Map(sortedMonths.map((month) => [month.id, month])),
-    [sortedMonths],
-  );
-  const monthOptions = useMemo(
-    () =>
-      sortedMonths.map((month) => ({
-        id: month.id,
-        label: `${MONTH_NAMES[month.month - 1]} ${month.year}`,
-      })),
-    [sortedMonths],
+    () => new Map((months ?? []).map((month) => [month.id, month])),
+    [months],
   );
 
   // The figures belong to the range the server resolved; while another range
-  // loads, the selects already show what the user picked.
+  // loads, the picker already shows what the user picked.
   const fromMonthId = data?.startMonthId ?? null;
   const toMonthId = data?.endMonthId ?? null;
   const fromMonth = (fromMonthId ? monthById.get(fromMonthId) : null) ?? null;
@@ -82,14 +69,13 @@ export function DashboardClient() {
   const selectedFromId = (isPlaceholderData ? requestedRange.from : null) ?? fromMonthId;
   const selectedToId = (isPlaceholderData ? requestedRange.to : null) ?? toMonthId;
 
-  const onFromMonthChange = useCallback(
-    (id: string) => setRequestedRange({ from: id, to: selectedToId }),
-    [selectedToId, setRequestedRange],
+  const onRangeChange = useCallback(
+    (from: string, to: string) => setRequestedRange({ from, to }),
+    [setRequestedRange],
   );
-  const onToMonthChange = useCallback(
-    (id: string) => setRequestedRange({ from: selectedFromId, to: id }),
-    [selectedFromId, setRequestedRange],
-  );
+  const retry = useCallback(() => {
+    void refetch();
+  }, [refetch]);
 
   const baseCurrency = data?.baseCurrency ?? null;
   const currencySymbol = useMemo(() => {
@@ -98,17 +84,29 @@ export function DashboardClient() {
     return found?.symbol ?? baseCurrency;
   }, [baseCurrency, data?.currencies]);
 
-  // No period until the first month exists (see ensureCurrentMonth).
-  if (isPending || (data && !data.period && !ensureCurrentMonth.isError && !error)) {
+  const header = (
+    <DashboardHeader>
+      <MonthRangePicker
+        months={months ?? []}
+        startId={selectedFromId}
+        endId={selectedToId}
+        onChange={onRangeChange}
+        disabled={ensureCurrentMonth.isPending}
+      />
+    </DashboardHeader>
+  );
+
+  // No period until the first month exists (see ensureCurrentMonth), nor while
+  // a failed read is retried.
+  if (
+    isPending ||
+    (!data?.period && isFetching) ||
+    (data && !data.period && !ensureCurrentMonth.isError && !error)
+  ) {
     return (
-      <div className="space-y-4">
-        <Skeleton className="h-10 w-64" />
-        <div className="grid gap-3 grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-24 w-full" />
-          ))}
-        </div>
-        <Skeleton className="h-64 w-full" />
+      <div className="flex flex-col gap-6">
+        {header}
+        <DashboardLoadingBody />
       </div>
     );
   }
@@ -116,11 +114,15 @@ export function DashboardClient() {
   // A failed background refetch keeps showing the last figures.
   if (!data?.period) {
     return (
-      <div className="rounded-md border border-destructive/40 p-4 text-sm">
-        <p className="font-medium">No se pudo cargar el dashboard.</p>
-        <p className="text-muted-foreground text-xs">
-          {errorMessage(error ?? ensureCurrentMonth.error)}
-        </p>
+      <div className="flex flex-col gap-6">
+        {header}
+        <StateCard
+          variant="error"
+          title="No se pudo cargar el dashboard"
+          error={error ?? ensureCurrentMonth.error}
+          onRetry={error ? retry : () => ensureCurrentMonth.mutate()}
+          className="min-h-72"
+        />
       </div>
     );
   }
@@ -130,93 +132,65 @@ export function DashboardClient() {
   );
 
   return (
-    <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground text-sm">
-          {isRange
-            ? "Resumen financiero del período seleccionado."
-            : "Resumen financiero del mes seleccionado."}
-        </p>
-      </div>
+    <div className="flex flex-col gap-6">
+      {header}
 
-      <DashboardRangeSelector
-        fromMonthId={selectedFromId}
-        toMonthId={selectedToId}
-        monthOptions={monthOptions}
-        disabled={ensureCurrentMonth.isPending}
-        onFromMonthChange={onFromMonthChange}
-        onToMonthChange={onToMonthChange}
-      />
-
-      <div className={isPlaceholderData ? "space-y-6 opacity-60" : "space-y-6"}>
+      <div className={isPlaceholderData ? "flex flex-col gap-6 opacity-60" : "flex flex-col gap-6"}>
         <DashboardContent
           isRange={isRange}
           monthId={isRange ? null : fromMonthId}
           monthSummary={data.period.summary}
-          budgetSummary={data.budgetSummary ?? undefined}
+          budgetSummary={data.budgetSummary}
           forecast={data.forecast}
           currencySymbol={currencySymbol}
           accountMonthlyBalances={data.period.accountBalances}
           fromMonth={fromMonth}
           toMonth={toMonth}
           baseCurrency={baseCurrency}
+          onRetry={retry}
+          retrying={isFetching}
         />
       </div>
     </div>
   );
 }
 
-const DashboardRangeSelector = memo(function DashboardRangeSelector({
-  fromMonthId,
-  toMonthId,
-  monthOptions,
-  disabled,
-  onFromMonthChange,
-  onToMonthChange,
-}: {
-  fromMonthId: string | null;
-  toMonthId: string | null;
-  monthOptions: Array<{ id: string; label: string }>;
-  disabled: boolean;
-  onFromMonthChange: (value: string) => void;
-  onToMonthChange: (value: string) => void;
-}) {
+function DashboardHeader({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <div className="flex items-center gap-2">
-        <span className="text-muted-foreground text-sm">Desde</span>
-        <Select value={fromMonthId ?? ""} onValueChange={onFromMonthChange} disabled={disabled}>
-          <SelectTrigger className="w-44">
-            <SelectValue placeholder="Mes inicial" />
-          </SelectTrigger>
-          <SelectContent>
-            {monthOptions.map((month) => (
-              <SelectItem key={month.id} value={month.id}>
-                {month.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+    <PageHeader>
+      <PageHeaderTitleGroup>
+        <PageHeaderTitle>Dashboard</PageHeaderTitle>
+      </PageHeaderTitleGroup>
+      <PageHeaderActions>{children}</PageHeaderActions>
+    </PageHeader>
+  );
+}
+
+/** The blocks every range shows, before any figure arrives. */
+function DashboardLoadingBody() {
+  return (
+    <>
+      <SummaryCards summary={null} currencySymbol="" loading />
+      <div className="grid gap-4 md:grid-cols-2">
+        <IncomeVsExpensesChart summary={null} currencySymbol="" />
+        <ExpenseBreakdownChart summary={null} currencySymbol="" monthId={null} />
       </div>
-      <div className="flex items-center gap-2">
-        <span className="text-muted-foreground text-sm">Hasta</span>
-        <Select value={toMonthId ?? ""} onValueChange={onToMonthChange} disabled={disabled}>
-          <SelectTrigger className="w-44">
-            <SelectValue placeholder="Mes final" />
-          </SelectTrigger>
-          <SelectContent>
-            {monthOptions.map((month) => (
-              <SelectItem key={month.id} value={month.id}>
-                {month.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <BudgetExecutionChart budgetSummary={null} currencySymbol="" monthId={null} loading />
+    </>
+  );
+}
+
+/** The page's Suspense fallback. */
+export function DashboardSkeleton() {
+  return (
+    <div className="flex flex-col gap-6">
+      <DashboardHeader>
+        <MonthRangePicker months={[]} startId={null} endId={null} onChange={() => {}} disabled />
+      </DashboardHeader>
+      <DashboardLoadingBody />
     </div>
   );
-});
+}
 
 const DashboardContent = memo(function DashboardContent({
   isRange,
@@ -229,29 +203,41 @@ const DashboardContent = memo(function DashboardContent({
   fromMonth,
   toMonth,
   baseCurrency,
+  onRetry,
+  retrying,
 }: {
   isRange: boolean;
   /** The month the charts link to, for a single-month view. */
   monthId: string | null;
-  monthSummary: Parameters<typeof SummaryCards>[0]["summary"];
+  monthSummary: NonNullable<Parameters<typeof SummaryCards>[0]["summary"]>;
+  /** Null when its read failed: shown as unavailable, never as an empty budget. */
   budgetSummary: Parameters<typeof BudgetExecutionChart>[0]["budgetSummary"];
+  /** Null for a range, or when its read failed. */
   forecast: ForecastPoint[] | null;
   currencySymbol: string;
   accountMonthlyBalances: Parameters<typeof AccountBalances>[0]["balances"];
   fromMonth: Month | null;
   toMonth: Month | null;
   baseCurrency: string | null;
+  /** Reads the screen again, for the sections it left out. */
+  onRetry: () => void;
+  /** A read is in flight: a section left out may come back. */
+  retrying: boolean;
 }) {
   return (
     <>
-      <SummaryCards summary={monthSummary} currencySymbol={currencySymbol} />
+      <RenderErrorBoundary name="dashboard-summary" resetKeys={[monthSummary]} className="min-h-24">
+        <SummaryCards summary={monthSummary} currencySymbol={currencySymbol} />
+      </RenderErrorBoundary>
 
       {!isRange && (
-        <SafeToSpendCard
-          summary={monthSummary}
-          budgetSummary={budgetSummary}
-          currencySymbol={currencySymbol}
-        />
+        <RenderErrorBoundary name="safe-to-spend" resetKeys={[monthSummary, budgetSummary]} className="min-h-24">
+          <SafeToSpendCard
+            summary={monthSummary}
+            budgetSummary={budgetSummary}
+            currencySymbol={currencySymbol}
+          />
+        </RenderErrorBoundary>
       )}
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -270,17 +256,28 @@ const DashboardContent = memo(function DashboardContent({
         budgetSummary={budgetSummary}
         currencySymbol={currencySymbol}
         monthId={monthId}
+        onRetry={onRetry}
+        loading={retrying && budgetSummary === null}
       />
 
-      {!isRange && <ForecastChart forecast={forecast} currencySymbol={currencySymbol} />}
+      {!isRange && (
+        <ForecastChart
+          forecast={forecast}
+          currencySymbol={currencySymbol}
+          onRetry={onRetry}
+          loading={retrying && forecast === null}
+        />
+      )}
 
-      <AccountBalances
-        balances={accountMonthlyBalances}
-        selectedMonth={fromMonth}
-        endMonth={toMonth}
-        baseCurrencyCode={baseCurrency}
-        baseCurrencySymbol={currencySymbol}
-      />
+      <RenderErrorBoundary name="account-balances" resetKeys={[accountMonthlyBalances]} className="min-h-40">
+        <AccountBalances
+          balances={accountMonthlyBalances}
+          selectedMonth={fromMonth}
+          endMonth={toMonth}
+          baseCurrencyCode={baseCurrency}
+          baseCurrencySymbol={currencySymbol}
+        />
+      </RenderErrorBoundary>
     </>
   );
 });

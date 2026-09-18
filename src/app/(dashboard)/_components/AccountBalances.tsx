@@ -2,7 +2,19 @@
 
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { formatAmount, amountTone, MONTH_NAMES } from "@/lib/format";
+import { NumericCell } from "@/components/numeric-cell";
+import { useCurrencyDecimals } from "@/hooks/useAccounts";
+import { Section } from "@/components/section";
+import { StateCard } from "@/components/state-card";
+import { TruncatedText } from "@/components/truncated-text";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import type { AccountBalance } from "@/lib/finance/period-summary";
 import type { Month } from "@/types/months";
 import { fetchCryptoPrices } from "@/lib/coingecko";
@@ -22,6 +34,7 @@ export function AccountBalances({
   baseCurrencyCode,
   baseCurrencySymbol,
 }: AccountBalancesProps) {
+  const decimalsOf = useCurrencyDecimals();
   const cryptoCodes = useMemo(
     () =>
       Array.from(
@@ -44,81 +57,68 @@ export function AccountBalances({
     staleTime: 60_000,
   });
 
+  const rows = useMemo(
+    () =>
+      balances.map((account) => {
+        const price = cryptoPrices?.[account.currencyCode as keyof typeof cryptoPrices];
+        const currentBaseValue =
+          baseCurrencyCode && price != null ? account.closing * price : null;
+        return { account, currentBaseValue };
+      }),
+    [balances, cryptoPrices, baseCurrencyCode],
+  );
+  const showCurrentValue = rows.some((row) => row.currentBaseValue != null);
+
   if (!selectedMonth) return null;
 
   const isRange =
     endMonth &&
     (selectedMonth.year !== endMonth.year || selectedMonth.month !== endMonth.month);
-  const title = isRange
-    ? `Saldos por cuenta - ${MONTH_NAMES[selectedMonth.month - 1]} ${selectedMonth.year} a ${MONTH_NAMES[endMonth.month - 1]} ${endMonth.year}`
-    : `Saldos por cuenta - ${MONTH_NAMES[selectedMonth.month - 1]} ${selectedMonth.year}`;
-  const subtitle = isRange
-    ? "Inicio y cierre del período seleccionado."
-    : "Inicio y cierre del mes seleccionado.";
   const labelInicio = isRange ? "Inicio del período" : "Inicio del mes";
   const labelCierre = isRange ? "Cierre del período" : "Final del mes";
 
   return (
-    <div className="rounded-md border p-3 sm:p-4">
-      <p className="text-base font-semibold">{title}</p>
-      <p className="text-muted-foreground mb-3 text-xs">{subtitle}</p>
-      {balances.length > 0 ? (
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          {balances.map((account) => {
-            const price =
-              cryptoPrices?.[account.currencyCode as keyof typeof cryptoPrices];
-            const currentBaseValue =
-              baseCurrencyCode && price != null
-                ? account.closing * price
-                : null;
-
-            return (
-              <div
-                key={account.accountId}
-                className="bg-muted/20 space-y-2 rounded-md border px-3 py-2.5"
-              >
-                <p className="text-foreground truncate text-sm font-semibold">
-                  {account.name} ({account.currencyCode})
-                </p>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground text-xs">
-                    {labelInicio}
-                  </span>
-                  <span
-                    className={`whitespace-nowrap text-sm font-semibold ${amountTone(account.opening)}`}
-                  >
-                    {account.symbol} {formatAmount(account.opening)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground text-xs">
-                    {labelCierre}
-                  </span>
-                  <span
-                    className={`whitespace-nowrap text-sm font-semibold ${amountTone(account.closing)}`}
-                  >
-                    {account.symbol} {formatAmount(account.closing)}
-                  </span>
-                </div>
-                {currentBaseValue != null && (
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-muted-foreground text-xs">
-                      Valor actual
-                    </span>
-                    <span className="whitespace-nowrap text-xs font-medium">
-                      {baseCurrencySymbol} {formatAmount(currentBaseValue)}
-                    </span>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+    <Section title="Saldos por cuenta">
+      {balances.length === 0 ? (
+        <StateCard variant="empty" title="Sin saldos cargados" className="min-h-24" />
       ) : (
-        <p className="text-muted-foreground text-sm">
-          No hay saldos iniciales cargados para este mes.
-        </p>
+        <div className="overflow-hidden rounded-lg border">
+          <Table className="text-xs">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Cuenta</TableHead>
+                <TableHead className="text-right">{labelInicio}</TableHead>
+                <TableHead className="text-right">{labelCierre}</TableHead>
+                {!showCurrentValue ? null : <TableHead className="text-right">Valor actual</TableHead>}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map(({ account, currentBaseValue }) => (
+                <TableRow key={account.accountId}>
+                  <TableCell>
+                    <TruncatedText className="max-w-40 font-medium sm:max-w-72">
+                      {account.name} <span className="text-muted-foreground">({account.currencyCode})</span>
+                    </TruncatedText>
+                  </TableCell>
+                  <TableCell>
+                    <NumericCell value={account.opening} currency={account.symbol} decimals={decimalsOf(account.currencyCode)} tone />
+                  </TableCell>
+                  <TableCell>
+                    <NumericCell value={account.closing} currency={account.symbol} decimals={decimalsOf(account.currencyCode)} tone />
+                  </TableCell>
+                  {!showCurrentValue ? null : (
+                    <TableCell>
+                      {currentBaseValue == null ? null : (
+                        <NumericCell value={currentBaseValue} currency={baseCurrencySymbol} />
+                      )}
+                    </TableCell>
+                  )}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       )}
-    </div>
+    </Section>
   );
 }

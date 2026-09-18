@@ -141,3 +141,16 @@ configuran en los dashboards, no en el repo. `supabase/config.toml` solo describ
 - UI en español rioplatense, textos cortos. Comentarios solo cuando explican un porqué que el código
   no muestra.
 - Sin animaciones ni transiciones nuevas; todo tiene que funcionar en claro y oscuro.
+- Monocromo: color solo para el signo de un monto (`amountTone`), lo destructivo y la paleta de
+  gráficos (`src/components/charts/palette.ts`, variables `--chart-n`; nunca hex).
+- Pantallas con el kit compartido, no a mano:
+  - encabezado `PageHeader` + `PageButton`, secciones `Section`;
+  - estados `StateCard` (cargando, vacío, error: un error nunca reemplaza datos que ya se ven) y
+    `RenderErrorBoundary` por bloque;
+  - montos: `MoneyInput` para escribir (vacío nunca es 0; decimales de `currencies.decimals`, sin
+    pasar los que guarda la columna), `parseMoney`/`toMoneyInput` para leer y precargar,
+    `NumericCell`/`StatCard` para mostrar (`null` es "—");
+  - tablas: `DataTableToolbar`, `SearchInput`, `FilterDropdown`, `RowActions`, `TruncatedText`;
+  - meses: `MonthSwitcher` y `MonthRangePicker`; borrados: `useConfirm`, con una descripción
+    verdadera de lo que se borra con él (verificada contra las migraciones);
+  - atajos: `useShortcut` (no se disparan escribiendo ni con un diálogo abierto).

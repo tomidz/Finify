@@ -29,6 +29,10 @@ interface AccountComboboxProps {
   disabled?: boolean;
   /** Optional balance per account id (in the account's own currency). */
   balanceByAccount?: Record<string, number>;
+  /** From FormControl: the trigger takes the field's id and error state. */
+  id?: string;
+  "aria-invalid"?: boolean;
+  "aria-describedby"?: string;
 }
 
 export function AccountCombobox({
@@ -38,6 +42,7 @@ export function AccountCombobox({
   placeholder = "Seleccionar cuenta",
   disabled = false,
   balanceByAccount,
+  ...field
 }: AccountComboboxProps) {
   const [open, setOpen] = useState(false);
 
@@ -73,6 +78,7 @@ export function AccountCombobox({
           aria-expanded={open}
           className="w-full justify-between font-normal"
           disabled={disabled}
+          {...field}
         >
           <span className="truncate">{displayLabel}</span>
           <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />

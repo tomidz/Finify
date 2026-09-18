@@ -6,17 +6,9 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
   Form,
   FormField,
   FormItem,
-  FormLabel,
   FormControl,
   FormMessage,
 } from "@/components/ui/form";
@@ -27,10 +19,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
+import {
+  PageHeader,
+  PageHeaderDescription,
+  PageHeaderTitle,
+  PageHeaderTitleGroup,
+} from "@/components/ui/page-header";
+import { Spinner } from "@/components/ui/spinner";
+import { Section } from "@/components/section";
+import { StateCard } from "@/components/state-card";
 import { useUserPreferences, useUpdateUserPreferences } from "@/hooks/useUserPreferences";
 import { useCurrencies } from "@/hooks/useAccounts";
-import { errorMessage } from "@/lib/action-result";
+import { uiScale } from "@/lib/ui-scale";
+import { cn } from "@/lib/utils";
 import { LedgerDiagnosticsSection } from "./_components/LedgerDiagnosticsSection";
 import { TransactionRulesSection } from "./_components/TransactionRulesSection";
 
@@ -41,7 +42,7 @@ const SettingsFormSchema = z.object({
 type SettingsFormValues = z.infer<typeof SettingsFormSchema>;
 
 export default function SettingsPage() {
-  const { data: prefs, isLoading, error: prefsError } = useUserPreferences();
+  const { data: prefs, isLoading, error: prefsError, refetch: refetchPrefs } = useUserPreferences();
   const { data: currencies } = useCurrencies();
   const updatePrefs = useUpdateUserPreferences();
 
@@ -61,88 +62,97 @@ export default function SettingsPage() {
   }, [prefs, form]);
 
   const onSubmit = async (values: SettingsFormValues) => {
-    await updatePrefs.mutateAsync({
-      base_currency: values.base_currency,
-    });
+    try {
+      await updatePrefs.mutateAsync({
+        base_currency: values.base_currency,
+      });
+    } catch {
+      // Error handled by mutation onError (toast)
+    }
   };
 
-  if (isLoading) {
+  const renderBaseCurrency = () => {
+    if (isLoading) return <StateCard variant="loading" className="min-h-24" />;
+    // Without the stored preference the form would show, and save, its default.
+    if (!prefs) {
+      return (
+        <StateCard
+          variant="error"
+          error={prefsError}
+          onRetry={() => refetchPrefs()}
+          className="min-h-24"
+        />
+      );
+    }
     return (
-      <div className="space-y-4">
-        <Skeleton className="h-10 w-64" />
-        <Skeleton className="h-40 w-full" />
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Configuración</h1>
-        <p className="text-muted-foreground text-sm">
-          Preferencias de moneda y reportes.
-        </p>
-      </div>
-
       <Form {...form}>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6" noValidate>
-          <Card>
-            <CardHeader>
-              <CardTitle>Moneda base</CardTitle>
-              <CardDescription>
-                Todas las conversiones y totales se muestran en esta moneda.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {/* Without the stored preference the form would show, and save, its default. */}
-              {!prefs ? (
-                <p className="text-destructive text-sm">{errorMessage(prefsError)}</p>
-              ) : (
-                <FormField
-                  control={form.control}
-                  name="base_currency"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Moneda</FormLabel>
-                      <FormControl>
-                        <Select
-                          value={field.value}
-                          onValueChange={field.onChange}
-                          disabled={updatePrefs.isPending || prefs?.base_currency_locked}
-                        >
-                          <SelectTrigger className="w-48">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {(currencies ?? [])
-                              .filter((c) => c.currency_type === "fiat")
-                              .map((c) => (
-                              <SelectItem key={c.code} value={c.code}>
-                                {c.code} ({c.symbol})
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </FormControl>
-                      {prefs?.base_currency_locked && (
-                        <p className="text-muted-foreground text-xs">
-                          No se puede cambiar: tus cuentas y presupuestos ya
-                          guardan montos en esta moneda.
-                        </p>
-                      )}
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              )}
-            </CardContent>
-          </Card>
-
-          <Button type="submit" disabled={updatePrefs.isPending || !prefs}>
-            {updatePrefs.isPending ? "Guardando..." : "Guardar preferencias"}
-          </Button>
+        <form onSubmit={form.handleSubmit(onSubmit)} noValidate>
+          <FormField
+            control={form.control}
+            name="base_currency"
+            render={({ field }) => (
+              <FormItem>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select
+                    value={field.value}
+                    onValueChange={field.onChange}
+                    disabled={updatePrefs.isPending || prefs.base_currency_locked}
+                  >
+                    <FormControl>
+                      <SelectTrigger aria-label="Moneda base" className={cn("w-48", uiScale.trigger)}>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {(currencies ?? [])
+                        .filter((c) => c.currency_type === "fiat")
+                        .map((c) => (
+                        <SelectItem key={c.code} value={c.code}>
+                          {c.code} ({c.symbol})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    type="submit"
+                    size="sm"
+                    className={uiScale.button}
+                    disabled={updatePrefs.isPending}
+                  >
+                    {updatePrefs.isPending ? <Spinner className="size-3.5" /> : null}
+                    {updatePrefs.isPending ? "Guardando…" : "Guardar"}
+                  </Button>
+                </div>
+                {prefs.base_currency_locked && (
+                  <p className="text-muted-foreground text-xs">
+                    No se puede cambiar: tus cuentas y presupuestos ya
+                    guardan montos en esta moneda.
+                  </p>
+                )}
+                <FormMessage />
+              </FormItem>
+            )}
+          />
         </form>
       </Form>
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-8">
+      <PageHeader>
+        <PageHeaderTitleGroup>
+          <PageHeaderTitle>Configuración</PageHeaderTitle>
+          <PageHeaderDescription>Moneda base, reglas y diagnóstico.</PageHeaderDescription>
+        </PageHeaderTitleGroup>
+      </PageHeader>
+
+      <Section
+        title="Moneda base"
+        description="Todas las conversiones y totales se muestran en esta moneda."
+      >
+        {renderBaseCurrency()}
+      </Section>
 
       <TransactionRulesSection />
 

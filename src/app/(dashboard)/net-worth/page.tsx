@@ -2,30 +2,45 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
+import { ExternalLink } from "lucide-react";
+import { NumericCell } from "@/components/numeric-cell";
+import { PageButton } from "@/components/page-button";
+import { RenderErrorBoundary } from "@/components/render-error-boundary";
+import { Section } from "@/components/section";
+import { StatCard, StatGrid } from "@/components/stat-card";
+import { StateCard } from "@/components/state-card";
+import { TruncatedText } from "@/components/truncated-text";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-} from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
+  PageHeader,
+  PageHeaderActions,
+  PageHeaderDescription,
+  PageHeaderTitle,
+  PageHeaderTitleGroup,
+} from "@/components/ui/page-header";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useEnsureCurrentMonth } from "@/hooks/useMonths";
 import { useNetWorthData } from "@/hooks/useScreens";
 import { useInvestmentValuation } from "@/hooks/useInvestments";
-import { MONTH_NAMES, formatAmount, amountTone, formatDayMonth } from "@/lib/format";
+import { formatAmount, formatDayMonth } from "@/lib/format";
 import { today } from "@/lib/dates";
 import { buildNetWorthView } from "@/lib/finance/net-worth-view";
+import { monthLabel } from "@/lib/month-grid";
+import { uiScale } from "@/lib/ui-scale";
 import type { NetWorthData } from "@/actions/screens";
-import { errorMessage } from "@/lib/action-result";
 import { NetWorthEvolutionChart } from "./_components/NetWorthEvolutionChart";
+import NetWorthLoading from "./loading";
 
 export default function NetWorthPage() {
   // null = latest year with months; the server resolves it.
   const [requestedYear, setRequestedYear] = useState<number | null>(null);
 
-  const { data, isPending, isPlaceholderData, error } = useNetWorthData(requestedYear);
+  const { data, isPending, isPlaceholderData, isFetching, error, refetch } = useNetWorthData(requestedYear);
   const ensureCurrentMonth = useEnsureCurrentMonth();
   const months = data?.months;
 
@@ -42,70 +57,84 @@ export default function NetWorthPage() {
     return found?.symbol ?? baseCurrency;
   }, [baseCurrency, data?.currencies]);
 
-  // A failed background refetch keeps showing the last figures.
-  if (!isPending && !data) {
-    return (
-      <div className="rounded-md border border-destructive/40 p-4 text-sm">
-        <p className="font-medium">No se pudo cargar el patrimonio.</p>
-        <p className="text-muted-foreground text-xs">{errorMessage(error)}</p>
-      </div>
-    );
-  }
+  // Also while a failed read is retried.
+  if (isPending || (!data && isFetching)) return <NetWorthLoading />;
 
-  if (isPending || data.year === null || !data.accounts || !data.liabilities || !data.evolution) {
-    return (
-      <div className="space-y-4">
-        <Skeleton className="h-10 w-64" />
-        <Skeleton className="h-24 w-full" />
-        <Skeleton className="h-64 w-full" />
-      </div>
-    );
-  }
-
-  const { years, year, accounts } = data;
+  const years = data?.years ?? [];
   // While another year loads, the selector already shows the requested one.
-  const shownYear = (isPlaceholderData ? requestedYear : null) ?? year;
-  const yearIndex = years.indexOf(shownYear);
+  const shownYear = (isPlaceholderData ? requestedYear : null) ?? data?.year ?? null;
+  // The close the figures shown are at (the resolved year, not the requested one).
+  const closeMonth = data?.year != null && data.accounts && data.accounts.month > 0
+    ? { year: data.year, month: data.accounts.month }
+    : null;
+
+  const header = (
+    <PageHeader>
+      <PageHeaderTitleGroup>
+        <PageHeaderTitle>Patrimonio neto</PageHeaderTitle>
+        <PageHeaderDescription>
+          {closeMonth ? `Al cierre de ${monthLabel(closeMonth)}` : "Activos, pasivos y evolución"}
+        </PageHeaderDescription>
+      </PageHeaderTitleGroup>
+      <PageHeaderActions>
+        <Select
+          value={shownYear == null ? "" : String(shownYear)}
+          onValueChange={(value) => setRequestedYear(Number(value))}
+          disabled={years.length === 0}
+        >
+          <SelectTrigger size="sm" aria-label="Año" className={`${uiScale.trigger} w-24 tabular-nums`}>
+            <SelectValue placeholder="Año" />
+          </SelectTrigger>
+          <SelectContent>
+            {years.map((year) => (
+              <SelectItem key={year} value={String(year)} className="text-xs tabular-nums">
+                {year}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </PageHeaderActions>
+    </PageHeader>
+  );
+
+  // A failed background refetch keeps showing the last figures.
+  if (!data) {
+    return (
+      <div className="flex flex-col gap-6">
+        {header}
+        <StateCard
+          variant="error"
+          title="No se pudo cargar el patrimonio"
+          error={error}
+          onRetry={() => void refetch()}
+          className="min-h-72"
+        />
+      </div>
+    );
+  }
+
+  // No year until the first month exists (see ensureCurrentMonth).
+  if (data.year === null || !data.accounts || !data.liabilities || !data.evolution) {
+    if ((!ensureCurrentMonth.isError && !error) || isFetching) return <NetWorthLoading />;
+    return (
+      <div className="flex flex-col gap-6">
+        {header}
+        <StateCard
+          variant="error"
+          title="No se pudo cargar el patrimonio"
+          error={error ?? ensureCurrentMonth.error}
+          onRetry={error ? () => void refetch() : () => ensureCurrentMonth.mutate()}
+          className="min-h-72"
+        />
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Patrimonio neto</h1>
-        <p className="text-muted-foreground text-sm">
-          Resumen de activos, pasivos y evolución de tu patrimonio.
-        </p>
-      </div>
+    <div className="flex flex-col gap-6">
+      {header}
 
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={() => setRequestedYear(years[yearIndex + 1])}
-            disabled={yearIndex >= years.length - 1}
-          >
-            <ChevronLeft className="size-4" />
-          </Button>
-          <span className="min-w-[80px] text-center text-sm font-medium">
-            {shownYear}
-          </span>
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={() => setRequestedYear(years[yearIndex - 1])}
-            disabled={yearIndex <= 0}
-          >
-            <ChevronRight className="size-4" />
-          </Button>
-          {accounts.month > 0 && (
-            <span className="text-muted-foreground text-sm">
-              al cierre de {MONTH_NAMES[accounts.month - 1]}
-            </span>
-          )}
-        </div>
-      </div>
-
-      <div className={isPlaceholderData ? "space-y-6 opacity-60" : "space-y-6"}>
+      <div className={isPlaceholderData ? "flex flex-col gap-6 opacity-60" : "flex flex-col gap-6"}>
         <NetWorthContent
           data={data as NetWorthScreen}
           currencySymbol={currencySymbol}
@@ -164,85 +193,113 @@ function NetWorthContent({
     .join(" · ");
 
   const atCost = !view.marketValued && view.accounts.some((account) => account.investment_value !== 0);
-  const pendingHint = !atCost ? null : (
-    <span className="text-muted-foreground ml-2 text-xs font-normal">inversiones a costo</span>
-  );
+  const pendingHint = !atCost ? undefined : "Inversiones a costo";
 
   return (
     <>
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card className="gap-0 py-0"><CardHeader className="px-4 pt-4 pb-2"><CardDescription>Total Activos{pendingHint}</CardDescription></CardHeader><CardContent className="px-4 pb-4"><p className="text-2xl font-bold text-green-600">{currencySymbol} {formatAmount(totalAssets)}</p></CardContent></Card>
-        <Card className="gap-0 py-0"><CardHeader className="px-4 pt-4 pb-2"><CardDescription>Total Pasivos</CardDescription></CardHeader><CardContent className="px-4 pb-4"><p className="text-2xl font-bold text-red-600">{currencySymbol} {formatAmount(totalLiabilities)}</p></CardContent></Card>
-        <Card className="gap-0 py-0"><CardHeader className="px-4 pt-4 pb-2"><CardDescription>Patrimonio Neto{pendingHint}</CardDescription></CardHeader><CardContent className="px-4 pb-4"><p className={`text-2xl font-bold ${amountTone(netWorth)}`}>{currencySymbol} {formatAmount(netWorth)}</p></CardContent></Card>
-      </div>
-      {fxNote && <p className="text-muted-foreground -mt-4 text-xs">{fxNote}</p>}
+      <RenderErrorBoundary name="net-worth-summary" resetKeys={[view]} className="min-h-24">
+        <div className="flex flex-col gap-1.5">
+          <StatGrid columns={3}>
+            <StatCard label="Total activos" value={totalAssets} currency={currencySymbol} sub={pendingHint} />
+            <StatCard label="Total pasivos" value={totalLiabilities} currency={currencySymbol} />
+            <StatCard
+              label="Patrimonio neto"
+              value={netWorth}
+              currency={currencySymbol}
+              signTone
+              sub={pendingHint}
+            />
+          </StatGrid>
+          {fxNote && <p className="text-muted-foreground text-[11px]">{fxNote}</p>}
+        </div>
+      </RenderErrorBoundary>
 
       <NetWorthEvolutionChart data={view.evolution} currencySymbol={currencySymbol} />
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <div className="space-y-3">
-          <h2 className="text-lg font-semibold">Activos</h2>
-          {groups.length === 0 ? (
-            <div className="rounded-md border border-dashed p-6 text-center"><p className="text-muted-foreground text-sm">No hay cuentas.</p></div>
-          ) : (
-            groups.map((group) => (
-              <div key={group.type} className="overflow-hidden rounded-md border">
-                <div className="border-b bg-muted/30 px-4 py-2"><span className="text-sm font-semibold">{group.label}</span><span className="text-muted-foreground ml-2 text-xs">{currencySymbol} {formatAmount(group.total)}</span></div>
-                {group.accounts.map((acc) => {
-                  const inBase = (value: number | null) =>
-                    value !== null ? `${currencySymbol} ${formatAmount(value)}` : "sin cotización";
-                  const hasCash = Math.abs(acc.balance_base) > 0.01;
-                  const hasInvestments = acc.investment_value_base === null || acc.investment_value_base > 0;
-                  const showInvestmentBreakdown = hasCash && hasInvestments;
-                  const withoutRate = acc.balance_fx_missing || acc.investment_value_base === null;
-                  return (
-                    <div key={acc.id} className="flex items-center justify-between border-b px-4 py-3 last:border-b-0">
-                      <div>
-                        <span className="text-sm font-medium">{acc.name}</span>
-                        {!acc.is_active && <span className="text-muted-foreground ml-1 text-xs">(inactiva)</span>}
-                        {showInvestmentBreakdown && (
-                          <span className="text-muted-foreground ml-2 text-xs">
-                            (cash: {inBase(acc.balance_base)} · inv: {inBase(acc.investment_value_base)})
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-right">
-                        <span className="text-sm font-medium">{currencySymbol} {formatAmount(acc.total)}</span>
-                        {withoutRate && !showInvestmentBreakdown && <span className="text-muted-foreground ml-2 text-xs">sin cotización</span>}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ))
-          )}
-        </div>
-
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Pasivos</h2>
-            <Button variant="outline" size="sm" asChild>
-              <Link href="/debts"><ExternalLink className="mr-1 size-3" />Gestionar deudas</Link>
-            </Button>
-          </div>
-          {liabilities.items.length === 0 ? (
-            <div className="rounded-md border border-dashed p-6 text-center"><p className="text-muted-foreground text-sm">No hay pasivos registrados.</p></div>
-          ) : (
-            <div className="overflow-hidden rounded-md border">
-              <div className="border-b bg-muted/30 px-4 py-2"><span className="text-sm font-semibold">Deudas</span><span className="text-muted-foreground ml-2 text-xs">{currencySymbol} {formatAmount(liabilities.total)}</span></div>
-              {liabilities.items.map((item) => (
-                <div key={item.item_id} className="flex items-center justify-between border-b px-4 py-3 last:border-b-0">
-                  <span className="text-sm font-medium">{item.name}</span>
-                  <div className="text-right">
-                    <span className="text-sm font-medium">{item.currency_symbol} {formatAmount(item.amount)}</span>
-                    {item.amount_base !== null && item.currency !== baseCurrency && <span className="text-muted-foreground ml-2 text-xs">≈ {currencySymbol} {formatAmount(item.amount_base)}</span>}
-                    {item.amount_base === null && item.amount !== 0 && <span className="text-muted-foreground ml-2 text-xs">sin cotización</span>}
+        <RenderErrorBoundary name="net-worth-assets" resetKeys={[groups]} className="min-h-40">
+          <Section title="Activos">
+            {groups.length === 0 ? (
+              <StateCard variant="empty" title="No hay cuentas" className="min-h-24" />
+            ) : (
+              groups.map((group) => (
+                <div key={group.type} className="overflow-hidden rounded-lg border">
+                  <div className="bg-muted/40 flex items-center justify-between gap-3 border-b px-3 py-2 text-xs">
+                    <span className="font-semibold">{group.label}</span>
+                    <NumericCell value={group.total} currency={currencySymbol} className="text-muted-foreground" />
                   </div>
+                  {group.accounts.map((acc) => {
+                    const inBase = (value: number | null) =>
+                      value !== null ? `${currencySymbol} ${formatAmount(value)}` : "sin cotización";
+                    const hasCash = Math.abs(acc.balance_base) > 0.01;
+                    const hasInvestments = acc.investment_value_base === null || acc.investment_value_base > 0;
+                    const showInvestmentBreakdown = hasCash && hasInvestments;
+                    const withoutRate = acc.balance_fx_missing || acc.investment_value_base === null;
+                    return (
+                      <div key={acc.id} className="flex items-center justify-between gap-3 border-b px-3 py-2 text-xs last:border-b-0">
+                        <div className="flex min-w-0 flex-col">
+                          <div className="flex min-w-0 items-baseline gap-1">
+                            <TruncatedText className="font-medium">{acc.name}</TruncatedText>
+                            {!acc.is_active && <span className="text-muted-foreground shrink-0 text-[11px]">(inactiva)</span>}
+                          </div>
+                          {showInvestmentBreakdown && (
+                            <span className="text-muted-foreground text-[11px]">
+                              cash: {inBase(acc.balance_base)} · inv: {inBase(acc.investment_value_base)}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 items-baseline gap-2">
+                          <NumericCell value={acc.total} currency={currencySymbol} className="font-medium" />
+                          {withoutRate && !showInvestmentBreakdown && (
+                            <span className="text-muted-foreground text-[11px]">sin cotización</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
+              ))
+            )}
+          </Section>
+        </RenderErrorBoundary>
+
+        <RenderErrorBoundary name="net-worth-liabilities" resetKeys={[liabilities]} className="min-h-40">
+          <Section
+            title="Pasivos"
+            actions={
+              <PageButton variant="outline" icon={ExternalLink} asChild>
+                <Link href="/debts">Gestionar deudas</Link>
+              </PageButton>
+            }
+          >
+            {liabilities.items.length === 0 ? (
+              <StateCard variant="empty" title="No hay pasivos registrados" className="min-h-24" />
+            ) : (
+              <div className="overflow-hidden rounded-lg border">
+                <div className="bg-muted/40 flex items-center justify-between gap-3 border-b px-3 py-2 text-xs">
+                  <span className="font-semibold">Deudas</span>
+                  <NumericCell value={liabilities.total} currency={currencySymbol} className="text-muted-foreground" />
+                </div>
+                {liabilities.items.map((item) => (
+                  <div key={item.item_id} className="flex items-center justify-between gap-3 border-b px-3 py-2 text-xs last:border-b-0">
+                    <TruncatedText className="font-medium">{item.name}</TruncatedText>
+                    <div className="flex shrink-0 items-baseline gap-2">
+                      <NumericCell value={item.amount} currency={item.currency_symbol} className="font-medium" />
+                      {item.amount_base !== null && item.currency !== baseCurrency && (
+                        <span className="text-muted-foreground text-[11px] tabular-nums">
+                          ≈ {currencySymbol} {formatAmount(item.amount_base)}
+                        </span>
+                      )}
+                      {item.amount_base === null && item.amount !== 0 && (
+                        <span className="text-muted-foreground text-[11px]">sin cotización</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Section>
+        </RenderErrorBoundary>
       </div>
     </>
   );

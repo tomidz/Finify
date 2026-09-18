@@ -1,5 +1,6 @@
 "use client";
 
+import { useCallback } from "react";
 import {
   useQuery,
   useMutation,
@@ -45,6 +46,15 @@ export function useCurrencies() {
     queryFn: async () => unwrapResult(await getCurrencies()),
     staleTime: Infinity,
   });
+}
+
+/** A currency's decimal places (2 until the currencies load). */
+export function useCurrencyDecimals() {
+  const { data: currencies } = useCurrencies();
+  return useCallback(
+    (code: string | null | undefined) => currencies?.find((c) => c.code === code)?.decimals ?? 2,
+    [currencies],
+  );
 }
 
 export function useSuspenseCurrencies() {

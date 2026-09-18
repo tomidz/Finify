@@ -36,6 +36,10 @@ interface CategoryComboboxProps {
   grouped?: boolean;
   disabled?: boolean;
   usageCounts?: Record<string, number>;
+  /** From FormControl: the trigger takes the field's id and error state. */
+  id?: string;
+  "aria-invalid"?: boolean;
+  "aria-describedby"?: string;
 }
 
 function sortByUsage<T extends { id: string }>(
@@ -58,6 +62,7 @@ export function CategoryCombobox({
   grouped = false,
   disabled = false,
   usageCounts,
+  ...field
 }: CategoryComboboxProps) {
   const [open, setOpen] = useState(false);
 
@@ -91,6 +96,7 @@ export function CategoryCombobox({
             aria-expanded={open}
             className="w-full justify-between font-normal"
             disabled={disabled}
+            {...field}
           >
             <span className="truncate">{displayLabel}</span>
             <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
@@ -160,6 +166,7 @@ export function CategoryCombobox({
           aria-expanded={open}
           className="w-full justify-between font-normal"
           disabled={disabled}
+          {...field}
         >
           <span className="truncate">{displayLabel}</span>
           <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />

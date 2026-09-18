@@ -1,4 +1,4 @@
-import { parseNumberInput } from "@/lib/utils";
+import { parseMoney } from "@/lib/format";
 
 export type AccountBalanceFormValues = {
   initial_amount: string;
@@ -17,19 +17,25 @@ export type AccountBalanceFields = {
   base_amount?: number;
 };
 
-function balanceFields(values: AccountBalanceFormValues): Required<AccountBalanceFields> {
+/** The typed fields, leaving out the empty ones: an empty field is never 0. */
+function balanceFields(values: AccountBalanceFormValues): AccountBalanceFields {
+  const initialAmount = parseMoney(values.initial_amount);
+  if (initialAmount == null) return {};
+  const exchangeRate = parseMoney(values.exchange_rate);
+  const baseAmount = parseMoney(values.base_amount);
   return {
-    initial_amount: Math.abs(parseNumberInput(values.initial_amount)),
-    exchange_rate: parseNumberInput(values.exchange_rate),
-    base_amount: Math.abs(parseNumberInput(values.base_amount)),
+    initial_amount: Math.abs(initialAmount),
+    ...(exchangeRate == null ? {} : { exchange_rate: exchangeRate }),
+    ...(baseAmount == null ? {} : { base_amount: Math.abs(baseAmount) }),
   };
 }
 
 /**
- * The balance part of an account create or update. An edit only carries it
- * when the user changed the balance fields and the result differs from what is
- * stored: the server rewrites every opening from it, so an untouched or
- * not-yet-loaded field must never reach it as 0.
+ * The balance part of an account create or update. An empty initial amount
+ * sends nothing. An edit only carries it when the user changed the balance
+ * fields and the result differs from what is stored: the server rewrites
+ * every opening from it, so an untouched or not-yet-loaded field must never
+ * reach it as 0.
  */
 export function accountBalancePayload(
   input:
@@ -43,7 +49,7 @@ export function accountBalancePayload(
 ): AccountBalanceFields {
   const fields = balanceFields(input.values);
   if (input.mode === "create") return fields;
-  if (!input.edited) return {};
+  if (!input.edited || fields.initial_amount === undefined) return {};
   if (
     input.stored &&
     fields.initial_amount === input.stored.opening_amount &&

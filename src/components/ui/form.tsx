@@ -1,4 +1,5 @@
 import * as React from "react"
+import { Slot } from "radix-ui"
 import type {
   FieldValues,
   FieldPath,
@@ -97,24 +98,27 @@ const FormLabel = React.forwardRef<
     <label
       ref={ref}
       htmlFor={formItemId}
-      className={cn("text-sm font-medium leading-none", className)}
+      className={cn("text-xs font-medium leading-none", className)}
       {...props}
     />
   )
 })
 FormLabel.displayName = "FormLabel"
 
+// Passes the field's id and error state to its one child (the input), so its
+// label focuses it and an invalid value marks it.
 const FormControl = React.forwardRef<
-  HTMLDivElement,
-  React.HTMLAttributes<HTMLDivElement>
->(({ className, ...props }, ref) => {
-  const { formItemId } = useFormField()
+  HTMLElement,
+  React.ComponentProps<typeof Slot.Root>
+>((props, ref) => {
+  const { error, formItemId, formDescriptionId, formMessageId } = useFormField()
 
   return (
-    <div
+    <Slot.Root
       ref={ref}
       id={formItemId}
-      className={cn(className)}
+      aria-describedby={error ? `${formDescriptionId} ${formMessageId}` : formDescriptionId}
+      aria-invalid={!!error}
       {...props}
     />
   )

@@ -537,7 +537,7 @@ export async function deleteAccount(id: string): Promise<ActionResult<null>> {
       if (error.code === "23503") {
         return {
           error:
-            "No se puede eliminar: la cuenta tiene transacciones asociadas",
+            "No se puede eliminar: la cuenta tiene movimientos o inversiones, aunque estén borrados.",
         };
       }
       return dbError("deleteAccount", error, "Error al eliminar la cuenta");

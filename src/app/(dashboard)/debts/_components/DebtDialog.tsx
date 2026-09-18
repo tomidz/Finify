@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import {
   Dialog,
   DialogContent,
@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/money-input";
 import {
   Form,
   FormField,
@@ -32,8 +33,9 @@ import {
 import { useCreateDebt, useUpdateNwItem, useUpsertNwSnapshot } from "@/hooks/useNetWorth";
 import { useCurrencies } from "@/hooks/useAccounts";
 import { useBaseCurrency } from "@/hooks/useTransactions";
-import { formatMoneyInput, formatMoneyDisplay, parseMoneyInput } from "@/lib/format";
+import { parseMoney, toMoneyInput } from "@/lib/format";
 import { fetchExchangeRate } from "@/lib/frankfurter";
+import { uiScale } from "@/lib/ui-scale";
 import type { NwItemWithRelations } from "@/types/net-worth";
 
 interface DebtDialogProps {
@@ -64,24 +66,38 @@ export function DebtDialog({ debt, open, onOpenChange, year, month }: DebtDialog
   const upsertSnapshot = useUpsertNwSnapshot(year);
 
   const isPending = createDebt.isPending || updateItem.isPending || upsertSnapshot.isPending;
+  const selectedCurrency = useWatch({ control: form.control, name: "currency" });
+  const amountCurrency = currencies?.find((c) => c.code === selectedCurrency);
 
+  // Filled when the dialog opens, not on a refetch (that would wipe what the
+  // user typed). The balance at its 4 stored decimals: a save that leaves it
+  // alone writes nothing.
+  const formKey = open ? (debt?.id ?? "new") : null;
   useEffect(() => {
-    if (!open) return;
+    if (formKey === null) return;
     if (debt) {
       form.reset({
         name: debt.name,
         currency: debt.currency,
-        amount: debt.currentAmount
-          ? formatMoneyDisplay(String(debt.currentAmount).replace(".", ","))
-          : "",
+        amount: toMoneyInput(debt.currentAmount, 4),
       });
     } else {
-      form.reset({ name: "", currency: baseCurrency ?? "USD", amount: "" });
+      form.reset({ name: "", currency: "", amount: "" });
     }
-  }, [debt, open, form, baseCurrency]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formKey]);
+  useEffect(() => {
+    if (formKey === "new" && baseCurrency && !form.getValues("currency")) {
+      form.setValue("currency", baseCurrency);
+    }
+  }, [formKey, baseCurrency, form]);
 
   const onSubmit = async (values: DebtFormValues) => {
-    const amount = parseMoneyInput(values.amount) ?? 0;
+    const amount = parseMoney(values.amount);
+    if (amount == null) {
+      form.setError("amount", { message: "Ingresá un monto" });
+      return;
+    }
 
     // Calculate amount_base for non-base currencies
     let amountBase: number | null = null;
@@ -103,7 +119,12 @@ export function DebtDialog({ debt, open, onOpenChange, year, month }: DebtDialog
           name: values.name,
           currency: values.currency,
         });
-        await upsertSnapshot.mutateAsync({
+        // An unchanged balance keeps its snapshot (and the rate it was saved at).
+        const unchanged =
+          values.currency === debt.currency &&
+          debt.currentAmount != null &&
+          amount === Number(debt.currentAmount.toFixed(4));
+        if (!unchanged) await upsertSnapshot.mutateAsync({
           nw_item_id: debt.id,
           year,
           month,
@@ -158,6 +179,7 @@ export function DebtDialog({ debt, open, onOpenChange, year, month }: DebtDialog
                     <Input
                       placeholder="Ej: Hipoteca, Préstamo personal..."
                       disabled={isPending}
+                      className={uiScale.field}
                       {...field}
                     />
                   </FormControl>
@@ -172,39 +194,39 @@ export function DebtDialog({ debt, open, onOpenChange, year, month }: DebtDialog
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Moneda</FormLabel>
-                  <FormControl>
-                    <Select
-                      value={field.value}
-                      onValueChange={field.onChange}
-                      disabled={isPending}
-                    >
-                      <SelectTrigger className="w-full">
+                  <Select
+                    value={field.value}
+                    onValueChange={field.onChange}
+                    disabled={isPending}
+                  >
+                    <FormControl>
+                      <SelectTrigger className={`w-full ${uiScale.trigger}`}>
                         <SelectValue />
                       </SelectTrigger>
-                      <SelectContent>
-                        {fiatCurrencies.length > 0 && (
-                          <SelectGroup>
-                            <SelectLabel>Fiat</SelectLabel>
-                            {fiatCurrencies.map((c) => (
-                              <SelectItem key={c.code} value={c.code}>
-                                {c.symbol} {c.code} — {c.name}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        )}
-                        {cryptoCurrencies.length > 0 && (
-                          <SelectGroup>
-                            <SelectLabel>Crypto</SelectLabel>
-                            {cryptoCurrencies.map((c) => (
-                              <SelectItem key={c.code} value={c.code}>
-                                {c.symbol} {c.code} — {c.name}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        )}
-                      </SelectContent>
-                    </Select>
-                  </FormControl>
+                    </FormControl>
+                    <SelectContent>
+                      {fiatCurrencies.length > 0 && (
+                        <SelectGroup>
+                          <SelectLabel>Fiat</SelectLabel>
+                          {fiatCurrencies.map((c) => (
+                            <SelectItem key={c.code} value={c.code}>
+                              {c.symbol} {c.code} — {c.name}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      )}
+                      {cryptoCurrencies.length > 0 && (
+                        <SelectGroup>
+                          <SelectLabel>Crypto</SelectLabel>
+                          {cryptoCurrencies.map((c) => (
+                            <SelectItem key={c.code} value={c.code}>
+                              {c.symbol} {c.code} — {c.name}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      )}
+                    </SelectContent>
+                  </Select>
                   <FormMessage />
                 </FormItem>
               )}
@@ -217,15 +239,13 @@ export function DebtDialog({ debt, open, onOpenChange, year, month }: DebtDialog
                 <FormItem>
                   <FormLabel>Monto actual</FormLabel>
                   <FormControl>
-                    <Input
-                      type="text"
-                      inputMode="decimal"
-                      placeholder="0,00"
+                    <MoneyInput
+                      {...field}
+                      currency={amountCurrency?.symbol}
+                      // Debt balances are stored with 4 decimals.
+                      decimals={Math.min(amountCurrency?.decimals ?? 2, 4)}
                       disabled={isPending}
-                      value={field.value}
-                      onChange={(e) =>
-                        form.setValue("amount", formatMoneyInput(e.target.value))
-                      }
+                      className={uiScale.field}
                     />
                   </FormControl>
                   <FormMessage />
@@ -234,7 +254,7 @@ export function DebtDialog({ debt, open, onOpenChange, year, month }: DebtDialog
             />
 
             <DialogFooter>
-              <Button type="submit" disabled={isPending}>
+              <Button type="submit" size="sm" className={uiScale.button} disabled={isPending}>
                 {isPending
                   ? "Guardando..."
                   : isEditing
