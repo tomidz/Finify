@@ -2,9 +2,10 @@ import "server-only";
 
 import type { createClient } from "@/lib/supabase/server";
 
+import { AI_MODEL, estimateCostUsd, type TurnUsage } from "@/lib/ai/model";
+
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
-export const AI_MODEL = "claude-opus-4-8";
 export const AI_DAILY_TOKEN_CAP = 300_000;
 export const AI_HOURLY_MESSAGE_LIMIT = 30;
 // Each extension grants another AI_DAILY_TOKEN_CAP for the same UTC day.
@@ -14,29 +15,6 @@ export const AI_MAX_DAILY_EXTENSIONS = 3;
 
 export function utcDayKey(date = new Date()): string {
   return date.toISOString().slice(0, 10);
-}
-
-// USD per million tokens.
-const MODEL_PRICING: Record<
-  string,
-  { input: number; output: number; cachedInput: number }
-> = {
-  "claude-opus-4-8": { input: 5, output: 25, cachedInput: 0.5 },
-};
-
-export function estimateCostUsd(usage: {
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-}): number {
-  const pricing = MODEL_PRICING[AI_MODEL] ?? MODEL_PRICING["claude-opus-4-8"];
-  const uncachedInput = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
-  return (
-    (uncachedInput * pricing.input +
-      usage.cachedInputTokens * pricing.cachedInput +
-      usage.outputTokens * pricing.output) /
-    1_000_000
-  );
 }
 
 export type AiUsageStatus = {
@@ -150,6 +128,7 @@ export async function checkAiLimits(
   return { ok: true, usage };
 }
 
+/** Creates the session titled after its first message, or marks it as just used. */
 export async function ensureAiSession(
   supabase: SupabaseServerClient,
   userId: string,
@@ -157,43 +136,59 @@ export async function ensureAiSession(
   title: string,
 ): Promise<{ error?: string }> {
   const { error } = await supabase.from("ai_sessions").upsert(
-    {
-      id: sessionId,
-      user_id: userId,
-      title: title.slice(0, 80),
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "id", ignoreDuplicates: false },
+    { id: sessionId, user_id: userId, title: title.slice(0, 80) },
+    { onConflict: "id", ignoreDuplicates: true },
   );
-  return error ? { error: error.message } : {};
+  if (error) return { error: error.message };
+  // Also proves the session is the user's: an id taken by someone else
+  // updates nothing.
+  const { data, error: touchError } = await supabase
+    .from("ai_sessions")
+    .update({ updated_at: new Date().toISOString() })
+    .eq("id", sessionId)
+    .eq("user_id", userId)
+    .select("id");
+  if (touchError) return { error: touchError.message };
+  return data && data.length > 0 ? {} : { error: "Conversación no encontrada" };
 }
 
+/**
+ * Saves a chat message once: a retried request sends the same message id, and
+ * the second save keeps the row already there.
+ */
 export async function saveAiMessage(
   supabase: SupabaseServerClient,
   input: {
     sessionId: string;
     userId: string;
+    clientMessageId: string;
     role: "user" | "assistant";
     parts: unknown;
   },
-): Promise<void> {
-  await supabase.from("ai_messages").insert({
-    session_id: input.sessionId,
-    user_id: input.userId,
-    role: input.role,
-    parts: input.parts as never,
-  });
+): Promise<{ error?: string }> {
+  const { error } = await supabase.from("ai_messages").upsert(
+    {
+      session_id: input.sessionId,
+      user_id: input.userId,
+      client_message_id: input.clientMessageId,
+      role: input.role,
+      parts: input.parts as never,
+    },
+    { onConflict: "session_id,client_message_id", ignoreDuplicates: true },
+  );
+  if (error) {
+    console.error("saveAiMessage: insert failed:", error.code, error.message);
+    return { error: error.message };
+  }
+  return {};
 }
 
 // Best-effort: metering must never break the chat response.
 export async function logAiUsage(
   supabase: SupabaseServerClient,
-  input: {
+  input: TurnUsage & {
     userId: string;
     sessionId: string;
-    inputTokens: number;
-    outputTokens: number;
-    cachedInputTokens: number;
     toolNames: string[];
   },
 ): Promise<void> {
@@ -204,6 +199,7 @@ export async function logAiUsage(
     input_tokens: input.inputTokens,
     output_tokens: input.outputTokens,
     cached_input_tokens: input.cachedInputTokens,
+    cache_write_tokens: input.cacheWriteTokens,
     cost_usd: estimateCostUsd(input),
     tool_names: input.toolNames,
   };

@@ -71,6 +71,7 @@ export type Database = {
       }
       ai_messages: {
         Row: {
+          client_message_id: string | null
           created_at: string
           id: string
           parts: Json
@@ -79,6 +80,7 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          client_message_id?: string | null
           created_at?: string
           id?: string
           parts: Json
@@ -87,6 +89,7 @@ export type Database = {
           user_id: string
         }
         Update: {
+          client_message_id?: string | null
           created_at?: string
           id?: string
           parts?: Json
@@ -154,6 +157,7 @@ export type Database = {
       }
       ai_usage: {
         Row: {
+          cache_write_tokens: number | null
           cached_input_tokens: number
           cost_usd: number
           created_at: string
@@ -166,6 +170,7 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          cache_write_tokens?: number | null
           cached_input_tokens?: number
           cost_usd?: number
           created_at?: string
@@ -178,6 +183,7 @@ export type Database = {
           user_id: string
         }
         Update: {
+          cache_write_tokens?: number | null
           cached_input_tokens?: number
           cost_usd?: number
           created_at?: string

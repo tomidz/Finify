@@ -49,20 +49,27 @@ type AicfoUIMessage = InferAgentUIMessage<AicfoAgent>;
 
 const TOOL_LABELS: Record<string, string> = {
   get_months: "Leyendo meses",
-  get_user_preferences: "Leyendo preferencias",
   get_accounts: "Leyendo cuentas",
   get_account_balance: "Consultando saldo",
+  get_period_summary: "Resumiendo el período",
   get_budget_summary: "Analizando presupuesto",
   get_transactions: "Leyendo transacciones",
-  get_net_worth_evolution: "Analizando patrimonio",
-  get_liabilities: "Leyendo deudas",
+  get_net_worth: "Analizando patrimonio",
   get_investments: "Leyendo inversiones",
   get_investment_sales: "Leyendo ventas",
-  get_investment_values: "Valuando portafolio",
   get_forecast: "Proyectando",
   get_savings_goals: "Leyendo metas de ahorro",
   get_pending_recurring: "Revisando recurrentes",
+  convert_currency: "Convirtiendo monedas",
+  // Tools of earlier versions, still named in saved conversations.
+  get_user_preferences: "Leyendo preferencias",
+  get_net_worth_evolution: "Analizando patrimonio",
+  get_liabilities: "Leyendo deudas",
+  get_investment_values: "Valuando portafolio",
 };
+
+/** The server accepts up to this many characters per message. */
+const MAX_MESSAGE_LENGTH = 4000;
 
 const SUGGESTIONS = [
   "¿Cómo vengo con el presupuesto de este mes?",
@@ -249,7 +256,13 @@ function ChatPanel({
     useChat<AicfoUIMessage>({
       id,
       messages: initialMessages,
-      transport: new DefaultChatTransport({ api: "/api/aicfo" }),
+      // Only the new message: the server reads the history from the database.
+      transport: new DefaultChatTransport({
+        api: "/api/aicfo",
+        prepareSendMessagesRequest: ({ id, messages, trigger, messageId }) => ({
+          body: { id, message: messages.at(-1), trigger, messageId },
+        }),
+      }),
       onFinish: () => void onTurnFinished(),
     });
   const [input, setInput] = useState("");
@@ -401,6 +414,7 @@ function ChatPanel({
           onChange={(event) => setInput(event.target.value)}
           placeholder="Preguntale algo a tu CFO…"
           disabled={busy}
+          maxLength={MAX_MESSAGE_LENGTH}
           autoFocus
         />
         <Button type="submit" size="icon" disabled={busy || !input.trim()}>

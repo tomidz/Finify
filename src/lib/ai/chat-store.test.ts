@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { argsOf, fakeSupabase, type RecordedQuery } from "../../../tests/support/fake-supabase";
-import { logAiUsage } from "./chat-store";
+import { ensureAiSession, logAiUsage } from "./chat-store";
 
 const usage = {
   userId: "user-1",
@@ -9,6 +9,7 @@ const usage = {
   inputTokens: 1_000,
   outputTokens: 200,
   cachedInputTokens: 0,
+  cacheWriteTokens: 0,
   toolNames: ["getAccounts"],
 };
 
@@ -45,5 +46,21 @@ describe("logAiUsage", () => {
     await logAiUsage(supabase, usage);
     expect(queries).toHaveLength(1);
     expect(console.error).toHaveBeenCalledWith("logAiUsage: insert failed:", "23514", "check");
+  });
+});
+
+describe("ensureAiSession", () => {
+  it("rejects a session id that belongs to someone else", async () => {
+    // The insert is skipped as a duplicate, and the update sees no own row.
+    const fake = fakeSupabase(() => ({ data: [], error: null }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await ensureAiSession(fake.client as any, "user-1", "session-1", "Hola");
+    expect(result).toEqual({ error: "Conversación no encontrada" });
+  });
+
+  it("accepts the user's own session", async () => {
+    const fake = fakeSupabase(() => ({ data: [{ id: "session-1" }], error: null }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await ensureAiSession(fake.client as any, "user-1", "session-1", "Hola")).toEqual({});
   });
 });

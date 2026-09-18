@@ -52,15 +52,17 @@ export async function getAiSessionMessages(
 
   const { data, error } = await supabase
     .from("ai_messages")
-    .select("id, role, parts")
+    .select("id, client_message_id, role, parts")
     .eq("session_id", sessionId)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true });
 
   if (error) return { error: "No se pudo cargar la conversación" };
 
   return {
+    // The chat's own ids, so a retry or a regenerate points at the same rows.
     data: (data ?? []).map((row) => ({
-      id: row.id,
+      id: row.client_message_id ?? row.id,
       role: row.role as "user" | "assistant",
       parts: Array.isArray(row.parts) ? row.parts : [],
     })),

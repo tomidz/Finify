@@ -7,10 +7,6 @@ import { today as appToday } from "@/lib/dates";
 import { resolveFxRates } from "@/lib/server/fx-range";
 import { ledgerRpcError } from "@/lib/server/ledger-rpc";
 import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
-import {
-  loadInvestmentValuation,
-  type ValuationByAccount,
-} from "@/lib/server/investment-valuation";
 import { priceCacheKey, resolvePricesWithSources, type ResolvedPrices } from "@/lib/server/prices";
 import { priceRequestFor, type PriceRequest } from "@/lib/asset-classes";
 import {
@@ -317,23 +313,6 @@ export async function deleteInvestment(
     return { error: "Error al eliminar inversión" };
   }
 }
-
-export async function getCurrentInvestmentValuesByAccount(): Promise<
-  ActionResult<ValuationByAccount>
-> {
-  try {
-    const ctx = await getServerContext();
-    if (!ctx) return { error: "No autenticado" };
-    const baseCurrency = await loadBaseCurrency(ctx);
-    if ("error" in baseCurrency) return baseCurrency;
-    const valuation = await loadInvestmentValuation(ctx, baseCurrency.data);
-    if ("error" in valuation) return valuation;
-    return { data: valuation.data.byAccount };
-  } catch {
-    return { error: "Error al obtener valor actual de inversiones" };
-  }
-}
-
 
 export async function lookupInvestmentInstrument(input: {
   ticker?: string | null;

@@ -14,21 +14,14 @@ import type {
   NwYearSummary,
   NwSnapshot,
   AccountNetWorthSummary,
-  LiabilitiesSummary,
   LiabilitiesMonthSummary,
-  NetWorthEvolutionPoint,
 } from "@/types/net-worth";
 
 import { monthCloseDate } from "@/lib/dates";
 import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
 import { getOrFetchFxRate } from "@/lib/server/fx";
 import { loadMonths } from "@/lib/server/months";
-import {
-  loadAccountNetWorth,
-  loadLiabilitiesForYear,
-  loadNetWorthEvolution,
-  warmCloseRates,
-} from "@/lib/server/net-worth";
+import { loadAccountNetWorth, warmCloseRates } from "@/lib/server/net-worth";
 
 type ActionResult<T> = { data: T } | { error: string };
 
@@ -511,18 +504,6 @@ export async function getAccountNetWorth(
 /* Pasivos — último snapshot de cada deuda para un año                  */
 /* ------------------------------------------------------------------ */
 
-export async function getLiabilitiesForYear(
-  year: number
-): Promise<ActionResult<LiabilitiesSummary>> {
-  const ctx = await getServerContext();
-  if (!ctx) return { error: "No autenticado" };
-  const [baseCurrency, months] = await Promise.all([loadBaseCurrency(ctx), loadMonths(ctx)]);
-  if ("error" in baseCurrency) return baseCurrency;
-  if ("error" in months) return months;
-  await warmCloseRates(ctx, baseCurrency.data, { months: months.data, year, latestOnly: true });
-  return loadLiabilitiesForYear(ctx, year);
-}
-
 /* ------------------------------------------------------------------ */
 /* Pasivos para un mes específico (con carry-forward)                  */
 /* ------------------------------------------------------------------ */
@@ -651,14 +632,3 @@ export async function getLiabilitiesForMonth(
 /* Evolución mensual del patrimonio neto                               */
 /* ------------------------------------------------------------------ */
 
-export async function getNetWorthEvolution(
-  year: number
-): Promise<ActionResult<NetWorthEvolutionPoint[]>> {
-  const ctx = await getServerContext();
-  if (!ctx) return { error: "No autenticado" };
-  const [baseCurrency, months] = await Promise.all([loadBaseCurrency(ctx), loadMonths(ctx)]);
-  if ("error" in baseCurrency) return baseCurrency;
-  if ("error" in months) return months;
-  await warmCloseRates(ctx, baseCurrency.data, { months: months.data, year });
-  return loadNetWorthEvolution(ctx, year);
-}

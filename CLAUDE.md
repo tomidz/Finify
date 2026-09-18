@@ -9,7 +9,13 @@ que la base en `eu-west-1`). **Producción tiene datos reales.**
 - `src/actions/*.ts`: server actions. **Cada export de un archivo `"use server"` es un endpoint
   público**: tiene que verificar la sesión antes de hacer cualquier cosa. Los helpers internos van en
   `src/lib/server/*` con `import "server-only"`, nunca exportados desde `"use server"`.
-- `src/app/api/aicfo/route.ts`: único route handler (chat de IA).
+- Route handlers: `src/app/api/aicfo/route.ts` (chat de IA) y
+  `src/app/api/investments/valuation/route.ts` (valuación de mercado).
+- AI CFO: el modelo y sus precios están solo en `src/lib/ai/model.ts`. Las tools
+  (`src/lib/ai/aicfo-tools.ts`) leen con los mismos loaders y módulos de `src/lib/finance/` que las
+  pantallas. El cliente manda solo el mensaje nuevo: el historial sale de la base, sin los
+  resultados de tools de turnos anteriores. Cada paso se mide, y una respuesta cortada se guarda
+  marcada.
 - No hay cliente service-role. Toda escritura pasa por RLS.
 
 ## Comandos
