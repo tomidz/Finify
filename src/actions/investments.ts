@@ -24,8 +24,9 @@ import type {
   AssetType,
 } from "@/types/investments";
 import { fetchTwelveDataInstrument } from "@/lib/twelvedata";
-
-type ActionResult<T> = { data: T } | { error: string };
+import { dbError } from "@/lib/server/db-errors";
+import { logError } from "@/lib/log";
+import type { ActionResult } from "@/lib/action-result";
 
 async function getUserId() {
   const supabase = await createClient();
@@ -59,7 +60,7 @@ export async function getInvestments(): Promise<
       .eq("user_id", userId)
       .order("purchase_date", { ascending: false });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getInvestments", error, "Error al obtener inversiones");
 
     const mapped = (data ?? []).map((row) => {
       const accountRaw = row.accounts;
@@ -94,7 +95,8 @@ export async function getInvestments(): Promise<
     });
 
     return { data: mapped };
-  } catch {
+  } catch (e) {
+    logError("getInvestments", e);
     return { error: "Error al obtener inversiones" };
   }
 }
@@ -123,7 +125,7 @@ export async function createInvestment(
       .eq("user_id", userId)
       .maybeSingle();
 
-    if (accError) return { error: accError.message };
+    if (accError) return dbError("createInvestment", accError, "No se pudo leer la cuenta");
     if (!account) return { error: "Cuenta no encontrada" };
 
     // Fees/taxes are capitalized: they raise the lot's cost basis and are
@@ -145,13 +147,14 @@ export async function createInvestment(
       account.currency === parsed.data.currency &&
       !parsed.data.skip_deduction
     ) {
-      cashRate = await cashRateToBase(
+      const rate = await cashRateToBase(
         supabase,
         userId,
         account.currency,
         parsed.data.purchase_date,
       );
-      if (cashRate == null) return { error: CASH_RATE_FAILED };
+      if ("error" in rate) return rate;
+      cashRate = rate.data;
     }
 
     const { data, error } = await supabase.rpc("create_investment", {
@@ -176,7 +179,7 @@ export async function createInvestment(
 
     return { data: { id: data } };
   } catch (e) {
-    console.error("createInvestment:", e);
+    logError("createInvestment", e);
     return { error: "Error al crear inversión" };
   }
 }
@@ -192,23 +195,21 @@ const CASH_RATE_FAILED =
 
 /**
  * Rate from an account's currency to the base currency on `date`, for the
- * cash an investment moves; null when it cannot be looked up.
+ * cash an investment moves.
  */
 async function cashRateToBase(
   supabase: Awaited<ReturnType<typeof createClient>>,
   userId: string,
   currency: string,
   date: string,
-): Promise<number | null> {
-  const { data: prefsRow } = await supabase
-    .from("user_preferences")
-    .select("base_currency")
-    .eq("user_id", userId)
-    .maybeSingle();
-  const baseCurrency = prefsRow?.base_currency ?? "USD";
-  if (currency === baseCurrency) return 1;
-  const fx = await getOrFetchFxRate({ date, from: currency, to: baseCurrency });
-  return "error" in fx ? null : fx.data;
+): Promise<ActionResult<number>> {
+  const baseCurrency = await loadBaseCurrency({ supabase, userId });
+  if ("error" in baseCurrency) return baseCurrency;
+  if (currency === baseCurrency.data) return { data: 1 };
+  const fx = await getOrFetchFxRate({ date, from: currency, to: baseCurrency.data });
+  if (!("error" in fx)) return fx;
+  logError("cashRateToBase", fx.error);
+  return { error: CASH_RATE_FAILED };
 }
 
 export async function updateInvestment(
@@ -234,7 +235,7 @@ export async function updateInvestment(
       )
     ) as TablesUpdate<"investments">;
 
-    const [{ data: existingLot }, { count: cashCount, error: cashError }] =
+    const [{ data: existingLot, error: lotError }, { count: cashCount, error: cashError }] =
       await Promise.all([
         supabase
           .from("investments")
@@ -248,8 +249,9 @@ export async function updateInvestment(
           .eq("user_id", userId)
           .eq("source_investment_id", id),
       ]);
+    const readError = lotError ?? cashError;
+    if (readError) return dbError("updateInvestment", readError, "No se pudo leer la inversión");
     if (!existingLot) return { error: "Inversión no encontrada" };
-    if (cashError) return { error: cashError.message };
 
     // A purchase that moved cash moves it again when what the cash depends on
     // changes, at the rate of the account and date the lot ends up with.
@@ -261,20 +263,22 @@ export async function updateInvestment(
       (clean.asset_name !== undefined && clean.asset_name !== existingLot.asset_name);
     let cashRate: number | null = null;
     if ((cashCount ?? 0) > 0 && cashChanged) {
-      const { data: account } = await supabase
+      const { data: account, error: accError } = await supabase
         .from("accounts")
         .select("currency")
         .eq("id", clean.account_id ?? existingLot.account_id)
         .eq("user_id", userId)
         .maybeSingle();
+      if (accError) return dbError("updateInvestment", accError, "No se pudo leer la cuenta");
       if (!account) return { error: "Cuenta no encontrada" };
-      cashRate = await cashRateToBase(
+      const rate = await cashRateToBase(
         supabase,
         userId,
         account.currency,
         clean.purchase_date ?? existingLot.purchase_date,
       );
-      if (cashRate == null) return { error: CASH_RATE_FAILED };
+      if ("error" in rate) return rate;
+      cashRate = rate.data;
     }
 
     const { error } = await supabase.rpc("update_investment", {
@@ -288,7 +292,7 @@ export async function updateInvestment(
 
     return { data: { id } };
   } catch (e) {
-    console.error("updateInvestment:", e);
+    logError("updateInvestment", e);
     return { error: "Error al actualizar inversión" };
   }
 }
@@ -309,7 +313,7 @@ export async function deleteInvestment(
 
     return { data: null };
   } catch (e) {
-    console.error("deleteInvestment:", e);
+    logError("deleteInvestment", e);
     return { error: "Error al eliminar inversión" };
   }
 }
@@ -332,8 +336,15 @@ export async function lookupInvestmentInstrument(input: {
     const query = input.isin?.trim() || input.ticker?.trim();
     if (!query) return { error: "Ingresá un ticker o ISIN" };
 
-    const instrument = await fetchTwelveDataInstrument(query);
-    if (!instrument) return { error: "No se encontró el activo" };
+    const lookup = await fetchTwelveDataInstrument(query);
+    if (!lookup.ok) {
+      if (lookup.reason === "not_found") return { error: "No se encontró el activo" };
+      if (lookup.reason === "rate_limited") {
+        return { error: "El proveedor de precios limitó las consultas. Probá en un minuto." };
+      }
+      return { error: "No se pudo consultar el proveedor de precios. Probá de nuevo." };
+    }
+    const instrument = lookup.data;
 
     return {
       data: {
@@ -343,7 +354,8 @@ export async function lookupInvestmentInstrument(input: {
         price_per_unit: instrument.price,
       },
     };
-  } catch {
+  } catch (e) {
+    logError("lookupInvestmentInstrument", e);
     return { error: "Error al buscar activo" };
   }
 }
@@ -373,7 +385,9 @@ export async function transferInvestmentPosition(
       ])
       .eq("user_id", userId);
 
-    if (accountsError) return { error: accountsError.message };
+    if (accountsError) {
+      return dbError("transferInvestmentPosition", accountsError, "No se pudieron leer las cuentas");
+    }
     if (!accounts || accounts.length !== 2) {
       return { error: "Cuenta origen o destino no encontrada" };
     }
@@ -394,13 +408,15 @@ export async function transferInvestmentPosition(
       const sourceAccount = accounts.find(
         (account) => account.id === parsed.data.source_account_id,
       );
-      feeRate = await cashRateToBase(
+      if (!sourceAccount) return { error: "Cuenta origen no encontrada" };
+      const rate = await cashRateToBase(
         supabase,
         userId,
-        (sourceAccount?.currency as string) ?? "USD",
+        sourceAccount.currency,
         parsed.data.transfer_date,
       );
-      if (feeRate == null) return { error: CASH_RATE_FAILED };
+      if ("error" in rate) return rate;
+      feeRate = rate.data;
     }
 
     // Atomic FIFO move: the RPC locks the source holding, validates
@@ -429,7 +445,7 @@ export async function transferInvestmentPosition(
 
     return { data: null };
   } catch (e) {
-    console.error("transferInvestmentPosition:", e);
+    logError("transferInvestmentPosition", e);
     return { error: "Error al transferir posicion" };
   }
 }
@@ -464,7 +480,7 @@ export async function adjustInvestmentPosition(
       .eq("user_id", userId)
       .maybeSingle();
 
-    if (accError) return { error: accError.message };
+    if (accError) return dbError("adjustInvestmentPosition", accError, "No se pudo leer la cuenta");
     if (!account) return { error: "Cuenta no encontrada" };
 
     if (parsed.data.direction === "increase") {
@@ -483,7 +499,9 @@ export async function adjustInvestmentPosition(
         purchase_date: parsed.data.adjustment_date,
         notes: parsed.data.notes ?? "Ajuste de posición",
       });
-      if (insertError) return { error: insertError.message };
+      if (insertError) {
+        return dbError("adjustInvestmentPosition", insertError, "Error al ajustar la posición");
+      }
       return { data: null };
     }
 
@@ -501,15 +519,15 @@ export async function adjustInvestmentPosition(
       },
     );
     if (reduceError) {
-      return {
-        error: reduceError.message.includes("No hay cantidad")
-          ? "No hay cantidad suficiente para ajustar"
-          : reduceError.message,
-      };
+      if (reduceError.message.includes("No hay cantidad")) {
+        return { error: "No hay cantidad suficiente para ajustar" };
+      }
+      return dbError("adjustInvestmentPosition", reduceError, "Error al ajustar la posición");
     }
 
     return { data: null };
-  } catch {
+  } catch (e) {
+    logError("adjustInvestmentPosition", e);
     return { error: "Error al ajustar la posición" };
   }
 }
@@ -558,7 +576,7 @@ export async function sellInvestment(
       .eq("user_id", userId)
       .maybeSingle();
 
-    if (accError) return { error: accError.message };
+    if (accError) return dbError("sellInvestment", accError, "No se pudo leer la cuenta");
     if (!account) return { error: "Cuenta no encontrada" };
 
     const { data: lots, error: lotsError } = await supabase
@@ -571,7 +589,7 @@ export async function sellInvestment(
       .order("purchase_date", { ascending: true })
       .order("created_at", { ascending: true });
 
-    if (lotsError) return { error: lotsError.message };
+    if (lotsError) return dbError("sellInvestment", lotsError, "No se pudo leer la posición");
 
     const matchingLots = (lots ?? []).filter((lot) =>
       lotMatchesHolding(lot, parsed.data.ticker, parsed.data.asset_name),
@@ -606,13 +624,14 @@ export async function sellInvestment(
       !parsed.data.skip_credit &&
       netProceeds > 0
     ) {
-      cashRate = await cashRateToBase(
+      const rate = await cashRateToBase(
         supabase,
         userId,
         account.currency,
         parsed.data.sale_date,
       );
-      if (cashRate == null) return { error: CASH_RATE_FAILED };
+      if ("error" in rate) return rate;
+      cashRate = rate.data;
     }
 
     // The sale, the lot reduction and the credit in one transaction. The
@@ -643,7 +662,7 @@ export async function sellInvestment(
 
     return { data: { id: data } };
   } catch (e) {
-    console.error("sellInvestment:", e);
+    logError("sellInvestment", e);
     return { error: "Error al registrar venta" };
   }
 }
@@ -668,14 +687,11 @@ export async function getInvestmentSales(): Promise<
       .eq("user_id", userId)
       .order("sale_date", { ascending: false });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getInvestmentSales", error, "Error al obtener ventas");
 
-    const { data: prefsRow } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", userId)
-      .maybeSingle();
-    const baseCurrency = prefsRow?.base_currency ?? "USD";
+    const baseCurrencyResult = await loadBaseCurrency({ supabase, userId });
+    if ("error" in baseCurrencyResult) return baseCurrencyResult;
+    const baseCurrency = baseCurrencyResult.data;
 
     const fxAt = await resolveFxRates(
       supabase,
@@ -732,7 +748,8 @@ export async function getInvestmentSales(): Promise<
     });
 
     return { data: mapped };
-  } catch {
+  } catch (e) {
+    logError("getInvestmentSales", e);
     return { error: "Error al obtener ventas" };
   }
 }
@@ -763,7 +780,7 @@ export async function deleteInvestmentSale(
 
     return { data: null };
   } catch (e) {
-    console.error("deleteInvestmentSale:", e);
+    logError("deleteInvestmentSale", e);
     return { error: "Error al eliminar la venta" };
   }
 }
@@ -797,7 +814,7 @@ export async function swapInvestment(
     }
     return { data: { id: data } };
   } catch (e) {
-    console.error("swapInvestment:", e);
+    logError("swapInvestment", e);
     return { error: "Error al registrar el intercambio" };
   }
 }
@@ -868,13 +885,10 @@ export async function setManualPrice(
       })),
       { onConflict: "user_id,price_key" },
     );
-    if (error) {
-      console.error("setManualPrice:", error.code, error.message);
-      return { error: "No se pudo guardar el precio" };
-    }
+    if (error) return dbError("setManualPrice", error, "No se pudo guardar el precio");
     return { data: null };
   } catch (e) {
-    console.error("setManualPrice:", e);
+    logError("setManualPrice", e);
     return { error: "No se pudo guardar el precio" };
   }
 }

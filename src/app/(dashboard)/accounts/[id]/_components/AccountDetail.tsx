@@ -25,12 +25,13 @@ import {
   useCurrencies,
 } from "@/hooks/useAccounts";
 import { useBaseCurrency } from "@/hooks/useTransactions";
+import { errorMessage } from "@/lib/action-result";
 import { formatAmount, amountTone, MONTH_NAMES } from "@/lib/format";
 import { ACCOUNT_TYPE_LABELS } from "@/types/accounts";
 
 export function AccountDetail({ accountId }: { accountId: string }) {
   const { data: account, isLoading: loadingAccount } = useAccountById(accountId);
-  const { data: history, isLoading: loadingHistory } =
+  const { data: history, isLoading: loadingHistory, error: historyError } =
     useAccountBalanceHistory(accountId);
   const { data: currencies } = useCurrencies();
   const { data: baseCurrency } = useBaseCurrency();
@@ -143,6 +144,12 @@ export function AccountDetail({ accountId }: { accountId: string }) {
                 <TableRow>
                   <TableCell colSpan={5} className="h-32 text-center text-muted-foreground">
                     Cargando...
+                  </TableCell>
+                </TableRow>
+              ) : !history && historyError ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="h-32 text-center text-destructive text-sm">
+                    {errorMessage(historyError)}
                   </TableCell>
                 </TableRow>
               ) : (history?.length ?? 0) === 0 ? (

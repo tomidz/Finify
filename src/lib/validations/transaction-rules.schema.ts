@@ -39,11 +39,14 @@ const RuleFieldsSchema = z.object({
     .nullable()
     .optional()
     .transform((v) => v || null),
-  priority: z.number().int().min(0).optional().default(0),
-  is_active: z.boolean().optional().default(true),
+  priority: z.number().int().min(0).optional(),
+  is_active: z.boolean().optional(),
 });
 
-export const CreateTransactionRuleSchema = RuleFieldsSchema.refine(
+export const CreateTransactionRuleSchema = RuleFieldsSchema.extend({
+  priority: z.number().int().min(0).optional().default(0),
+  is_active: z.boolean().optional().default(true),
+}).refine(
   (data) =>
     data.action_category_id != null ||
     data.action_account_id != null ||
@@ -54,6 +57,8 @@ export const CreateTransactionRuleSchema = RuleFieldsSchema.refine(
   },
 );
 
+// From the fields without defaults: a field the update leaves out keeps its
+// value instead of going back to the default.
 export const UpdateTransactionRuleSchema = RuleFieldsSchema.partial().extend({
   id: z.string().uuid(),
 });

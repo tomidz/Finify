@@ -1,5 +1,11 @@
 import { fetchArsPerUsd, fetchArsPerUsdOn } from "@/lib/dolarapi";
 import { today } from "@/lib/dates";
+import { fetchJson, providerFailure } from "@/lib/providers/fetch-json";
+
+const FRANKFURTER = "https://api.frankfurter.dev/v1";
+
+const pairQuery = (from: string, to: string) =>
+  `base=${encodeURIComponent(from)}&symbols=${encodeURIComponent(to)}`;
 
 /**
  * Fetch an exchange rate. Frankfurter (ECB, fiat) covers most pairs; ARS is
@@ -33,28 +39,18 @@ export async function fetchFrankfurterSeries(
   start: string,
   end: string,
 ): Promise<Map<string, number> | null> {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-    try {
-      const res = await fetch(
-        `https://api.frankfurter.dev/v1/${start}..${end}?base=${encodeURIComponent(from)}&symbols=${encodeURIComponent(to)}`,
-        { signal: controller.signal },
-      );
-      if (!res.ok) return null;
-      const data: { rates?: Record<string, Record<string, number>> } = await res.json();
-      const series = new Map<string, number>();
-      for (const [date, rates] of Object.entries(data.rates ?? {})) {
-        const rate = rates[to];
-        if (rate != null && rate > 0) series.set(date, rate);
-      }
-      return series;
-    } finally {
-      clearTimeout(timeout);
-    }
-  } catch {
-    return null;
+  const result = await fetchJson<{ rates?: Record<string, Record<string, number> | null> } | null>(
+    "frankfurter.series",
+    `${FRANKFURTER}/${start}..${end}?${pairQuery(from, to)}`,
+    { timeoutMs: 15_000 },
+  );
+  if (!result.ok) return null;
+  const series = new Map<string, number>();
+  for (const [date, rates] of Object.entries(result.data?.rates ?? {})) {
+    const rate = rates?.[to];
+    if (rate != null && rate > 0) series.set(date, rate);
   }
+  return series;
 }
 
 async function fetchFrankfurter(
@@ -62,25 +58,14 @@ async function fetchFrankfurter(
   to: string,
   date?: string
 ): Promise<number | null> {
-  try {
-    const endpoint = date ?? "latest";
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    try {
-      const res = await fetch(
-        `https://api.frankfurter.dev/v1/${endpoint}?base=${encodeURIComponent(from)}&symbols=${encodeURIComponent(to)}`,
-        { signal: controller.signal }
-      );
-      if (!res.ok) return null;
-
-      const data: { rates: Record<string, number> } = await res.json();
-      return data.rates[to] ?? null;
-    } finally {
-      clearTimeout(timeout);
-    }
-  } catch {
-    return null;
-  }
+  const result = await fetchJson<{ rates?: Record<string, number> } | null>(
+    "frankfurter.rate",
+    `${FRANKFURTER}/${date ?? "latest"}?${pairQuery(from, to)}`,
+  );
+  if (!result.ok) return null;
+  const rate = result.data?.rates?.[to] ?? null;
+  if (rate == null) providerFailure("frankfurter.rate", "not_found");
+  return rate;
 }
 
 /**

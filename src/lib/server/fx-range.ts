@@ -3,6 +3,7 @@ import "server-only";
 import { forEachLimited } from "@/lib/concurrency";
 import { fetchArsPerUsdHistory } from "@/lib/dolarapi";
 import { fetchFrankfurterSeries } from "@/lib/frankfurter";
+import { logError } from "@/lib/log";
 import { getFxQuote } from "@/lib/server/fx";
 import { readAllRows } from "@/lib/server/paginate";
 import type { createClient } from "@/lib/supabase/server";
@@ -73,7 +74,7 @@ export async function resolveFxRates(
     const { error } = await supabase
       .from("fx_rates")
       .upsert(rows, { onConflict: "rate_date,from_currency,to_currency,source", ignoreDuplicates: true });
-    if (error) console.error("resolveFxRates: could not cache a rate series:", error.code);
+    if (error) logError("resolveFxRates", error, { step: "cache write" });
   };
 
   const sourceFor = (from: string) =>
@@ -95,7 +96,8 @@ export async function resolveFxRates(
       .range(from, last),
   );
   if ("error" in read) {
-    console.error("resolveFxRates: cache read failed, falling back to per-pair lookups:", read.error.code);
+    // Per-pair lookups below still answer, only slower.
+    logError("resolveFxRates", read.error, { step: "cache read" });
   } else {
     for (const row of read.data) {
       // Only rows from the source getFxQuote would use.

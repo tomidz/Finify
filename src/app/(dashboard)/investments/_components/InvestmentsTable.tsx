@@ -47,6 +47,7 @@ import { ACCOUNT_TYPE_LABELS } from "@/types/accounts";
 
 import { formatAmount, amountTone, formatDayMonth } from "@/lib/format";
 import { today } from "@/lib/dates";
+import { errorMessage } from "@/lib/action-result";
 import { isCashLike, lotValueInBase, priceRequestFor, type PriceRequest } from "@/lib/asset-classes";
 import {
   ASSET_TYPE_LABELS,
@@ -64,7 +65,11 @@ import { SwapInvestmentDialog } from "./SwapInvestmentDialog";
 export function InvestmentsTable() {
   const { data: investments, isLoading, isError, error, refetch } = useInvestments();
   const deleteMutation = useDeleteInvestment();
-  const { data: baseCurrency } = useBaseCurrency();
+  const {
+    data: baseCurrency,
+    error: baseCurrencyError,
+    refetch: refetchBaseCurrency,
+  } = useBaseCurrency();
   const { data: currencies } = useCurrencies();
   const { data: accountNetWorth } = useAccountNetWorth(new Date().getFullYear());
 
@@ -105,7 +110,7 @@ export function InvestmentsTable() {
     data: priceData,
     refresh: refetchPrices,
     isFetching: fetchingPrices,
-  } = useCurrentPrices(tickersForPricing, baseCurrency ?? "USD");
+  } = useCurrentPrices(tickersForPricing, baseCurrency ?? "");
 
   // Aggregate into holdings
   const holdings = useMemo<HoldingPosition[]>(() => {
@@ -365,12 +370,22 @@ export function InvestmentsTable() {
     );
   }
 
-  if (isError && error) {
+  // Holdings are valued in the base currency: without it no total is right.
+  const loadError = (isError && error) || (!baseCurrency && baseCurrencyError);
+  if (loadError) {
     return (
       <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-center">
         <p className="text-destructive font-medium">Error al cargar inversiones</p>
-        <p className="text-muted-foreground mt-1 text-sm">{error.message}</p>
-        <Button variant="outline" size="sm" className="mt-3" onClick={() => refetch()}>
+        <p className="text-muted-foreground mt-1 text-sm">{errorMessage(loadError)}</p>
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-3"
+          onClick={() => {
+            void refetch();
+            if (baseCurrencyError) void refetchBaseCurrency();
+          }}
+        >
           Reintentar
         </Button>
       </div>

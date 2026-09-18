@@ -30,6 +30,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useUserPreferences, useUpdateUserPreferences } from "@/hooks/useUserPreferences";
 import { useCurrencies } from "@/hooks/useAccounts";
+import { errorMessage } from "@/lib/action-result";
 import { LedgerDiagnosticsSection } from "./_components/LedgerDiagnosticsSection";
 import { TransactionRulesSection } from "./_components/TransactionRulesSection";
 
@@ -40,7 +41,7 @@ const SettingsFormSchema = z.object({
 type SettingsFormValues = z.infer<typeof SettingsFormSchema>;
 
 export default function SettingsPage() {
-  const { data: prefs, isLoading } = useUserPreferences();
+  const { data: prefs, isLoading, error: prefsError } = useUserPreferences();
   const { data: currencies } = useCurrencies();
   const updatePrefs = useUpdateUserPreferences();
 
@@ -93,46 +94,51 @@ export default function SettingsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <FormField
-                control={form.control}
-                name="base_currency"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Moneda</FormLabel>
-                    <FormControl>
-                      <Select
-                        value={field.value}
-                        onValueChange={field.onChange}
-                        disabled={updatePrefs.isPending || prefs?.base_currency_locked}
-                      >
-                        <SelectTrigger className="w-48">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {(currencies ?? [])
-                            .filter((c) => c.currency_type === "fiat")
-                            .map((c) => (
-                            <SelectItem key={c.code} value={c.code}>
-                              {c.code} ({c.symbol})
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </FormControl>
-                    {prefs?.base_currency_locked && (
-                      <p className="text-muted-foreground text-xs">
-                        No se puede cambiar: tus cuentas y presupuestos ya
-                        guardan montos en esta moneda.
-                      </p>
-                    )}
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              {/* Without the stored preference the form would show, and save, its default. */}
+              {!prefs ? (
+                <p className="text-destructive text-sm">{errorMessage(prefsError)}</p>
+              ) : (
+                <FormField
+                  control={form.control}
+                  name="base_currency"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Moneda</FormLabel>
+                      <FormControl>
+                        <Select
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          disabled={updatePrefs.isPending || prefs?.base_currency_locked}
+                        >
+                          <SelectTrigger className="w-48">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(currencies ?? [])
+                              .filter((c) => c.currency_type === "fiat")
+                              .map((c) => (
+                              <SelectItem key={c.code} value={c.code}>
+                                {c.code} ({c.symbol})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </FormControl>
+                      {prefs?.base_currency_locked && (
+                        <p className="text-muted-foreground text-xs">
+                          No se puede cambiar: tus cuentas y presupuestos ya
+                          guardan montos en esta moneda.
+                        </p>
+                      )}
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
             </CardContent>
           </Card>
 
-          <Button type="submit" disabled={updatePrefs.isPending}>
+          <Button type="submit" disabled={updatePrefs.isPending || !prefs}>
             {updatePrefs.isPending ? "Guardando..." : "Guardar preferencias"}
           </Button>
         </form>

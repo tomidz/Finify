@@ -14,6 +14,7 @@ import {
 } from "@/actions/months";
 import { invalidateLedger } from "@/lib/query-keys";
 import { toast } from "sonner";
+import { errorMessage, unwrapResult } from "@/lib/action-result";
 
 export const MONTH_KEYS = {
   all: ["months"] as const,
@@ -22,11 +23,7 @@ export const MONTH_KEYS = {
 export function useMonths() {
   return useQuery({
     queryKey: MONTH_KEYS.all,
-    queryFn: async () => {
-      const result = await getMonths();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getMonths()),
     staleTime: 10 * 60_000,
   });
 }
@@ -34,11 +31,7 @@ export function useMonths() {
 export function useSuspenseMonths() {
   return useSuspenseQuery({
     queryKey: MONTH_KEYS.all,
-    queryFn: async () => {
-      const result = await getMonths();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getMonths()),
     staleTime: 10 * 60_000,
   });
 }
@@ -46,42 +39,30 @@ export function useSuspenseMonths() {
 export function useEnsureCurrentMonth() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async () => {
-      const result = await getOrCreateCurrentMonth();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async () => unwrapResult(await getOrCreateCurrentMonth()),
     onSuccess: () => {
       invalidateLedger(queryClient);
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error) => toast.error(errorMessage(error)),
   });
 }
 
 export function useCreateNextMonth() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async () => {
-      const result = await createNextMonthFromLatest();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async () => unwrapResult(await createNextMonthFromLatest()),
     onSuccess: () => {
       invalidateLedger(queryClient);
       toast.success("Mes creado y saldos arrastrados correctamente");
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error) => toast.error(errorMessage(error)),
   });
 }
 
 export function usePreviewNextMonth() {
   return useMutation({
-    mutationFn: async () => {
-      const result = await previewNextMonthFromLatest();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
-    onError: (error: Error) => toast.error(error.message),
+    mutationFn: async () => unwrapResult(await previewNextMonthFromLatest()),
+    onError: (error) => toast.error(errorMessage(error)),
   });
 }
 

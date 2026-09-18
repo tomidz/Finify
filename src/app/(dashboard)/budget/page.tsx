@@ -26,6 +26,8 @@ import { useBaseCurrency, useTransactions } from "@/hooks/useTransactions";
 import { netInvestmentContributions } from "@/lib/investment-contributions";
 import { useCurrencies } from "@/hooks/useAccounts";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { errorMessage } from "@/lib/action-result";
 import { BUDGET_CATEGORY_LABELS, type BudgetCategory } from "@/types/budget";
 import type { BudgetLineWithPlan } from "@/types/budget";
 import {
@@ -125,18 +127,23 @@ export default function BudgetPage() {
 
   const handleCreateNextBudget = async () => {
     if (!selectedMonthId) return;
-    const categories = queryClient.getQueryData<BudgetCategory[]>(BUDGET_KEYS.categories) ?? [];
-    const lines =
-      queryClient.getQueryData<BudgetLineWithPlan[]>(
-        BUDGET_KEYS.lines(selectedMonthId),
-      ) ?? [];
+    const categories = queryClient.getQueryData<BudgetCategory[]>(BUDGET_KEYS.categories);
+    const lines = queryClient.getQueryData<BudgetLineWithPlan[]>(
+      BUDGET_KEYS.lines(selectedMonthId),
+    );
     const summary = queryClient.getQueryData<{
       categories: Array<{ category_id: string; planned_amount: number }>;
     }>(BUDGET_KEYS.summary(selectedMonthId));
+    // Without this month's plan every amount would be copied as 0, and without
+    // its categories the next month's plan would be emptied.
+    if (!categories || !lines || !summary) {
+      toast.error("Todavía no se cargó el presupuesto de este mes.");
+      return;
+    }
 
     const lineByCategoryId = new Map(lines.map((line) => [line.category_id, line]));
     const summaryByCategoryId = new Map(
-      (summary?.categories ?? []).map((category) => [
+      summary.categories.map((category) => [
         category.category_id,
         category.planned_amount,
       ]),
@@ -270,9 +277,9 @@ function BudgetMonthContent({
   onSetEditingCategoryIds: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   onEnsureLineForCategory: (category: BudgetCategory) => Promise<BudgetLineWithPlan | { id: string }>;
 }) {
-  const { data: categories, isLoading: categoriesLoading } = useBudgetCategories();
-  const { data: lines, isLoading: linesLoading } = useBudgetLines(selectedMonthId);
-  const { data: summary, isLoading: summaryLoading } = useBudgetSummary(selectedMonthId);
+  const { data: categories, isLoading: categoriesLoading, error: categoriesError } = useBudgetCategories();
+  const { data: lines, isLoading: linesLoading, error: linesError } = useBudgetLines(selectedMonthId);
+  const { data: summary, isLoading: summaryLoading, error: summaryError } = useBudgetSummary(selectedMonthId);
   const safeCategories = useMemo(() => categories ?? [], [categories]);
   const safeLines = useMemo(() => lines ?? [], [lines]);
   const summaryCategories = useMemo(() => summary?.categories ?? [], [summary]);
@@ -359,7 +366,7 @@ function BudgetMonthContent({
   }, [categoryRows, onSetDrafts]);
 
   // Cash actually put into investments this month (purchases minus sales).
-  const { data: monthTransactions } = useTransactions(selectedMonthId);
+  const { data: monthTransactions, error: transactionsError } = useTransactions(selectedMonthId);
   const monthInvestmentTotal = useMemo(
     () => netInvestmentContributions(monthTransactions ?? []),
     [monthTransactions],
@@ -385,7 +392,24 @@ function BudgetMonthContent({
     return { ...totals, investments, leftover };
   }, [categoryRows, monthInvestmentTotal]);
 
+  // Invested this month and the leftover come from the month's transactions:
+  // until they load (or when they fail) those two show "—", not 0.
+  const investedKnown = monthTransactions != null;
+  const money = (known: boolean, amount: number) => (known ? `${currencySymbol} ${formatAmount(amount)}` : "—");
+
   if (categoriesLoading || linesLoading || summaryLoading || !categories || !lines || !summary) {
+    const loadError =
+      (!categories && categoriesError) ||
+      (!lines && linesError) ||
+      (!summary && summaryError);
+    if (loadError) {
+      return (
+        <div className="rounded-md border border-destructive/40 p-4 text-sm">
+          <p className="font-medium">No se pudo cargar el presupuesto.</p>
+          <p className="text-muted-foreground text-xs">{errorMessage(loadError)}</p>
+        </div>
+      );
+    }
     return <BudgetContentFallback />;
   }
 
@@ -426,8 +450,11 @@ function BudgetMonthContent({
         <Card className="gap-0 py-0">
           <CardHeader className="px-4 pt-4 pb-1"><CardDescription>Inversiones</CardDescription></CardHeader>
           <CardContent className="px-4 pb-4">
-            <p className={`text-2xl font-semibold ${groupedTotals.investments.actual > 0 ? "text-emerald-600" : "text-muted-foreground"}`}>{currencySymbol} {formatAmount(groupedTotals.investments.actual)}</p>
+            <p className={`text-2xl font-semibold ${investedKnown && groupedTotals.investments.actual > 0 ? "text-emerald-600" : "text-muted-foreground"}`}>{money(investedKnown, groupedTotals.investments.actual)}</p>
             <p className="text-muted-foreground text-xs">Plan: {currencySymbol} {formatAmount(groupedTotals.investments.planned)}</p>
+            {!transactionsError ? null : (
+              <p className="text-destructive text-xs">{errorMessage(transactionsError)}</p>
+            )}
           </CardContent>
         </Card>
         <Card className="gap-0 py-0">
@@ -441,7 +468,7 @@ function BudgetMonthContent({
               </p>
             )}
             <p className="text-muted-foreground text-xs">
-              Sobrante del mes: {currencySymbol} {formatAmount(groupedTotals.leftover)}
+              Sobrante del mes: {money(investedKnown, groupedTotals.leftover)}
             </p>
           </CardContent>
         </Card>
@@ -457,9 +484,12 @@ function BudgetMonthContent({
             {rowsByType.map((group) => {
               // Investments execute from the investments module; every other
               // group (savings included) executes from its own categories.
-              const effectiveActual = group.type === "investments" ? monthInvestmentTotal
+              const isInvestments = group.type === "investments";
+              const effectiveActual = isInvestments ? monthInvestmentTotal
                 : group.actualTotal;
               const groupExecution = budgetExecution(BUDGET_GROUP_OF[group.type], group.plannedTotal, effectiveActual);
+              const actualKnown = !isInvestments || investedKnown;
+              const groupTone = actualKnown ? BUDGET_STATUS_TONE[groupExecution.status] : "text-muted-foreground";
               return (
                 <div key={group.type} className="overflow-hidden rounded-md border bg-card">
                   <div className={`px-3 py-2 text-xs font-semibold ${CATEGORY_HEADER_STYLES[group.type] ?? "bg-muted text-foreground"}`}>{group.label}</div>
@@ -523,11 +553,11 @@ function BudgetMonthContent({
                     <div className="grid grid-cols-[1fr_auto_auto] gap-2 text-xs font-medium">
                       <span>Total</span>
                       <span className="w-32 text-right">{currencySymbol} {formatAmount(group.plannedTotal)}</span>
-                      <span className={`w-24 text-right ${BUDGET_STATUS_TONE[groupExecution.status]}`}>{currencySymbol} {formatAmount(effectiveActual)}</span>
+                      <span className={`w-24 text-right ${groupTone}`}>{money(actualKnown, effectiveActual)}</span>
                     </div>
                     <div className="mt-1 flex items-center justify-end text-xs">
-                      <span className={BUDGET_STATUS_TONE[groupExecution.status]}>
-                        {groupExecution.percent != null ? `${groupExecution.percent.toFixed(0)}%` : "sin plan"}
+                      <span className={groupTone}>
+                        {!actualKnown ? "—" : groupExecution.percent != null ? `${groupExecution.percent.toFixed(0)}%` : "sin plan"}
                       </span>
                     </div>
                   </div>

@@ -27,6 +27,7 @@ import {
 } from "@/hooks/useRecurring";
 import { formatAmount } from "@/lib/format";
 import { RECURRENCE_LABELS, type RecurringWithRelations } from "@/types/recurring";
+import { errorMessage } from "@/lib/action-result";
 import { RecurringDialog } from "./RecurringDialog";
 
 export function RecurringTable() {
@@ -70,13 +71,14 @@ export function RecurringTable() {
     );
   }
 
-  if (isError && error) {
+  // A failed refresh keeps what is on screen (QueryProvider says it failed).
+  if (isError && error && !recurrings) {
     return (
       <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-center">
         <p className="text-destructive font-medium">
           Error al cargar las transacciones recurrentes
         </p>
-        <p className="text-muted-foreground mt-1 text-sm">{error.message}</p>
+        <p className="text-muted-foreground mt-1 text-sm">{errorMessage(error)}</p>
         <Button
           variant="outline"
           size="sm"

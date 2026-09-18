@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-query";
 
 import { getDashboardData, getNetWorthData } from "@/actions/screens";
+import { unwrapResult } from "@/lib/action-result";
 
 export const SCREEN_KEYS = {
   dashboard: (startMonthId: string | null, endMonthId: string | null) =>
@@ -41,11 +42,7 @@ export function useDashboardData(
 ) {
   const query = useQuery({
     queryKey: SCREEN_KEYS.dashboard(startMonthId, endMonthId),
-    queryFn: async () => {
-      const result = await getDashboardData({ startMonthId, endMonthId });
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getDashboardData({ startMonthId, endMonthId })),
     placeholderData: keepPreviousData,
   });
   useSeedSharedLookups(query.data);
@@ -55,11 +52,7 @@ export function useDashboardData(
 export function useNetWorthData(year: number | null) {
   const query = useQuery({
     queryKey: SCREEN_KEYS.netWorth(year),
-    queryFn: async () => {
-      const result = await getNetWorthData({ year });
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getNetWorthData({ year })),
     placeholderData: keepPreviousData,
   });
   useSeedSharedLookups(query.data);

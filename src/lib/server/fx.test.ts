@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { argsOf, fakeSupabase, type RecordedQuery } from "../../../tests/support/fake-supabase";
 
 const fetchExchangeRate = vi.fn();
-let responder: (query: RecordedQuery) => { data: unknown; error: null };
+let responder: (query: RecordedQuery) => { data: unknown; error: { code: string; message?: string } | null };
 let queries: RecordedQuery[] = [];
 
 vi.mock("react", () => ({ cache: <T>(fn: T) => fn }));
@@ -45,6 +45,7 @@ describe("getFxQuote", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-16T12:00:00Z"));
     fetchExchangeRate.mockReset();
+    vi.spyOn(console, "error").mockImplementation(() => {});
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -113,6 +114,16 @@ describe("getFxQuote", () => {
     cache([{ rate_date: "2026-09-08", rate: 1.1 }]);
     const euro = await getFxQuote({ date: "2026-09-16", from: "EUR", to: "USD" });
     expect(euro).toEqual({ error: "No hay cotización de EUR a USD para el 2026-09-16" });
+  });
+
+  it("reports a failed cache read in Spanish, without asking the provider", async () => {
+    queries = [];
+    responder = () => ({ data: null, error: { code: "XX000", message: "could not read block 42 of relation fx_rates" } });
+
+    const result = await getFxQuote({ date: "2026-09-02", from: "EUR", to: "USD" });
+
+    expect(result).toEqual({ error: "Error al obtener tipo de cambio" });
+    expect(fetchExchangeRate).not.toHaveBeenCalled();
   });
 
   it("converts a currency to itself at 1 without asking anything", async () => {

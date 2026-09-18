@@ -18,6 +18,7 @@ import { MONTH_NAMES, formatAmount, amountTone, formatDayMonth } from "@/lib/for
 import { today } from "@/lib/dates";
 import { buildNetWorthView } from "@/lib/finance/net-worth-view";
 import type { NetWorthData } from "@/actions/screens";
+import { errorMessage } from "@/lib/action-result";
 import { NetWorthEvolutionChart } from "./_components/NetWorthEvolutionChart";
 
 export default function NetWorthPage() {
@@ -46,7 +47,7 @@ export default function NetWorthPage() {
     return (
       <div className="rounded-md border border-destructive/40 p-4 text-sm">
         <p className="font-medium">No se pudo cargar el patrimonio.</p>
-        <p className="text-muted-foreground text-xs">{error?.message}</p>
+        <p className="text-muted-foreground text-xs">{errorMessage(error)}</p>
       </div>
     );
   }

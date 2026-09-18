@@ -49,6 +49,17 @@ describe("recordDebtPayment", () => {
     expect(args.p_header).toMatchObject({ transaction_type: "expense", date: "2026-03-10", category_id: CATEGORY_ID });
   });
 
+  it("records nothing when the base currency cannot be read", async () => {
+    const stored = store("EUR", "ARS");
+    respond = (query) =>
+      query.table === "user_preferences" ? { data: null, error: { code: "57014", message: "timeout" } } : stored(query);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await recordDebtPayment(payment);
+    log.mockRestore();
+    expect(result).toEqual({ error: expect.any(String) });
+    expect(fake.queries.some((q) => q.table === "rpc:record_debt_payment")).toBe(false);
+  });
+
   it("records nothing when a rate is missing", async () => {
     respond = store("BRL", "ARS");
     const result = await recordDebtPayment(payment);

@@ -21,15 +21,12 @@ import type { CreateAccountInput, UpdateAccountInput } from "@/lib/validations/a
 import type { Account } from "@/types/accounts";
 import { invalidateLedger } from "@/lib/query-keys";
 import { toast } from "sonner";
+import { errorMessage, unwrapResult } from "@/lib/action-result";
 
 export function useAccounts() {
   return useQuery({
     queryKey: ["accounts"],
-    queryFn: async () => {
-      const result = await getAccounts();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getAccounts()),
     staleTime: 5 * 60_000,
   });
 }
@@ -37,11 +34,7 @@ export function useAccounts() {
 export function useSuspenseAccounts() {
   return useSuspenseQuery({
     queryKey: ["accounts"],
-    queryFn: async () => {
-      const result = await getAccounts();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getAccounts()),
     staleTime: 5 * 60_000,
   });
 }
@@ -49,11 +42,7 @@ export function useSuspenseAccounts() {
 export function useCurrencies() {
   return useQuery({
     queryKey: ["currencies"],
-    queryFn: async () => {
-      const result = await getCurrencies();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getCurrencies()),
     staleTime: Infinity,
   });
 }
@@ -61,11 +50,7 @@ export function useCurrencies() {
 export function useSuspenseCurrencies() {
   return useSuspenseQuery({
     queryKey: ["currencies"],
-    queryFn: async () => {
-      const result = await getCurrencies();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getCurrencies()),
     staleTime: Infinity,
   });
 }
@@ -73,11 +58,7 @@ export function useSuspenseCurrencies() {
 export function useCreateAccount() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: CreateAccountInput) => {
-      const result = await createAccount(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: CreateAccountInput) => unwrapResult(await createAccount(input)),
     onMutate: async (newAccount) => {
       await queryClient.cancelQueries({ queryKey: ["accounts"] });
       const previous = queryClient.getQueryData<Account[]>(["accounts"]);
@@ -97,11 +78,11 @@ export function useCreateAccount() {
       ]);
       return { previous };
     },
-    onError: (_err, _input, context) => {
+    onError: (err, _input, context) => {
       if (context?.previous) {
         queryClient.setQueryData(["accounts"], context.previous);
       }
-      toast.error(_err.message);
+      toast.error(errorMessage(err));
     },
     onSuccess: () => {
       toast.success("Cuenta creada correctamente");
@@ -115,11 +96,7 @@ export function useCreateAccount() {
 export function useUpdateAccount() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: UpdateAccountInput) => {
-      const result = await updateAccount(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: UpdateAccountInput) => unwrapResult(await updateAccount(input)),
     onMutate: async (updatedAccount) => {
       await queryClient.cancelQueries({ queryKey: ["accounts"] });
       const previous = queryClient.getQueryData<Account[]>(["accounts"]);
@@ -132,11 +109,11 @@ export function useUpdateAccount() {
       );
       return { previous };
     },
-    onError: (_err, _input, context) => {
+    onError: (err, _input, context) => {
       if (context?.previous) {
         queryClient.setQueryData(["accounts"], context.previous);
       }
-      toast.error(_err.message);
+      toast.error(errorMessage(err));
     },
     onSuccess: () => {
       toast.success("Cuenta actualizada correctamente");
@@ -153,9 +130,7 @@ export function useAccountInitialBalance(accountId: string | undefined) {
     enabled: !!accountId,
     queryFn: async () => {
       if (!accountId) return null;
-      const result = await getAccountInitialBalance(accountId);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
+      return unwrapResult(await getAccountInitialBalance(accountId));
     },
     staleTime: 10 * 60_000,
   });
@@ -167,9 +142,7 @@ export function useAccountCurrentBalance(accountId: string | undefined) {
     enabled: !!accountId,
     queryFn: async () => {
       if (!accountId) return null;
-      const result = await getAccountCurrentAmount(accountId);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
+      return unwrapResult(await getAccountCurrentAmount(accountId));
     },
     staleTime: 60_000,
   });
@@ -181,9 +154,7 @@ export function useAccountById(accountId: string | undefined) {
     enabled: !!accountId,
     queryFn: async () => {
       if (!accountId) return null;
-      const result = await getAccountById(accountId);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
+      return unwrapResult(await getAccountById(accountId));
     },
     staleTime: 5 * 60_000,
   });
@@ -195,9 +166,7 @@ export function useAccountBalanceHistory(accountId: string | undefined) {
     enabled: !!accountId,
     queryFn: async () => {
       if (!accountId) return [];
-      const result = await getAccountBalanceHistory(accountId);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
+      return unwrapResult(await getAccountBalanceHistory(accountId));
     },
     staleTime: 2 * 60_000,
   });
@@ -206,11 +175,7 @@ export function useAccountBalanceHistory(accountId: string | undefined) {
 export function useDeleteAccount() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      const result = await deleteAccount(id);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (id: string) => unwrapResult(await deleteAccount(id)),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ["accounts"] });
       const previous = queryClient.getQueryData<Account[]>(["accounts"]);
@@ -219,11 +184,11 @@ export function useDeleteAccount() {
       );
       return { previous };
     },
-    onError: (_err, _id, context) => {
+    onError: (err, _id, context) => {
       if (context?.previous) {
         queryClient.setQueryData(["accounts"], context.previous);
       }
-      toast.error(_err.message);
+      toast.error(errorMessage(err));
     },
     onSuccess: () => {
       toast.success("Cuenta eliminada correctamente");

@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { ActionResult } from "@/lib/action-result";
 import { addDays, currentYearMonth, today } from "@/lib/dates";
 import {
   categoryKeyOf,
@@ -10,8 +11,10 @@ import {
 import { computePeriodSummary } from "@/lib/finance/period-summary";
 import { projectCashflow, type CashflowInput } from "@/lib/finance/project-cashflow";
 import { MONTH_NAMES } from "@/lib/format";
+import { logError } from "@/lib/log";
 import { defaultMonth, toYearMonthCode } from "@/lib/months";
 import type { ServerContext } from "@/lib/server/context";
+import { dbError } from "@/lib/server/db-errors";
 import { resolveFxRates } from "@/lib/server/fx-range";
 import { loadMonths } from "@/lib/server/months";
 import { loadOpeningBalances } from "@/lib/server/opening-balances";
@@ -19,8 +22,6 @@ import { loadRecurringOccurrences } from "@/lib/server/recurring-calendar";
 import { loadTransactionsForMonths } from "@/lib/server/transactions";
 import type { ForecastPoint } from "@/types/forecast";
 import type { Month } from "@/types/months";
-
-type Result<T> = { data: T } | { error: string };
 
 /** Closed months whose median stands in for a category with no recurring or plan. */
 const HISTORY_MONTHS = 6;
@@ -39,7 +40,7 @@ export async function loadForecast(
   monthsAhead: number = 6,
   /** The user's months, when the caller already has them. */
   loadedMonths?: Month[],
-): Promise<Result<ForecastPoint[]>> {
+): Promise<ActionResult<ForecastPoint[]>> {
   try {
     const months = loadedMonths ? { data: loadedMonths } : await loadMonths(ctx);
     if ("error" in months) return months;
@@ -78,8 +79,8 @@ export async function loadForecast(
     if ("error" in transactions) return transactions;
     if ("error" in openings) return openings;
     if ("error" in calendar) return calendar;
-    if (plans.error) return { error: plans.error.message };
-    if (categories.error) return { error: categories.error.message };
+    if (plans.error) return dbError("loadForecast", plans.error, "Error al obtener el presupuesto");
+    if (categories.error) return dbError("loadForecast", categories.error, "Error al obtener las categorías");
 
     const keyOf = categoryKeyOf(new Map((categories.data ?? []).map((c) => [c.id, c.category_type as string])));
 
@@ -213,7 +214,7 @@ export async function loadForecast(
       ],
     };
   } catch (e) {
-    console.error("loadForecast:", e);
+    logError("loadForecast", e);
     return { error: "Error al generar el forecast" };
   }
 }

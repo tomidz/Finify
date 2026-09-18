@@ -28,6 +28,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useLedgerDrift, useRecalculateAllOpeningBalances } from "@/hooks/useDiagnostics";
+import { errorMessage } from "@/lib/action-result";
 import { MONTH_NAMES } from "@/lib/format";
 
 const preciseAmount = new Intl.NumberFormat("es-AR", { maximumFractionDigits: 8 });
@@ -50,7 +51,7 @@ export function LedgerDiagnosticsSection() {
         {isPending ? (
           <Skeleton className="h-16 w-full" />
         ) : error ? (
-          <p className="text-destructive text-sm">{error.message}</p>
+          <p className="text-destructive text-sm">{errorMessage(error)}</p>
         ) : drift.length === 0 ? (
           <p className="text-muted-foreground text-sm">Sin diferencias.</p>
         ) : (

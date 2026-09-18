@@ -1,6 +1,8 @@
 import "server-only";
 
+import type { ActionResult } from "@/lib/action-result";
 import type { ServerContext } from "@/lib/server/context";
+import { dbError } from "@/lib/server/db-errors";
 import { resolveFxRates } from "@/lib/server/fx-range";
 import { chunk, IN_LIST_CHUNK, readAllRows } from "@/lib/server/paginate";
 import type {
@@ -8,7 +10,6 @@ import type {
   TransactionWithRelations,
 } from "@/types/transactions";
 
-type Result<T> = { data: T } | { error: string };
 
 const TRANSACTION_WITH_LEGS = `
   *,
@@ -99,7 +100,7 @@ export async function loadTransactionsForMonths(
   ctx: ServerContext,
   monthIds: string[],
   baseCurrency: string,
-): Promise<Result<TransactionWithRelations[]>> {
+): Promise<ActionResult<TransactionWithRelations[]>> {
   if (monthIds.length === 0) return { data: [] };
 
   // Every page of every chunk of months; id breaks ties so pages never
@@ -121,7 +122,9 @@ export async function loadTransactionsForMonths(
     ),
   );
   const failed = reads.find((read) => "error" in read);
-  if (failed && "error" in failed) return { error: failed.error.message };
+  if (failed && "error" in failed) {
+    return dbError("loadTransactionsForMonths", failed.error, "Error al obtener transacciones");
+  }
 
   const rows = reads
     .flatMap((read) => ("data" in read ? read.data : []))

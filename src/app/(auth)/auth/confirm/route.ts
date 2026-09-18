@@ -1,3 +1,5 @@
+import { authErrorMessage } from "@/lib/auth-errors";
+import { logError } from "@/lib/log";
 import { safeRedirectPath } from "@/lib/safe-redirect";
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
@@ -25,7 +27,7 @@ export async function GET(request: NextRequest) {
     if (!error) {
       redirect(next);
     }
-    redirect(`/auth/error?error=${encodeURIComponent(error.message)}`);
+    redirectToError(error);
   }
 
   // Fallback: email OTP with token_hash
@@ -34,8 +36,14 @@ export async function GET(request: NextRequest) {
     if (!error) {
       redirect(next);
     }
-    redirect(`/auth/error?error=${encodeURIComponent(error.message)}`);
+    redirectToError(error);
   }
 
   redirect("/auth/error?error=Token+inválido");
+}
+
+function redirectToError(error: { code?: string }): never {
+  logError("authConfirm", error);
+  const message = authErrorMessage(error, "No se pudo confirmar el link. Pedí uno nuevo.");
+  redirect(`/auth/error?error=${encodeURIComponent(message)}`);
 }

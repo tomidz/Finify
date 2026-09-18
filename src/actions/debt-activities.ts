@@ -6,17 +6,12 @@ import {
   RecordDebtAdjustmentSchema,
 } from "@/lib/validations/debt-activity.schema";
 import { getOrFetchFxRate } from "@/lib/server/fx";
+import { loadBaseCurrency } from "@/lib/server/context";
 import { ledgerRpcError } from "@/lib/server/ledger-rpc";
 import type { DebtActivity } from "@/types/net-worth";
-
-async function resolveBaseCurrency(supabase: Awaited<ReturnType<typeof createClient>>, userId: string): Promise<string> {
-  const { data } = await supabase
-    .from("user_preferences")
-    .select("base_currency")
-    .eq("user_id", userId)
-    .maybeSingle();
-  return data?.base_currency ?? "USD";
-}
+import type { ActionResult } from "@/lib/action-result";
+import { logError } from "@/lib/log";
+import { dbError } from "@/lib/server/db-errors";
 
 async function fxRate(from: string, to: string, date: string): Promise<number | null> {
   if (from === to) return 1;
@@ -24,8 +19,6 @@ async function fxRate(from: string, to: string, date: string): Promise<number | 
   if ("error" in fx) return null;
   return fx.data;
 }
-
-type ActionResult<T> = { data: T } | { error: string };
 
 async function getUserId() {
   const supabase = await createClient();
@@ -77,7 +70,9 @@ export async function recordDebtPayment(
       .single();
     if (accError || !account) return { error: "Cuenta no encontrada" };
 
-    const baseCurrency = await resolveBaseCurrency(supabase, userId);
+    const baseCurrencyResult = await loadBaseCurrency({ supabase, userId });
+    if ("error" in baseCurrencyResult) return baseCurrencyResult;
+    const baseCurrency = baseCurrencyResult.data;
     const accountCurrency = account.currency as string;
     const liabilityCurrency = nwItem.currency as string;
 
@@ -122,7 +117,7 @@ export async function recordDebtPayment(
 
     return { data: { id: data } };
   } catch (e) {
-    console.error("recordDebtPayment:", e);
+    logError("recordDebtPayment", e);
     return { error: "Error al registrar el pago" };
   }
 }
@@ -160,7 +155,9 @@ export async function recordDebtAdjustment(
 
     if (nwError || !nwItem) return { error: "Deuda no encontrada" };
 
-    const baseCurrency = await resolveBaseCurrency(supabase, userId);
+    const baseCurrencyResult = await loadBaseCurrency({ supabase, userId });
+    if ("error" in baseCurrencyResult) return baseCurrencyResult;
+    const baseCurrency = baseCurrencyResult.data;
     // For adjustments/interest, `amount` is already in the liability currency.
     const debtRate = await fxRate(nwItem.currency as string, baseCurrency, date);
     if (debtRate == null) {
@@ -183,7 +180,7 @@ export async function recordDebtAdjustment(
 
     return { data: { id: data } };
   } catch (e) {
-    console.error("recordDebtAdjustment:", e);
+    logError("recordDebtAdjustment", e);
     return { error: "Error al registrar el ajuste" };
   }
 }
@@ -208,7 +205,7 @@ export async function reverseDebtActivity(
     }
     return { data: null };
   } catch (e) {
-    console.error("reverseDebtActivity:", e);
+    logError("reverseDebtActivity", e);
     return { error: "Error al revertir el movimiento" };
   }
 }
@@ -243,7 +240,7 @@ export async function getDebtActivities(
       .order("date", { ascending: false })
       .order("created_at", { ascending: false });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getDebtActivities", error, "Error al obtener historial");
 
     const mapped: DebtActivity[] = (activities ?? []).map((a) => ({
       id: a.id,
@@ -259,7 +256,7 @@ export async function getDebtActivities(
 
     return { data: mapped };
   } catch (e) {
-    console.error("getDebtActivities:", e);
+    logError("getDebtActivities", e);
     return { error: "Error al obtener historial" };
   }
 }

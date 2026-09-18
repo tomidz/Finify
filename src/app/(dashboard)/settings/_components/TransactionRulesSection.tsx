@@ -154,7 +154,8 @@ function RuleDialog({
       action_account_id: values.action_account_id || null,
       action_rename: values.action_rename.trim() || null,
       priority: parseInt(values.priority, 10) || 0,
-      is_active: true,
+      // Editing an inactive rule keeps it inactive.
+      is_active: rule?.is_active ?? true,
     };
 
     try {
@@ -413,7 +414,8 @@ export function TransactionRulesSection() {
     return <Skeleton className="h-64 w-full" />;
   }
 
-  if (isError) {
+  // A failed refresh keeps what is on screen (QueryProvider says it failed).
+  if (isError && !rules) {
     return (
       <Card>
         <CardContent className="py-8 text-center">

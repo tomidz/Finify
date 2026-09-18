@@ -25,8 +25,9 @@ import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
 import { loadMonthsInRange } from "@/lib/server/months";
 import { loadTransactionsForMonths } from "@/lib/server/transactions";
 import { ledgerRpcError } from "@/lib/server/ledger-rpc";
-
-type ActionResult<T> = { data: T } | { error: string };
+import { dbError } from "@/lib/server/db-errors";
+import { logError } from "@/lib/log";
+import type { ActionResult } from "@/lib/action-result";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -170,7 +171,7 @@ export async function getBaseCurrency(): Promise<ActionResult<string>> {
     if (!ctx) return { error: "No autenticado" };
     return await loadBaseCurrency(ctx);
   } catch (e) {
-    console.error("getBaseCurrency:", e);
+    logError("getBaseCurrency", e);
     return { error: "Error al obtener la moneda base" };
   }
 }
@@ -190,7 +191,7 @@ export async function getUsageCounts(): Promise<
     const categoryCounts: Record<string, number> = {};
 
     const { data, error } = await supabase.rpc("usage_counts");
-    if (error) return { error: error.message };
+    if (error) return dbError("getUsageCounts", error, "Error al obtener conteos de uso");
 
     for (const row of (data ?? []) as Array<{
       entity_type: string;
@@ -208,7 +209,8 @@ export async function getUsageCounts(): Promise<
     }
 
     return { data: { accountCounts, categoryCounts } };
-  } catch {
+  } catch (e) {
+    logError("getUsageCounts", e);
     return { error: "Error al obtener conteos de uso" };
   }
 }
@@ -224,7 +226,7 @@ export async function getTransactions(
     if ("error" in baseCurrency) return baseCurrency;
     return await loadTransactionsForMonths(ctx, [monthId], baseCurrency.data);
   } catch (e) {
-    console.error("getTransactions:", e);
+    logError("getTransactions", e);
     return { error: "Error al obtener las transacciones" };
   }
 }
@@ -253,7 +255,7 @@ export async function getTransactionsPage(
       p_category_type: input.category_type ?? undefined,
     });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getTransactionsPage", error, "Error al obtener las transacciones");
 
     const items = mapTransactionRows((data ?? []) as Array<Record<string, unknown>>);
 
@@ -264,7 +266,7 @@ export async function getTransactionsPage(
       },
     };
   } catch (e) {
-    console.error("getTransactionsPage:", e);
+    logError("getTransactionsPage", e);
     return { error: "Error al obtener las transacciones" };
   }
 }
@@ -288,7 +290,7 @@ export async function getTransactionsForRange(
       baseCurrency.data,
     );
   } catch (e) {
-    console.error("getTransactionsForRange:", e);
+    logError("getTransactionsForRange", e);
     return { error: "Error al obtener las transacciones" };
   }
 }
@@ -331,7 +333,7 @@ export async function createTransaction(
       })),
     );
   } catch (e) {
-    console.error("createTransaction:", e);
+    logError("createTransaction", e);
     return { error: "Error al crear la transacción" };
   }
 }
@@ -362,10 +364,14 @@ export async function createTransfer(
         .eq("id", id)
         .eq("user_id", user.id)
         .maybeSingle();
-    const [{ data: sourceAccount }, { data: destAccount }] = await Promise.all([
+    const [source, destination] = await Promise.all([
       accountById(parsed.data.source_account_id),
       accountById(parsed.data.destination_account_id),
     ]);
+    const lookupError = source.error ?? destination.error;
+    if (lookupError) return dbError("createTransfer", lookupError, "No se pudieron leer las cuentas");
+    const sourceAccount = source.data;
+    const destAccount = destination.data;
 
     if (!sourceAccount) return { error: "Cuenta origen no encontrada" };
 
@@ -395,7 +401,7 @@ export async function createTransfer(
       transferLinesResult.data,
     );
   } catch (e) {
-    console.error("createTransfer:", e);
+    logError("createTransfer", e);
     return { error: "Error al crear la transferencia" };
   }
 }
@@ -497,7 +503,7 @@ export async function updateTransaction(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    const [{ data: existing }, { data: currentLines, error: linesError }] =
+    const [{ data: existing, error: existingError }, { data: currentLines, error: linesError }] =
       await Promise.all([
         supabase
           .from("transactions")
@@ -512,8 +518,9 @@ export async function updateTransaction(
           .eq("transaction_id", id),
       ]);
 
+    const readError = existingError ?? linesError;
+    if (readError) return dbError("updateTransaction", readError, "No se pudo leer la transacción");
     if (!existing) return { error: "Transacción no encontrada" };
-    if (linesError) return { error: linesError.message };
 
     // The function replaces the whole transaction: omitted fields keep their
     // stored value, and so do the legs when no amount is sent.
@@ -549,12 +556,15 @@ export async function updateTransaction(
         return { error: "Cuenta origen o destino no encontrada" };
       }
 
-      const { data: transferAccounts } = await supabase
+      const { data: transferAccounts, error: accountsError } = await supabase
         .from("accounts")
         .select("id, currency")
         .in("id", [sourceAccountId, destinationAccountId])
         .eq("user_id", user.id)
         .returns<{ id: string; currency: string }[]>();
+      if (accountsError) {
+        return dbError("updateTransaction", accountsError, "No se pudieron leer las cuentas");
+      }
 
       const sourceAccount = transferAccounts?.find(
         (account) => account.id === sourceAccountId,
@@ -602,7 +612,7 @@ export async function updateTransaction(
 
     return await saveLedgerTransaction(supabase, header, amountLines ?? storedLines, id);
   } catch (e) {
-    console.error("updateTransaction:", e);
+    logError("updateTransaction", e);
     return { error: "Error al actualizar la transacción" };
   }
 }
@@ -642,7 +652,7 @@ export async function deleteTransaction(
 
     return await setTransactionDeleted(supabase, id, true);
   } catch (e) {
-    console.error("deleteTransaction:", e);
+    logError("deleteTransaction", e);
     return { error: "Error al eliminar la transacción" };
   }
 }
@@ -660,7 +670,7 @@ export async function restoreTransaction(
 
     return await setTransactionDeleted(supabase, id, false);
   } catch (e) {
-    console.error("restoreTransaction:", e);
+    logError("restoreTransaction", e);
     return { error: "Error al restaurar la transacción" };
   }
 }

@@ -44,6 +44,7 @@ import {
 } from "@/hooks/useNetWorth";
 import { formatAmount, MONTH_NAMES } from "@/lib/format";
 import type { NwItemWithRelations } from "@/types/net-worth";
+import { errorMessage } from "@/lib/action-result";
 import { DebtDialog } from "./DebtDialog";
 import { DebtPaymentDialog } from "./DebtPaymentDialog";
 import { DebtAdjustmentDialog } from "./DebtAdjustmentDialog";
@@ -58,7 +59,7 @@ export function DebtsTable() {
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1);
 
-  const { data: liabilities } = useLiabilitiesForMonth(
+  const { data: liabilities, error: liabilitiesError } = useLiabilitiesForMonth(
     selectedYear,
     selectedMonth
   );
@@ -73,6 +74,10 @@ export function DebtsTable() {
     }
     return map;
   }, [liabilities]);
+  // Until the month's amounts load there is no amount, not 0: editing would
+  // save the empty field as the debt's balance.
+  const currentAmountOf = (debtId: string) =>
+    !liabilities ? undefined : (amountByItem.get(debtId) ?? 0);
 
   // Navigation helpers
   const goToPrevMonth = () => {
@@ -123,7 +128,7 @@ export function DebtsTable() {
   const handleEdit = (debt: NwItemWithRelations) => {
     setEditingDebt({
       ...debt,
-      currentAmount: amountByItem.get(debt.id) ?? 0,
+      currentAmount: currentAmountOf(debt.id),
     });
     setDialogOpen(true);
   };
@@ -141,14 +146,14 @@ export function DebtsTable() {
   const handlePayment = (debt: NwItemWithRelations) => {
     setPaymentDebt({
       ...debt,
-      currentAmount: amountByItem.get(debt.id) ?? 0,
+      currentAmount: currentAmountOf(debt.id),
     });
   };
 
   const handleAdjustment = (debt: NwItemWithRelations) => {
     setAdjustmentDebt({
       ...debt,
-      currentAmount: amountByItem.get(debt.id) ?? 0,
+      currentAmount: currentAmountOf(debt.id),
     });
   };
 
@@ -161,13 +166,14 @@ export function DebtsTable() {
     );
   }
 
-  if (isError && error) {
+  // A failed refresh keeps what is on screen (QueryProvider says it failed).
+  if (isError && error && !debts) {
     return (
       <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-center">
         <p className="text-destructive font-medium">
           Error al cargar las deudas
         </p>
-        <p className="text-muted-foreground mt-1 text-sm">{error.message}</p>
+        <p className="text-muted-foreground mt-1 text-sm">{errorMessage(error)}</p>
         <Button
           variant="outline"
           size="sm"
@@ -243,8 +249,9 @@ export function DebtsTable() {
                   </TableCell>
                   <TableCell className="text-right">
                     <span className="text-sm font-medium">
-                      {debt.currency_symbol}{" "}
-                      {formatAmount(amountByItem.get(debt.id) ?? 0)}
+                      {!liabilities
+                        ? "—"
+                        : `${debt.currency_symbol} ${formatAmount(amountByItem.get(debt.id) ?? 0)}`}
                     </span>
                   </TableCell>
                   <TableCell className="text-right">
@@ -272,7 +279,10 @@ export function DebtsTable() {
                             <History className="mr-2 size-4" />
                             Ver historial
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => handleEdit(debt)}>
+                          <DropdownMenuItem
+                            disabled={!liabilities}
+                            onClick={() => handleEdit(debt)}
+                          >
                             <Pencil className="mr-2 size-4" />
                             Editar deuda
                           </DropdownMenuItem>
@@ -293,6 +303,12 @@ export function DebtsTable() {
           </TableBody>
         </Table>
       </div>
+
+      {!liabilities && liabilitiesError && (
+        <p className="text-destructive text-xs">
+          No se pudieron cargar los montos: {errorMessage(liabilitiesError)}
+        </p>
+      )}
 
       <p className="text-muted-foreground text-xs">
         Estás viendo y editando el saldo de deuda al cierre de{" "}

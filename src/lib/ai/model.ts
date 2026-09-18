@@ -46,3 +46,6 @@ export function estimateCostUsd(usage: TurnUsage, model: string = AI_MODEL): num
     1_000_000
   );
 }
+
+/** What the chat shows when an answer fails midway; the stream carries it. */
+export const AICFO_STREAM_FAILURE = "El CFO no pudo terminar la respuesta. Probá de nuevo.";

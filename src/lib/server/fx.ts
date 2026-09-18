@@ -2,11 +2,12 @@ import "server-only";
 
 import { cache } from "react";
 
+import type { ActionResult } from "@/lib/action-result";
 import { createClient } from "@/lib/supabase/server";
 import { fetchExchangeRate } from "@/lib/frankfurter";
 import { addDays, today as appToday } from "@/lib/dates";
-
-type ActionResult<T> = { data: T } | { error: string };
+import { logError } from "@/lib/log";
+import { dbError } from "@/lib/server/db-errors";
 
 interface FxInput {
   date: string; // yyyy-MM-dd
@@ -61,7 +62,7 @@ const resolveQuote = cache(async function resolveQuote(
       .eq("to_currency", to)
       .eq("source", source)
       .maybeSingle();
-    if (error) return { error: error.message };
+    if (error) return dbError("getFxQuote", error, "Error al obtener tipo de cambio");
     if (exact?.rate != null) {
       return { data: { rate: Number(exact.rate), rateDate: quoteDate, source } };
     }
@@ -76,7 +77,7 @@ const resolveQuote = cache(async function resolveQuote(
         source,
       });
       if (insertError && insertError.code !== "23505") {
-        console.error("getOrFetchFxRate: could not cache the rate:", insertError.code);
+        logError("getFxQuote", insertError, { step: "cache write" });
       }
       return { data: { rate: fetched, rateDate: quoteDate, source } };
     }
@@ -94,14 +95,14 @@ const resolveQuote = cache(async function resolveQuote(
       .order("rate_date", { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (recentError) return { error: recentError.message };
+    if (recentError) return dbError("getFxQuote", recentError, "Error al obtener tipo de cambio");
     if (recent?.rate != null) {
       return { data: { rate: Number(recent.rate), rateDate: recent.rate_date, source } };
     }
 
     return { error: `No hay cotización de ${from} a ${to} para el ${quoteDate}` };
   } catch (e) {
-    console.error("getOrFetchFxRate:", e);
+    logError("getFxQuote", e);
     return { error: "Error al obtener tipo de cambio histórico" };
   }
 });

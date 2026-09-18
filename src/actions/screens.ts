@@ -3,6 +3,8 @@
 import { currentYearMonth } from "@/lib/dates";
 import { defaultMonth, toYearMonthCode } from "@/lib/months";
 import { loadBudgetSummaryRange } from "@/lib/server/budget";
+import { ActionError, unwrapResult, type ActionResult } from "@/lib/action-result";
+import { logError } from "@/lib/log";
 import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
 import { loadCurrencies } from "@/lib/server/currencies";
 import { loadForecast } from "@/lib/server/forecast";
@@ -31,20 +33,11 @@ import type {
  * its reads in parallel on the server.
  */
 
-type ActionResult<T> = { data: T } | { error: string };
-
-function unwrap<T>(result: { data: T } | { error: string }): T {
-  if ("error" in result) throw new ScreenReadError(result.error);
-  return result.data;
-}
-
-class ScreenReadError extends Error {}
-
 /** For sections the screen can render without: log and leave them out. */
 function orNull(section: string) {
-  return <T>(result: { data: T } | { error: string }): T | null => {
+  return <T>(result: ActionResult<T>): T | null => {
     if (!("error" in result)) return result.data;
-    console.error(`screens: ${section} failed:`, result.error);
+    logError("screenSection", result.error, { section });
     return null;
   };
 }
@@ -71,9 +64,9 @@ export async function getDashboardData(input: {
     if (!ctx) return { error: "No autenticado" };
 
     const [months, baseCurrency, currencies] = await Promise.all([
-      loadMonths(ctx).then(unwrap),
-      loadBaseCurrency(ctx).then(unwrap),
-      loadCurrencies(ctx.supabase).then(unwrap),
+      loadMonths(ctx).then(unwrapResult),
+      loadBaseCurrency(ctx).then(unwrapResult),
+      loadCurrencies(ctx.supabase).then(unwrapResult),
     ]);
 
     const empty: DashboardData = {
@@ -100,7 +93,7 @@ export async function getDashboardData(input: {
     const isSingleMonth = start.id === end.id;
 
     const [period, budgetSummary, forecast] = await Promise.all([
-      loadPeriodSummary(ctx, { months, start, end, baseCurrency }).then(unwrap),
+      loadPeriodSummary(ctx, { months, start, end, baseCurrency }).then(unwrapResult),
       loadBudgetSummaryRange(ctx, start.id, end.id).then(orNull("budget summary")),
       isSingleMonth
         ? loadForecast(ctx, baseCurrency, 6, months).then(orNull("forecast"))
@@ -118,8 +111,9 @@ export async function getDashboardData(input: {
       },
     };
   } catch (e) {
-    if (e instanceof ScreenReadError) return { error: e.message };
-    console.error("getDashboardData:", e);
+    // A failed read was logged where it failed.
+    if (e instanceof ActionError) return { error: e.message };
+    logError("getDashboardData", e);
     return { error: "Error al cargar el dashboard" };
   }
 }
@@ -143,9 +137,9 @@ export async function getNetWorthData(input: {
     if (!ctx) return { error: "No autenticado" };
 
     const [months, baseCurrency, currencies] = await Promise.all([
-      loadMonths(ctx).then(unwrap),
-      loadBaseCurrency(ctx).then(unwrap),
-      loadCurrencies(ctx.supabase).then(unwrap),
+      loadMonths(ctx).then(unwrapResult),
+      loadBaseCurrency(ctx).then(unwrapResult),
+      loadCurrencies(ctx.supabase).then(unwrapResult),
     ]);
 
     const years = [...new Set(months.map((m) => m.year))].sort((a, b) => b - a);
@@ -170,17 +164,18 @@ export async function getNetWorthData(input: {
     // Every month of the year: the evolution reads each one's close.
     await warmCloseRates(ctx, baseCurrency, { months, year });
     const [accounts, liabilities, evolution] = await Promise.all([
-      loadAccountNetWorth(ctx, year).then(unwrap),
-      loadLiabilitiesForYear(ctx, year).then(unwrap),
-      loadNetWorthEvolution(ctx, year).then(unwrap),
+      loadAccountNetWorth(ctx, year).then(unwrapResult),
+      loadLiabilitiesForYear(ctx, year).then(unwrapResult),
+      loadNetWorthEvolution(ctx, year).then(unwrapResult),
     ]);
 
     return {
       data: { years, year, baseCurrency, currencies, months, accounts, liabilities, evolution },
     };
   } catch (e) {
-    if (e instanceof ScreenReadError) return { error: e.message };
-    console.error("getNetWorthData:", e);
+    // A failed read was logged where it failed.
+    if (e instanceof ActionError) return { error: e.message };
+    logError("getNetWorthData", e);
     return { error: "Error al cargar el patrimonio" };
   }
 }

@@ -40,6 +40,7 @@ import {
   useDeleteInvestmentSale,
 } from "@/hooks/useInvestments";
 import { formatAmount, amountTone } from "@/lib/format";
+import { errorMessage } from "@/lib/action-result";
 import { ASSET_TYPE_LABELS } from "@/types/investments";
 import type { InvestmentSaleWithAccount, AssetType } from "@/types/investments";
 
@@ -118,13 +119,14 @@ export function SalesHistoryTable() {
     );
   }
 
-  if (isError && error) {
+  // A failed refresh keeps what is on screen (QueryProvider says it failed).
+  if (isError && error && !sales) {
     return (
       <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-center">
         <p className="text-destructive font-medium">
           Error al cargar el historial de ventas
         </p>
-        <p className="text-muted-foreground mt-1 text-sm">{error.message}</p>
+        <p className="text-muted-foreground mt-1 text-sm">{errorMessage(error)}</p>
         <Button variant="outline" size="sm" className="mt-3" onClick={() => refetch()}>
           Reintentar
         </Button>

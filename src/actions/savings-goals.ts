@@ -6,8 +6,9 @@ import {
   UpdateSavingsGoalSchema,
 } from "@/lib/validations/savings-goals.schema";
 import type { SavingsGoalWithRelations } from "@/types/savings-goals";
-
-type ActionResult<T> = { data: T } | { error: string };
+import type { ActionResult } from "@/lib/action-result";
+import { logError } from "@/lib/log";
+import { dbError } from "@/lib/server/db-errors";
 
 type GoalOverride = {
   current_amount: number;
@@ -41,14 +42,14 @@ function mapGoal(row: any, override?: GoalOverride): SavingsGoalWithRelations {
 async function getLinkedAccountBalances(
   supabase: Awaited<ReturnType<typeof createClient>>,
   accountIds: string[],
-): Promise<{ data: Map<string, number> } | { error: string }> {
+): Promise<ActionResult<Map<string, number>>> {
   const balances = new Map<string, number>();
   if (accountIds.length === 0) return { data: balances };
 
   const { data, error } = await supabase.rpc("account_balances", {
     p_account_ids: accountIds,
   });
-  if (error) return { error: error.message };
+  if (error) return dbError("getLinkedAccountBalances", error, "Error al obtener los saldos de las cuentas");
   for (const row of data ?? []) balances.set(row.account_id, Number(row.amount));
   return { data: balances };
 }
@@ -78,7 +79,7 @@ export async function getSavingsGoals(): Promise<
       .order("deadline", { ascending: true, nullsFirst: false })
       .order("name", { ascending: true });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getSavingsGoals", error, "Error al obtener las metas de ahorro");
 
     const rows = data ?? [];
 
@@ -126,7 +127,7 @@ export async function getSavingsGoals(): Promise<
 
     return { data: mapped };
   } catch (e) {
-    console.error("getSavingsGoals:", e);
+    logError("getSavingsGoals", e);
     return { error: "Error al obtener las metas de ahorro" };
   }
 }
@@ -144,12 +145,13 @@ async function validateGoalAccount(
   accountId: string,
   goalCurrency: string | undefined,
 ): Promise<string | null> {
-  const { data: account } = await supabase
+  const { data: account, error } = await supabase
     .from("accounts")
     .select("id, currency")
     .eq("id", accountId)
     .eq("user_id", userId)
     .maybeSingle();
+  if (error) return dbError("validateGoalAccount", error, "Error al verificar la cuenta").error;
   if (!account) return "Cuenta no encontrada";
   if (goalCurrency && account.currency !== goalCurrency) {
     return `La cuenta está en ${account.currency} pero la meta en ${goalCurrency}. Usá la misma moneda para vincularlas.`;
@@ -196,11 +198,11 @@ export async function createSavingsGoal(
       )
       .single();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("createSavingsGoal", error, "Error al crear la meta de ahorro");
 
     return { data: mapGoal(data) };
   } catch (e) {
-    console.error("createSavingsGoal:", e);
+    logError("createSavingsGoal", e);
     return { error: "Error al crear la meta de ahorro" };
   }
 }
@@ -228,12 +230,14 @@ export async function updateSavingsGoal(
     if (updates.account_id) {
       let effectiveCurrency = updates.currency;
       if (!effectiveCurrency) {
-        const { data: existingGoal } = await supabase
+        const { data: existingGoal, error: existingError } = await supabase
           .from("savings_goals")
           .select("currency")
           .eq("id", id)
           .eq("user_id", user.id)
           .maybeSingle();
+        // Without the goal's currency the account's could not be checked.
+        if (existingError) return dbError("updateSavingsGoal", existingError, "Error al actualizar la meta de ahorro");
         effectiveCurrency = existingGoal?.currency;
       }
       const accountError = await validateGoalAccount(
@@ -259,11 +263,11 @@ export async function updateSavingsGoal(
       )
       .single();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("updateSavingsGoal", error, "Error al actualizar la meta de ahorro");
 
     return { data: mapGoal(data) };
   } catch (e) {
-    console.error("updateSavingsGoal:", e);
+    logError("updateSavingsGoal", e);
     return { error: "Error al actualizar la meta de ahorro" };
   }
 }
@@ -285,10 +289,10 @@ export async function deleteSavingsGoal(
       .eq("id", id)
       .eq("user_id", user.id);
 
-    if (error) return { error: error.message };
+    if (error) return dbError("deleteSavingsGoal", error, "Error al eliminar la meta de ahorro");
     return { data: null };
   } catch (e) {
-    console.error("deleteSavingsGoal:", e);
+    logError("deleteSavingsGoal", e);
     return { error: "Error al eliminar la meta de ahorro" };
   }
 }

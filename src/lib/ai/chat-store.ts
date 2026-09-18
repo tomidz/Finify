@@ -3,6 +3,7 @@ import "server-only";
 import type { createClient } from "@/lib/supabase/server";
 
 import { AI_MODEL, estimateCostUsd, type TurnUsage } from "@/lib/ai/model";
+import { logError } from "@/lib/log";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -67,7 +68,11 @@ export async function getAiUsageStatus(
       .eq("day", utcDayKey()),
   ]);
 
-  if (hourly.error || daily.error || extensions.error) return null;
+  const readError = hourly.error ?? daily.error ?? extensions.error;
+  if (readError) {
+    logError("getAiUsageStatus", readError);
+    return null;
+  }
 
   const extensionRows = extensions.data ?? [];
   return {
@@ -139,7 +144,10 @@ export async function ensureAiSession(
     { id: sessionId, user_id: userId, title: title.slice(0, 80) },
     { onConflict: "id", ignoreDuplicates: true },
   );
-  if (error) return { error: error.message };
+  if (error) {
+    logError("ensureAiSession", error, { step: "create" });
+    return { error: "No se pudo crear la conversación" };
+  }
   // Also proves the session is the user's: an id taken by someone else
   // updates nothing.
   const { data, error: touchError } = await supabase
@@ -148,7 +156,10 @@ export async function ensureAiSession(
     .eq("id", sessionId)
     .eq("user_id", userId)
     .select("id");
-  if (touchError) return { error: touchError.message };
+  if (touchError) {
+    logError("ensureAiSession", touchError, { step: "touch" });
+    return { error: "No se pudo crear la conversación" };
+  }
   return data && data.length > 0 ? {} : { error: "Conversación no encontrada" };
 }
 
@@ -177,8 +188,8 @@ export async function saveAiMessage(
     { onConflict: "session_id,client_message_id", ignoreDuplicates: true },
   );
   if (error) {
-    console.error("saveAiMessage: insert failed:", error.code, error.message);
-    return { error: error.message };
+    logError("saveAiMessage", error, { role: input.role });
+    return { error: "No se pudo guardar el mensaje" };
   }
   return {};
 }
@@ -210,8 +221,8 @@ export async function logAiUsage(
     if (error?.code === "23503") {
       ({ error } = await supabase.from("ai_usage").insert({ ...row, session_id: null }));
     }
-    if (error) console.error("logAiUsage: insert failed:", error.code, error.message);
+    if (error) logError("logAiUsage", error);
   } catch (e) {
-    console.error("logAiUsage:", e);
+    logError("logAiUsage", e);
   }
 }

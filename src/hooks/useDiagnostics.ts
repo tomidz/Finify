@@ -6,31 +6,24 @@ import { toast } from "sonner";
 import { getLedgerDrift } from "@/actions/diagnostics";
 import { recalculateAllOpeningBalances } from "@/actions/months";
 import { invalidateLedger } from "@/lib/query-keys";
+import { errorMessage, unwrapResult } from "@/lib/action-result";
 
 export function useLedgerDrift() {
   return useQuery({
     queryKey: ["ledger-drift"],
-    queryFn: async () => {
-      const result = await getLedgerDrift();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getLedgerDrift()),
   });
 }
 
 export function useRecalculateAllOpeningBalances() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async () => {
-      const result = await recalculateAllOpeningBalances();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async () => unwrapResult(await recalculateAllOpeningBalances()),
     onSuccess: () => {
       toast.success("Saldos recalculados");
     },
     onError: (error) => {
-      toast.error(error.message);
+      toast.error(errorMessage(error));
     },
     onSettled: () => {
       invalidateLedger(queryClient);

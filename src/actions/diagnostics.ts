@@ -1,8 +1,9 @@
 "use server";
 
 import { getServerContext } from "@/lib/server/context";
-
-type ActionResult<T> = { data: T } | { error: string };
+import { dbError } from "@/lib/server/db-errors";
+import { logError } from "@/lib/log";
+import type { ActionResult } from "@/lib/action-result";
 
 export type LedgerDriftRow = {
   account_id: string;
@@ -24,10 +25,7 @@ export async function getLedgerDrift(): Promise<ActionResult<LedgerDriftRow[]>> 
     if (!ctx) return { error: "No autenticado" };
 
     const { data, error } = await ctx.supabase.rpc("ledger_drift");
-    if (error) {
-      console.error("getLedgerDrift:", error.code, error.message);
-      return { error: "No se pudieron revisar los saldos" };
-    }
+    if (error) return dbError("getLedgerDrift", error, "No se pudieron revisar los saldos");
 
     return {
       data: (data ?? []).map((row) => ({
@@ -43,7 +41,7 @@ export async function getLedgerDrift(): Promise<ActionResult<LedgerDriftRow[]>> 
       })),
     };
   } catch (e) {
-    console.error("getLedgerDrift:", e);
+    logError("getLedgerDrift", e);
     return { error: "No se pudieron revisar los saldos" };
   }
 }

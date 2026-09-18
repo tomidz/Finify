@@ -12,6 +12,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useEnsureCurrentMonth } from "@/hooks/useMonths";
 import { useDashboardData } from "@/hooks/useScreens";
+import { errorMessage } from "@/lib/action-result";
 import { MONTH_NAMES } from "@/lib/format";
 import type { ForecastPoint } from "@/types/forecast";
 import type { Month } from "@/types/months";
@@ -118,7 +119,7 @@ export function DashboardClient() {
       <div className="rounded-md border border-destructive/40 p-4 text-sm">
         <p className="font-medium">No se pudo cargar el dashboard.</p>
         <p className="text-muted-foreground text-xs">
-          {error?.message ?? ensureCurrentMonth.error?.message}
+          {errorMessage(error ?? ensureCurrentMonth.error)}
         </p>
       </div>
     );

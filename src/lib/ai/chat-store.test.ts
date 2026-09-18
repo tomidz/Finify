@@ -45,7 +45,9 @@ describe("logAiUsage", () => {
     const { supabase, queries } = client([{ code: "23514", message: "check" }]);
     await logAiUsage(supabase, usage);
     expect(queries).toHaveLength(1);
-    expect(console.error).toHaveBeenCalledWith("logAiUsage: insert failed:", "23514", "check");
+    expect(console.error).toHaveBeenCalledWith(
+      JSON.stringify({ level: "error", tag: "logAiUsage", code: "23514", message: "check" }),
+    );
   });
 });
 

@@ -3,13 +3,15 @@
 import { createClient } from "@/lib/supabase/server";
 import { z } from "zod";
 
+import { dbError } from "@/lib/server/db-errors";
+import { logError } from "@/lib/log";
+import type { ActionResult } from "@/lib/action-result";
+
 export interface UserPreferences {
   base_currency: string;
   /** Accounts or budgets already hold amounts in the base currency. */
   base_currency_locked: boolean;
 }
-
-type ActionResult<T> = { data: T } | { error: string };
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -31,7 +33,9 @@ async function hasBaseCurrencyData(
     supabase.from("budget_lines").select("id", countOnly).eq("user_id", userId),
   ]);
   const failed = accounts.error ?? budgetLines.error;
-  if (failed) return { error: failed.message };
+  if (failed) {
+    return dbError("hasBaseCurrencyData", failed, "No se pudo verificar si ya hay cuentas o presupuestos");
+  }
   return { data: (accounts.count ?? 0) + (budgetLines.count ?? 0) > 0 };
 }
 
@@ -58,7 +62,7 @@ export async function getUserPreferences(): Promise<
       hasBaseCurrencyData(supabase, user.id),
     ]);
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getUserPreferences", error, "Error al obtener preferencias");
     if ("error" in locked) return locked;
     return {
       data: {
@@ -67,7 +71,7 @@ export async function getUserPreferences(): Promise<
       },
     };
   } catch (e) {
-    console.error("getUserPreferences:", e);
+    logError("getUserPreferences", e);
     return { error: "Error al obtener preferencias" };
   }
 }
@@ -100,7 +104,9 @@ export async function updateUserPreferences(
       .select("base_currency")
       .eq("user_id", user.id)
       .maybeSingle();
-    if (currentError) return { error: currentError.message };
+    if (currentError) {
+      return dbError("updateUserPreferences", currentError, "Error al obtener preferencias");
+    }
     const currentBase = current?.base_currency ?? "USD";
 
     const baseCurrency = parsed.data.base_currency;
@@ -116,7 +122,9 @@ export async function updateUserPreferences(
         .select("currency_type")
         .eq("code", baseCurrency)
         .maybeSingle();
-      if (currencyError) return { error: currencyError.message };
+      if (currencyError) {
+        return dbError("updateUserPreferences", currencyError, "No se pudo verificar la moneda");
+      }
       if (currency?.currency_type !== "fiat") {
         return { error: "La moneda base tiene que ser una moneda fiat." };
       }
@@ -132,7 +140,7 @@ export async function updateUserPreferences(
       .select("base_currency")
       .single();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("updateUserPreferences", error, "Error al actualizar preferencias");
     return {
       data: {
         base_currency: data.base_currency,
@@ -140,7 +148,7 @@ export async function updateUserPreferences(
       },
     };
   } catch (e) {
-    console.error("updateUserPreferences:", e);
+    logError("updateUserPreferences", e);
     return { error: "Error al actualizar preferencias" };
   }
 }

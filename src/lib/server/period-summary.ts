@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { ActionResult } from "@/lib/action-result";
 import { addDays, monthCloseDate, today } from "@/lib/dates";
 import {
   computePeriodSummary,
@@ -14,8 +15,6 @@ import { loadOpeningBalances } from "@/lib/server/opening-balances";
 import { loadTransactionsForMonths } from "@/lib/server/transactions";
 import type { Month } from "@/types/months";
 
-type Result<T> = { data: T } | { error: string };
-
 export type PeriodSummaryData = { summary: PeriodSummary; accountBalances: AccountBalance[] };
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -28,7 +27,7 @@ const pad = (n: number) => String(n).padStart(2, "0");
 export async function loadPeriodSummary(
   ctx: ServerContext,
   input: { months: readonly Month[]; start: Month; end: Month; baseCurrency: string },
-): Promise<Result<PeriodSummaryData>> {
+): Promise<ActionResult<PeriodSummaryData>> {
   const { start, end, baseCurrency } = input;
   const startCode = toYearMonthCode(start.year, start.month);
   const endCode = toYearMonthCode(end.year, end.month);

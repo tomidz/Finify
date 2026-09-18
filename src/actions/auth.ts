@@ -2,8 +2,9 @@
 
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-
-type ActionResult<T> = { data: T } | { error: string };
+import { authErrorMessage } from "@/lib/auth-errors";
+import { logError } from "@/lib/log";
+import type { ActionResult } from "@/lib/action-result";
 
 const LoginInputSchema = z.object({
   email: z.string().email(),
@@ -29,11 +30,13 @@ export async function loginWithPassword(
     });
 
     if (error) {
-      return { error: error.message };
+      logError("loginWithPassword", error);
+      return { error: authErrorMessage(error, "Error al iniciar sesión") };
     }
 
     return { data: null };
-  } catch {
+  } catch (e) {
+    logError("loginWithPassword", e);
     return { error: "Error al iniciar sesión" };
   }
 }

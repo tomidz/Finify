@@ -46,6 +46,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { CreateTransactionSchema } from "@/lib/validations/transaction.schema";
 import { formatNumberInput, parseNumberInput } from "@/lib/utils";
 import { formatAmount } from "@/lib/format";
+import { errorMessage } from "@/lib/action-result";
 import { fetchExchangeRate } from "@/lib/frankfurter";
 import {
   TRANSACTION_TYPE_LABELS,
@@ -108,7 +109,7 @@ export function TransactionDialog({
   const { data: accounts } = useAccounts();
   const { data: currencies } = useCurrencies();
   const { data: categories } = useBudgetCategories();
-  const { data: baseCurrency } = useBaseCurrency();
+  const { data: baseCurrency, error: baseCurrencyError } = useBaseCurrency();
   const createMutation = useCreateTransaction();
   const updateMutation = useUpdateTransaction();
   const matchRules = useMatchRules();
@@ -119,8 +120,13 @@ export function TransactionDialog({
 
   const isPending = createMutation.isPending || updateMutation.isPending;
 
-  // Track which rule auto-categorized
+  // The rule that set the category, and the category it set.
   const appliedRuleRef = useRef<string | null>(null);
+  const ruleCategoryRef = useRef<string | null>(null);
+  // What the user picked by hand: a rule matched later leaves it.
+  const pickedByHandRef = useRef({ account: false, category: false });
+  // The description a rule last wrote: changed after that, it is the user's.
+  const ruleDescriptionRef = useRef<string | null>(null);
 
   const fetchingRateRef = useRef(false);
 
@@ -160,6 +166,10 @@ export function TransactionDialog({
     control: form.control,
     name: "target_balance",
   });
+  const watchCategoryId = useWatch({
+    control: form.control,
+    name: "category_id",
+  });
 
   const selectedAccount = activeAccounts.find((a) => a.id === watchAccountId);
 
@@ -170,15 +180,21 @@ export function TransactionDialog({
 
   // A save refreshes balances in the background: until that lands the cached
   // balance predates it, and a correction computed from it would repeat it.
-  const { data: currentBalance, isFetching: isBalanceLoading } =
-    useAccountCurrentBalance(
-      isBalanceAdjustment ? watchAccountId || undefined : undefined,
-    );
-  const recordedBalance = currentBalance?.amount ?? 0;
+  const {
+    data: currentBalance,
+    isFetching: isBalanceLoading,
+    error: balanceError,
+  } = useAccountCurrentBalance(
+    isBalanceAdjustment ? watchAccountId || undefined : undefined,
+  );
+  // A failed read is no balance, not 0 (the adjustment would be the whole
+  // target) nor the cached one (it can predate a save).
+  const recordedBalance = balanceError ? null : (currentBalance?.amount ?? null);
   const targetBalanceNum = parseNumberInput(watchTargetBalance);
   const adjustment =
     isBalanceAdjustment &&
     !isBalanceLoading &&
+    recordedBalance != null &&
     watchTargetBalance.trim() !== "" &&
     !isNaN(targetBalanceNum)
       ? Math.round((targetBalanceNum - recordedBalance) * 100) / 100
@@ -301,6 +317,10 @@ export function TransactionDialog({
     }
     baseManuallyEdited.current = false;
     createRuleRef.current = false;
+    appliedRuleRef.current = null;
+    ruleCategoryRef.current = null;
+    pickedByHandRef.current = { account: false, category: false };
+    ruleDescriptionRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transaction, open, activeAccounts.length]);
 
@@ -359,30 +379,33 @@ export function TransactionDialog({
     }
   }, [form]);
 
-  const handleDescriptionBlur = useCallback(async () => {
+  // Rules match on the description or the notes: both fields run them on blur.
+  const handleRuleFieldBlur = useCallback(async () => {
     if (isEditing) return;
     const description = form.getValues("description").trim();
     const notes = form.getValues("notes").trim();
-    if (!description) return;
+    if (!description && !notes) return;
 
     try {
       const match = await matchRules.mutateAsync({
         description,
         notes: notes || null,
       });
-      if (match) {
-        if (match.category_id) {
-          form.setValue("category_id", match.category_id);
-        }
-        if (match.account_id) {
-          form.setValue("account_id", match.account_id);
-        }
-        if (match.rename_to) {
-          form.setValue("description", match.rename_to);
-        }
+      if (!match) return;
+      if (match.category_id && !pickedByHandRef.current.category) {
+        form.setValue("category_id", match.category_id);
+        ruleCategoryRef.current = match.category_id;
         appliedRuleRef.current = match.rule_name;
-      } else {
-        appliedRuleRef.current = null;
+      }
+      if (match.account_id && !pickedByHandRef.current.account) {
+        form.setValue("account_id", match.account_id);
+      }
+      const renamedThenEdited =
+        ruleDescriptionRef.current !== null &&
+        form.getValues("description") !== ruleDescriptionRef.current;
+      if (match.rename_to && !renamedThenEdited) {
+        form.setValue("description", match.rename_to);
+        ruleDescriptionRef.current = match.rename_to;
       }
     } catch {
       // Silently ignore rule matching errors
@@ -391,6 +414,17 @@ export function TransactionDialog({
 
   const onSubmit = async (values: TransactionFormValues) => {
     form.clearErrors();
+
+    // Without the base currency no rate is required, and a foreign amount
+    // would be saved 1:1.
+    if (!baseCurrency) {
+      form.setError("exchange_rate", {
+        message: baseCurrencyError
+          ? errorMessage(baseCurrencyError)
+          : "Todavía se está cargando la moneda base.",
+      });
+      return;
+    }
 
     const accountCurrency = accounts?.find((a) => a.id === values.account_id)?.currency;
     const needsRate = accountCurrency != null && baseCurrency != null && accountCurrency !== baseCurrency;
@@ -406,6 +440,10 @@ export function TransactionDialog({
 
     if (isBalanceAdjustment) {
       if (isBalanceLoading) return;
+      if (balanceError) {
+        form.setError("target_balance", { message: errorMessage(balanceError) });
+        return;
+      }
       if (adjustment === null) {
         form.setError("target_balance", {
           message: "Ingresá el saldo actual de la cuenta",
@@ -610,6 +648,7 @@ export function TransactionDialog({
                           field.onChange(val);
                           // Clear category when switching type (selected one may not belong to new type)
                           form.setValue("category_id", "");
+                          pickedByHandRef.current.category = false;
                         }}
                         disabled={isPending || isEditing}
                       >
@@ -646,12 +685,12 @@ export function TransactionDialog({
                     onBlur={(e) => {
                       field.onBlur();
                       if (e.target.value.trim()) {
-                        handleDescriptionBlur();
+                        handleRuleFieldBlur();
                       }
                     }}
                   />
                 </FormControl>
-                {appliedRuleRef.current && !isEditing && (
+                {appliedRuleRef.current && !isEditing && watchCategoryId === ruleCategoryRef.current && (
                   <Badge variant="secondary" className="text-xs gap-1">
                     <Sparkles className="size-3" />
                     Auto-categorizado: {appliedRuleRef.current}
@@ -676,7 +715,10 @@ export function TransactionDialog({
                     <AccountCombobox
                       accounts={sortedAccounts}
                       value={field.value}
-                      onValueChange={field.onChange}
+                      onValueChange={(value) => {
+                        pickedByHandRef.current.account = true;
+                        field.onChange(value);
+                      }}
                       disabled={isPending || isEditing}
                     />
                   </FormControl>
@@ -695,7 +737,11 @@ export function TransactionDialog({
                       <CategoryCombobox
                         categories={filteredCategories}
                         value={field.value}
-                        onValueChange={field.onChange}
+                        onValueChange={(value) => {
+                          // Emptying the field leaves it to the rules again.
+                          pickedByHandRef.current.category = value !== "";
+                          field.onChange(value);
+                        }}
                         grouped
                         disabled={isPending}
                         usageCounts={usageCounts?.categoryCounts}
@@ -782,7 +828,9 @@ export function TransactionDialog({
                   <span className="font-medium">
                     {isBalanceLoading
                       ? "…"
-                      : `${selectedAccount?.currency ?? ""} ${formatAmount(recordedBalance)}`}
+                      : recordedBalance == null
+                        ? "—"
+                        : `${selectedAccount?.currency ?? ""} ${formatAmount(recordedBalance)}`}
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-2">
@@ -892,6 +940,12 @@ export function TransactionDialog({
                     placeholder="Información adicional..."
                     disabled={isPending}
                     {...field}
+                    onBlur={(e) => {
+                      field.onBlur();
+                      if (e.target.value.trim()) {
+                        handleRuleFieldBlur();
+                      }
+                    }}
                   />
                 </FormControl>
                 <FormMessage />

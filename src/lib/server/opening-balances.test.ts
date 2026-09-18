@@ -32,8 +32,10 @@ describe("recalculateOpeningBalances", () => {
     expect(argsOf(fake.queries[0], "rpc")).toEqual([{}]);
   });
 
-  it("reports a failed rebuild", async () => {
-    respond = () => ({ data: null, error: { code: "57014", message: "timeout" } });
-    expect(await recalculateOpeningBalances("month-1")).toEqual({ error: "timeout" });
+  it("reports a failed rebuild in Spanish, never with the database's message", async () => {
+    respond = () => ({ data: null, error: { code: "57014", message: "canceling statement due to statement timeout" } });
+    expect(await recalculateOpeningBalances("month-1")).toEqual({
+      error: "La base de datos tardó demasiado. Probá de nuevo.",
+    });
   });
 });

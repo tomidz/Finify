@@ -1,10 +1,11 @@
 import "server-only";
 
+import type { ActionResult } from "@/lib/action-result";
 import type { ServerContext } from "@/lib/server/context";
+import { dbError } from "@/lib/server/db-errors";
 import type { BudgetSummaryVsActual } from "@/types/budget";
 import { budgetTotalsByGroup } from "@/lib/finance/budget-status";
-
-type Result<T> = { data: T } | { error: string };
+import { logError } from "@/lib/log";
 
 /**
  * Plan vs actual per category across a month range. Callers are responsible
@@ -14,7 +15,7 @@ export async function loadBudgetSummaryRange(
   { supabase }: ServerContext,
   startMonthId: string,
   endMonthId: string,
-): Promise<Result<BudgetSummaryVsActual>> {
+): Promise<ActionResult<BudgetSummaryVsActual>> {
   try {
     const { data, error } = await supabase.rpc(
       "budget_summary_vs_actual_range",
@@ -25,7 +26,7 @@ export async function loadBudgetSummaryRange(
       },
     );
 
-    if (error) return { error: error.message };
+    if (error) return dbError("loadBudgetSummaryRange", error, "Error al obtener resumen plan vs real");
 
     const categorySummary = ((data ?? []) as Array<{
       category_id: string;
@@ -50,7 +51,7 @@ export async function loadBudgetSummaryRange(
       },
     };
   } catch (e) {
-    console.error("loadBudgetSummaryRange:", e);
+    logError("loadBudgetSummaryRange", e);
     return { error: "Error al obtener resumen plan vs real" };
   }
 }

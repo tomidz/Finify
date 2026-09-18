@@ -26,6 +26,8 @@ import {
   type AiSessionSummary,
 } from "@/actions/ai-chat";
 import type { AicfoAgent } from "@/lib/ai/aicfo-agent";
+import { UNEXPECTED_FAILURE, errorMessage } from "@/lib/action-result";
+import { AICFO_STREAM_FAILURE } from "@/lib/ai/model";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -94,7 +96,6 @@ type ParsedChatError = {
 // The transport surfaces the raw response body as error.message, so unwrap the
 // JSON payload instead of showing it verbatim.
 function parseChatError(error: Error): ParsedChatError {
-  const fallback = "Algo salió mal. Probá de nuevo.";
   try {
     const parsed = JSON.parse(error.message) as {
       error?: string;
@@ -102,12 +103,13 @@ function parseChatError(error: Error): ParsedChatError {
       usage?: ApiErrorUsage;
     };
     return {
-      message: parsed.error || fallback,
+      message: parsed.error || UNEXPECTED_FAILURE,
       code: parsed.code,
       usage: parsed.usage,
     };
   } catch {
-    return { message: error.message || fallback };
+    // Not a response body: the stream's own failure, or the transport's.
+    return { message: error.message === AICFO_STREAM_FAILURE ? AICFO_STREAM_FAILURE : errorMessage(error) };
   }
 }
 
@@ -294,6 +296,8 @@ function ChatPanel({
       }
       clearError();
       await regenerate();
+    } catch (e) {
+      setExtendError(errorMessage(e));
     } finally {
       setExtending(false);
     }

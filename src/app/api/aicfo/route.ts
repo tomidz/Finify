@@ -10,6 +10,8 @@ import {
   logAiUsage,
   saveAiMessage,
 } from "@/lib/ai/chat-store";
+import { logError } from "@/lib/log";
+import { AICFO_STREAM_FAILURE } from "@/lib/ai/model";
 import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
 import { loadMonths } from "@/lib/server/months";
 
@@ -94,7 +96,8 @@ export async function POST(req: Request) {
   let body: ChatRequest;
   try {
     body = (await req.json()) as ChatRequest;
-  } catch {
+  } catch (e) {
+    logError("aicfo", e, { step: "parse request" });
     return Response.json({ error: "Pedido inválido" }, { status: 400 });
   }
   if (!body.id || !UUID_RE.test(body.id)) {
@@ -153,11 +156,13 @@ export async function POST(req: Request) {
     .order("created_at", { ascending: true })
     .order("id", { ascending: true });
   if (historyError) {
+    logError("aicfo", historyError, { step: "history" });
     return Response.json({ error: "No se pudo leer la conversación" }, { status: 500 });
   }
   const stored = rows ?? [];
   const at = stored.findIndex((row) => (row.client_message_id ?? row.id) === message.id);
   if (at === -1) {
+    logError("aicfo", "saved message missing from history", { step: "history" });
     return Response.json({ error: "No se pudo leer la conversación" }, { status: 500 });
   }
   // What came after this message is the answer being replaced; a request
@@ -176,6 +181,7 @@ export async function POST(req: Request) {
         later.map((row) => row.id),
       );
     if (deleteError) {
+      logError("aicfo", deleteError, { step: "replace answer" });
       return Response.json({ error: "No se pudo reemplazar la respuesta" }, { status: 500 });
     }
   }
@@ -259,12 +265,12 @@ export async function POST(req: Request) {
       onEnd: ({ responseMessage, isAborted, finishReason }) =>
         endTurn(responseMessage, isAborted, finishReason),
       onError: (error) => {
-        console.error("aicfo:", error);
-        return "El CFO no pudo terminar la respuesta. Probá de nuevo.";
+        logError("aicfo", error, { step: "stream" });
+        return AICFO_STREAM_FAILURE;
       },
     });
   } catch (e) {
-    console.error("aicfo: could not start the turn:", e);
+    logError("aicfo", e, { step: "start turn" });
     return Response.json({ error: "No se pudo leer la conversación" }, { status: 500 });
   }
 }

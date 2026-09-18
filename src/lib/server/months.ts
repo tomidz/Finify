@@ -1,24 +1,24 @@
 import "server-only";
 
+import type { ActionResult } from "@/lib/action-result";
 import { toYearMonthCode } from "@/lib/months";
 import type { ServerContext } from "@/lib/server/context";
+import { dbError } from "@/lib/server/db-errors";
 import type { Month } from "@/types/months";
-
-type Result<T> = { data: T } | { error: string };
 
 /** Months between two month ids (inclusive, chronological), in one query. */
 export async function loadMonthsInRange(
   { supabase, userId }: ServerContext,
   startMonthId: string,
   endMonthId: string,
-): Promise<Result<Month[]>> {
+): Promise<ActionResult<Month[]>> {
   const { data, error } = await supabase
     .from("months")
     .select("*")
     .eq("user_id", userId)
     .order("year", { ascending: true })
     .order("month", { ascending: true });
-  if (error) return { error: error.message };
+  if (error) return dbError("loadMonthsInRange", error, "Error al obtener los meses");
 
   const months = (data ?? []) as Month[];
   const start = months.find((m) => m.id === startMonthId);
@@ -44,13 +44,13 @@ export async function loadMonthsInRange(
 export async function loadMonths({
   supabase,
   userId,
-}: ServerContext): Promise<Result<Month[]>> {
+}: ServerContext): Promise<ActionResult<Month[]>> {
   const { data, error } = await supabase
     .from("months")
     .select("*")
     .eq("user_id", userId)
     .order("year", { ascending: false })
     .order("month", { ascending: false });
-  if (error) return { error: error.message };
+  if (error) return dbError("loadMonths", error, "Error al obtener los meses");
   return { data: (data ?? []) as Month[] };
 }

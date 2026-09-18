@@ -2,13 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { argsOf, fakeSupabase, type RecordedQuery } from "../../../tests/support/fake-supabase";
 
-const fetchCryptoPrices = vi.fn();
+const fetchCryptoPricesWithReasons = vi.fn();
 const getFxQuote = vi.fn();
 const fetchTwelveDataPrices = vi.fn();
 const yahooQuote = vi.fn();
 
 vi.mock("@/lib/coingecko", () => ({
-  fetchCryptoPrices: (...args: unknown[]) => fetchCryptoPrices(...args),
+  fetchCryptoPricesWithReasons: (...args: unknown[]) => fetchCryptoPricesWithReasons(...args),
 }));
 vi.mock("@/lib/twelvedata", () => ({
   fetchTwelveDataPrices: (...args: unknown[]) => fetchTwelveDataPrices(...args),
@@ -17,21 +17,33 @@ vi.mock("@/lib/server/fx", () => ({
   getFxQuote: (...args: unknown[]) => getFxQuote(...args),
 }));
 vi.mock("yahoo-finance2", () => ({
-  default: { quote: (...args: unknown[]) => yahooQuote(...args) },
+  // Constructed like the real client: a static call throws in v3.
+  default: class {
+    quote = (...args: unknown[]) => yahooQuote(...args);
+  },
 }));
 
 const { resolvePricesWithSources } = await import("./prices");
+
+// What the providers answer: prices by key, and why the others have none.
+const quoted = (prices: Record<string, unknown>, failed: Record<string, string> = {}) => ({ prices, failed });
 
 const resolveCurrentPrices = async (...args: Parameters<typeof resolvePricesWithSources>) => {
   const result = await resolvePricesWithSources(...args);
   return "error" in result ? result : { data: result.data.prices };
 };
 
-function context(cachedRows: { price_key: string; price: number; source?: string; fetched_at?: string }[]) {
+function context(
+  cachedRows: { price_key: string; price: number; source?: string; fetched_at?: string }[],
+  failing: { cache?: boolean; manual?: boolean } = {},
+) {
   const filtersSource = (query: RecordedQuery, method: string) =>
     query.calls.some((call) => call.method === method && call.args[0] === "source");
   const fake = fakeSupabase((query: RecordedQuery) => {
     if (argsOf(query, "upsert")) return { data: null, error: null };
+    if ((failing.manual && filtersSource(query, "eq")) || (failing.cache && filtersSource(query, "neq"))) {
+      return { data: null, error: { code: "57014" } };
+    }
     const rows = cachedRows.filter((row) =>
       filtersSource(query, "eq") ? row.source === "manual" : filtersSource(query, "neq") ? row.source !== "manual" : true,
     );
@@ -46,8 +58,9 @@ const upserted = (queries: RecordedQuery[]) =>
 
 describe("resolveCurrentPrices", () => {
   beforeEach(() => {
-    fetchCryptoPrices.mockReset().mockResolvedValue({});
-    fetchTwelveDataPrices.mockReset().mockResolvedValue({});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    fetchCryptoPricesWithReasons.mockReset().mockResolvedValue(quoted({}));
+    fetchTwelveDataPrices.mockReset().mockResolvedValue(quoted({}));
     yahooQuote.mockReset();
     getFxQuote.mockReset().mockImplementation(async ({ from, to }: { from: string; to: string }) =>
       from === "EUR" && to === "USD"
@@ -74,7 +87,7 @@ describe("resolveCurrentPrices", () => {
     );
 
     expect(result).toEqual({ data: { btc: 90_000, aapl: 230 } });
-    expect(fetchCryptoPrices).not.toHaveBeenCalled();
+    expect(fetchCryptoPricesWithReasons).not.toHaveBeenCalled();
     expect(fetchTwelveDataPrices).not.toHaveBeenCalled();
     expect(upserted(queries)).toEqual([]);
     expect(argsOf(queries[0], "eq")).toEqual(["user_id", "user-1"]);
@@ -82,8 +95,8 @@ describe("resolveCurrentPrices", () => {
 
   it("fetches what the cache misses and stores it under the user", async () => {
     const { ctx, queries } = context([]);
-    fetchCryptoPrices.mockResolvedValue({ BTC: 91_000 });
-    fetchTwelveDataPrices.mockResolvedValue({ "market:AAPL|": { price: 231 } });
+    fetchCryptoPricesWithReasons.mockResolvedValue(quoted({ BTC: 91_000 }));
+    fetchTwelveDataPrices.mockResolvedValue(quoted({ "market:AAPL|": { price: 231 } }));
 
     const result = await resolveCurrentPrices(
       [
@@ -95,7 +108,7 @@ describe("resolveCurrentPrices", () => {
     );
 
     expect(result).toEqual({ data: { btc: 91_000, aapl: 231 } });
-    expect(fetchCryptoPrices).toHaveBeenCalledWith(["BTC"], "EUR");
+    expect(fetchCryptoPricesWithReasons).toHaveBeenCalledWith(["BTC"], "EUR");
     expect(upserted(queries)).toEqual([
       expect.objectContaining({ price_key: "crypto:BTC:EUR", price: 91_000, source: "coingecko", user_id: "user-1" }),
       expect.objectContaining({ price_key: "market:AAPL|", price: 231, source: "twelvedata", user_id: "user-1" }),
@@ -105,7 +118,7 @@ describe("resolveCurrentPrices", () => {
   it("falls back to Yahoo for market tickers TwelveData cannot price, and leaves unknown ones unpriced", async () => {
     const { ctx } = context([]);
     yahooQuote.mockImplementation(async (ticker: string) => {
-      if (ticker === "GGAL.BA") return { regularMarketPrice: 5_000 };
+      if (ticker === "GGAL.BA") return { regularMarketPrice: 5_000, currency: "USD" };
       throw new Error("not found");
     });
 
@@ -121,9 +134,23 @@ describe("resolveCurrentPrices", () => {
     expect(result).toEqual({ data: { ggal: 5_000 } });
   });
 
+  it("takes a Yahoo quote in another currency as another company's listing", async () => {
+    const { ctx } = context([]);
+    // AIR is Airbus in Paris and AAR Corp in New York.
+    yahooQuote.mockResolvedValue({ regularMarketPrice: 60, currency: "USD" });
+
+    const result = await resolvePricesWithSources(
+      [{ key: "air", ticker: "AIR", assetType: "stock", currency: "EUR" }],
+      "USD",
+      ctx,
+    );
+
+    expect(result).toEqual({ data: expect.objectContaining({ prices: {}, unpriced: { air: "not_found" } }) });
+  });
+
   it("asks once for requests that look an instrument up the same way", async () => {
     const { ctx, queries } = context([]);
-    fetchTwelveDataPrices.mockResolvedValue({ "market:AAPL|US0378331005": { price: 232 } });
+    fetchTwelveDataPrices.mockResolvedValue(quoted({ "market:AAPL|US0378331005": { price: 232 } }));
 
     const result = await resolveCurrentPrices(
       [
@@ -143,7 +170,7 @@ describe("resolveCurrentPrices", () => {
 
   it("never answers a lookup with the price of another lookup for the same holding", async () => {
     const { ctx } = context([{ price_key: "market:Apple Inc|US0378331005", price: 199 }]);
-    fetchTwelveDataPrices.mockResolvedValue({ "market:|US0378331005": { price: 230 } });
+    fetchTwelveDataPrices.mockResolvedValue(quoted({ "market:|US0378331005": { price: 230 } }));
 
     const result = await resolveCurrentPrices(
       [{ key: "US0378331005", ticker: null, isin: "US0378331005", assetType: "stock" }],
@@ -156,7 +183,7 @@ describe("resolveCurrentPrices", () => {
 
   it("skips the cache on a refresh but still stores what it fetched", async () => {
     const { ctx, queries } = context([{ price_key: "market:AAPL|", price: 230 }]);
-    fetchTwelveDataPrices.mockResolvedValue({ "market:AAPL|": { price: 233 } });
+    fetchTwelveDataPrices.mockResolvedValue(quoted({ "market:AAPL|": { price: 233 } }));
 
     const result = await resolveCurrentPrices(
       [{ key: "aapl", ticker: "AAPL", assetType: "stock" }],
@@ -171,7 +198,7 @@ describe("resolveCurrentPrices", () => {
   });
 
   it("works without a context, skipping the cache", async () => {
-    fetchCryptoPrices.mockResolvedValue({ ETH: 3_000 });
+    fetchCryptoPricesWithReasons.mockResolvedValue(quoted({ ETH: 3_000 }));
     const result = await resolveCurrentPrices(
       [{ key: "eth", ticker: "ETH", assetType: "crypto" }],
       "USD",
@@ -191,7 +218,7 @@ describe("resolveCurrentPrices", () => {
       ctx,
     );
     expect(result).toEqual({ data: { "cash:EUR:USD": 1.1, "cash:USD:USD": 1, "cash:USDT:USD": 1 } });
-    expect(fetchCryptoPrices).not.toHaveBeenCalled();
+    expect(fetchCryptoPricesWithReasons).not.toHaveBeenCalled();
     expect(fetchTwelveDataPrices).not.toHaveBeenCalled();
   });
 
@@ -212,14 +239,14 @@ describe("resolveCurrentPrices", () => {
 
   it("asks about a stock whose ticker is a currency code held in another currency", async () => {
     const { ctx } = context([]);
-    fetchTwelveDataPrices.mockResolvedValue({ "market:NOK|": { price: 4.5 } });
+    fetchTwelveDataPrices.mockResolvedValue(quoted({ "market:NOK|": { price: 4.5 } }));
     const result = await resolveCurrentPrices([{ key: "nok", ticker: "NOK", assetType: "stock", currency: "USD" }], "USD", ctx);
     expect(result).toEqual({ data: { nok: 4.5 } });
   });
 
   it("quotes a stock even when money filed under its ticker is looked up too", async () => {
     const { ctx } = context([]);
-    fetchTwelveDataPrices.mockResolvedValue({ "market:NOK|": { price: 4.5 } });
+    fetchTwelveDataPrices.mockResolvedValue(quoted({ "market:NOK|": { price: 4.5 } }));
     const result = await resolveCurrentPrices(
       [
         { key: "nok-cash", ticker: "NOK", assetType: "other", currency: "NOK" },
@@ -242,6 +269,7 @@ describe("resolveCurrentPrices", () => {
         manualDates: { GGALD: "2026-09-01" },
         ratesToBase: { USD: 1 },
         rateDatesToBase: { USD: expect.any(String) },
+        unpriced: {},
       },
     });
   });
@@ -276,14 +304,14 @@ describe("resolveCurrentPrices", () => {
     const { ctx } = context([
       { price_key: "market:GGALD|", price: 1500, source: "manual", fetched_at: "2026-12-01T12:00:00+00:00" },
     ]);
-    fetchTwelveDataPrices.mockResolvedValue({ "market:GGALD|": { price: 1600 } });
+    fetchTwelveDataPrices.mockResolvedValue(quoted({ "market:GGALD|": { price: 1600 } }));
     const result = await resolveCurrentPrices([{ key: "GGALD", ticker: "GGALD", assetType: "stock" }], "USD", ctx);
     expect(result).toEqual({ data: { GGALD: 1600 } });
   });
 
   it("prices a crypto lot in its own currency and reports each currency's rate to the base", async () => {
     const { ctx } = context([]);
-    fetchCryptoPrices.mockResolvedValue({ BTC: 100_000 });
+    fetchCryptoPricesWithReasons.mockResolvedValue(quoted({ BTC: 100_000 }));
     const result = await resolvePricesWithSources(
       [
         { key: "btc-usd", ticker: "BTC", assetType: "crypto", currency: "USD" },
@@ -298,16 +326,17 @@ describe("resolveCurrentPrices", () => {
         manualDates: {},
         ratesToBase: { USD: 1, EUR: 1.1 },
         rateDatesToBase: { USD: expect.any(String), EUR: "2026-09-14" },
+        unpriced: {},
       },
     });
-    expect(fetchCryptoPrices).toHaveBeenCalledTimes(1);
+    expect(fetchCryptoPricesWithReasons).toHaveBeenCalledTimes(1);
   });
 
   it("prefers a provider quote over a manual price", async () => {
     const { ctx } = context([
       { price_key: "market:GGALD|", price: 1500, source: "manual", fetched_at: "2026-09-01T12:00:00+00:00" },
     ]);
-    fetchTwelveDataPrices.mockResolvedValue({ "market:GGALD|": { price: 1600 } });
+    fetchTwelveDataPrices.mockResolvedValue(quoted({ "market:GGALD|": { price: 1600 } }));
     const result = await resolvePricesWithSources(
       [{ key: "GGALD", ticker: "GGALD", assetType: "stock" }],
       "USD",
@@ -315,7 +344,64 @@ describe("resolveCurrentPrices", () => {
       { fresh: true },
     );
     expect(result).toEqual({
-      data: { prices: { GGALD: 1600 }, manualDates: {}, ratesToBase: { USD: 1 }, rateDatesToBase: { USD: expect.any(String) } },
+      data: {
+        prices: { GGALD: 1600 },
+        manualDates: {},
+        ratesToBase: { USD: 1 },
+        rateDatesToBase: { USD: expect.any(String) },
+        unpriced: {},
+      },
     });
+  });
+
+  it("says why each request went unpriced", async () => {
+    const { ctx } = context([]);
+    fetchCryptoPricesWithReasons.mockResolvedValue(quoted({ BTC: 100_000 }, { DOGE: "rate_limited" }));
+    fetchTwelveDataPrices.mockResolvedValue(quoted({}, { "market:AAPL|": "timeout", "market:NOPE|": "not_found" }));
+    yahooQuote.mockRejectedValue(new Error("not found"));
+
+    const result = await resolvePricesWithSources(
+      [
+        { key: "doge", ticker: "DOGE", assetType: "crypto" },
+        { key: "aapl", ticker: "AAPL", assetType: "stock" },
+        { key: "nope", ticker: "NOPE", assetType: "stock" },
+        { key: "depto", ticker: null, isin: null, name: "Departamento", assetType: "other", currency: "USD" },
+        { key: "btc-gbp", ticker: "BTC", assetType: "crypto", currency: "GBP" },
+        { key: "cash:GBP:USD", ticker: "GBP", assetType: "cash", currency: "USD" },
+      ],
+      "USD",
+      ctx,
+    );
+
+    expect(result).toEqual({
+      data: expect.objectContaining({
+        prices: {},
+        unpriced: {
+          doge: "rate_limited",
+          aapl: "timeout",
+          nope: "not_found",
+          depto: "unquotable",
+          "btc-gbp": "no_rate",
+          "cash:GBP:USD": "no_rate",
+        },
+      }),
+    });
+  });
+
+  it("fails when the manual prices cannot be read, instead of valuing those holdings at cost", async () => {
+    const { ctx } = context([], { manual: true });
+
+    const result = await resolvePricesWithSources([{ key: "GGALD", ticker: "GGALD", assetType: "stock" }], "USD", ctx);
+
+    expect(result).toEqual({ error: "La base de datos tardó demasiado. Probá de nuevo." });
+  });
+
+  it("asks the providers when the price cache cannot be read", async () => {
+    const { ctx } = context([], { cache: true });
+    fetchTwelveDataPrices.mockResolvedValue(quoted({ "market:AAPL|": { price: 231 } }));
+
+    const result = await resolveCurrentPrices([{ key: "aapl", ticker: "AAPL", assetType: "stock" }], "USD", ctx);
+
+    expect(result).toEqual({ data: { aapl: 231 } });
   });
 });

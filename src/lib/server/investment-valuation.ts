@@ -1,10 +1,10 @@
 import "server-only";
 
+import type { ActionResult } from "@/lib/action-result";
 import { lotValueInBase, priceRequestFor, type PriceRequest } from "@/lib/asset-classes";
 import type { ServerContext } from "@/lib/server/context";
+import { dbError } from "@/lib/server/db-errors";
 import { resolvePricesWithSources } from "@/lib/server/prices";
-
-type Result<T> = { data: T } | { error: string };
 
 export type ValuationByAccount = Record<string, { current: number; cost: number }>;
 
@@ -22,14 +22,14 @@ export type InvestmentValuation = {
 export async function loadInvestmentValuation(
   ctx: ServerContext,
   baseCurrency: string,
-): Promise<Result<InvestmentValuation>> {
+): Promise<ActionResult<InvestmentValuation>> {
   const { data, error } = await ctx.supabase
     .from("investments")
     .select("account_id, asset_name, ticker, isin, asset_type, currency, quantity, total_cost")
     .eq("user_id", ctx.userId)
     .order("purchase_date", { ascending: false })
     .order("id", { ascending: true });
-  if (error) return { error: error.message };
+  if (error) return dbError("loadInvestmentValuation", error, "Error al obtener las inversiones");
 
   const lots = (data ?? []).map((row) => ({
     ...row,

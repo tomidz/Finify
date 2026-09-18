@@ -1,13 +1,16 @@
 import "server-only";
 
+import type { ActionResult } from "@/lib/action-result";
 import { toYearMonthCode } from "@/lib/months";
 import { getExpectedDatesInMonth } from "@/lib/recurrence";
 import type { ServerContext } from "@/lib/server/context";
+import { dbError } from "@/lib/server/db-errors";
 import { readAllRows } from "@/lib/server/paginate";
 import type { RecurringWithRelations } from "@/types/recurring";
 
-type Result<T> = { data: T } | { error: string };
 type YearMonth = { year: number; month: number };
+
+const RECURRING_READ_FAILED = "Error al obtener las transacciones recurrentes";
 
 /** Tolerance for matching recurring amounts against existing transactions (15%) */
 const RECURRING_AMOUNT_TOLERANCE = 0.15;
@@ -30,7 +33,7 @@ export async function loadRecurringOccurrences(
   { supabase, userId }: ServerContext,
   from: YearMonth,
   to: YearMonth,
-): Promise<Result<RecurringOccurrence[]>> {
+): Promise<ActionResult<RecurringOccurrence[]>> {
   const { data: recurrings, error: recError } = await supabase
     .from("recurring_transactions")
     .select(
@@ -43,7 +46,7 @@ export async function loadRecurringOccurrences(
     )
     .eq("user_id", userId)
     .eq("is_active", true);
-  if (recError) return { error: recError.message };
+  if (recError) return dbError("loadRecurringOccurrences", recError, RECURRING_READ_FAILED);
   if (!recurrings || recurrings.length === 0) return { data: [] };
 
   const months: YearMonth[] = [];
@@ -72,7 +75,7 @@ export async function loadRecurringOccurrences(
       .order("id", { ascending: true })
       .range(start, end),
   );
-  if ("error" in linkedRead) return { error: linkedRead.error.message };
+  if ("error" in linkedRead) return dbError("loadRecurringOccurrences", linkedRead.error, RECURRING_READ_FAILED);
   const linked = new Set(linkedRead.data.map((tx) => `${tx.recurring_id}:${tx.occurrence_date}`));
 
   // Transactions entered by hand, matched approximately within their month.
@@ -82,7 +85,7 @@ export async function loadRecurringOccurrences(
     .eq("user_id", userId)
     .gte("year", from.year)
     .lte("year", to.year);
-  if (monthsError) return { error: monthsError.message };
+  if (monthsError) return dbError("loadRecurringOccurrences", monthsError, RECURRING_READ_FAILED);
   const codeByMonthId = new Map(
     (monthRows ?? [])
       .map((m) => [m.id, toYearMonthCode(m.year, m.month)] as const)
@@ -104,7 +107,7 @@ export async function loadRecurringOccurrences(
         .order("id", { ascending: true })
         .range(start, end),
     );
-    if ("error" in read) return { error: read.error.message };
+    if ("error" in read) return dbError("loadRecurringOccurrences", read.error, RECURRING_READ_FAILED);
     for (const tx of read.data) {
       const code = codeByMonthId.get(tx.month_id ?? "");
       if (code == null) continue;

@@ -25,6 +25,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useAccounts, useDeleteAccount } from "@/hooks/useAccounts";
 import { ACCOUNT_TYPE_LABELS } from "@/types/accounts";
 import type { Account } from "@/types/accounts";
+import { errorMessage } from "@/lib/action-result";
 import { AccountDialog } from "./AccountDialog";
 
 export function AccountsTable() {
@@ -67,11 +68,12 @@ export function AccountsTable() {
     );
   }
 
-  if (isError && error) {
+  // A failed refresh keeps what is on screen (QueryProvider says it failed).
+  if (isError && error && !accounts) {
     return (
       <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-center">
         <p className="text-destructive font-medium">Error al cargar las cuentas</p>
-        <p className="text-muted-foreground mt-1 text-sm">{error.message}</p>
+        <p className="text-muted-foreground mt-1 text-sm">{errorMessage(error)}</p>
         <Button
           variant="outline"
           size="sm"

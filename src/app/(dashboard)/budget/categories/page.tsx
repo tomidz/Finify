@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useBudgetCategories, useDeleteCategory } from "@/hooks/useBudget";
 import { BUDGET_CATEGORY_LABELS } from "@/types/budget";
 import type { BudgetCategory } from "@/types/budget";
+import { errorMessage } from "@/lib/action-result";
 import { CategoryDialog } from "../_components/CategoryDialog";
 
 export default function BudgetCategoriesPage() {
@@ -51,11 +52,12 @@ export default function BudgetCategoriesPage() {
     );
   }
 
-  if (isError && error) {
+  // A failed refresh keeps what is on screen (QueryProvider says it failed).
+  if (isError && error && !categories) {
     return (
       <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-center">
         <p className="text-destructive font-medium">Error al cargar categorías</p>
-        <p className="text-muted-foreground mt-1 text-sm">{error.message}</p>
+        <p className="text-muted-foreground mt-1 text-sm">{errorMessage(error)}</p>
       </div>
     );
   }

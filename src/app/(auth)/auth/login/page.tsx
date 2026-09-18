@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { Wallet } from "lucide-react";
+import { logError } from "@/lib/log";
 import { createClient } from "@/lib/supabase/server";
 import { LoginForm } from "@/components/auth/login-form";
 import {
@@ -24,7 +25,8 @@ export default async function LoginPage({
   try {
     const { data } = await supabase.auth.getUser();
     hasUser = Boolean(data.user);
-  } catch {
+  } catch (e) {
+    logError("LoginPage", e);
     hasUser = false;
   }
 

@@ -62,6 +62,17 @@ describe("createAccount", () => {
     expect(fake.queries.some((q) => q.table === "opening_balances")).toBe(false);
   });
 
+  it("saves nothing when the base currency cannot be read", async () => {
+    const stored = ledger({});
+    respond = (query) =>
+      query.table === "user_preferences" ? { data: null, error: { code: "57014", message: "timeout" } } : stored(query);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await createAccount({ name: "Banco", account_type: "bank", currency: "ARS", initial_amount: 500 });
+    log.mockRestore();
+    expect(result).toEqual({ error: expect.any(String) });
+    expect(accountWrites("insert")).toHaveLength(0);
+  });
+
   it("reports a failed rebuild after the account is saved", async () => {
     respond = ledger({});
     recalculateOpeningBalances.mockResolvedValue({ error: "timeout" });

@@ -272,6 +272,18 @@ describe("resolveFxRates", () => {
     expect(fxAt("2026-11-01", "EUR")).toBe(1.18);
   });
 
+  it("falls back to per-pair lookups when the cache cannot be read, and logs it", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { client } = fakeSupabase(() => ({ data: null, error: { code: "57014" } }));
+    getFxQuote.mockResolvedValue(quote(1.2, "2026-09-07"));
+
+    const fxAt = await resolveFxRates(asClient(client), [{ date: "2026-09-07", from: "EUR" }], "USD");
+
+    expect(fxAt("2026-09-07", "EUR")).toBe(1.2);
+    expect(JSON.parse(error.mock.calls[0][0] as string)).toMatchObject({ tag: "resolveFxRates", code: "57014" });
+    error.mockRestore();
+  });
+
   it("reads every page of the cache", async () => {
     const page = (size: number): Row[] =>
       Array.from({ length: size }, () => eur("2026-09-07", 1.2));

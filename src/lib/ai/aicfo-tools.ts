@@ -9,6 +9,7 @@ import { getInvestments, getInvestmentSales } from "@/actions/investments";
 import { getPendingRecurring } from "@/actions/recurring";
 import { getSavingsGoals } from "@/actions/savings-goals";
 import { getTransactionsForRange } from "@/actions/transactions";
+import type { ActionResult } from "@/lib/action-result";
 import { today } from "@/lib/dates";
 import { categoryExecution } from "@/lib/finance/budget-status";
 import { buildNetWorthView } from "@/lib/finance/net-worth-view";
@@ -37,8 +38,6 @@ export type AicfoContext = {
   baseCurrency: string;
   months: Month[];
 };
-
-type ActionResult<T> = { data: T } | { error: string };
 
 /** A failed read, in one phrase the agent repeats as it is. */
 export function failed(what: string, error: string) {

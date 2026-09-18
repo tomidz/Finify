@@ -1,15 +1,24 @@
 import "server-only";
 
+import type { ActionResult } from "@/lib/action-result";
 import { cashCurrencyOf, isCashLike, namesMoney, type PriceRequest } from "@/lib/asset-classes";
 import { forEachLimited } from "@/lib/concurrency";
-import { fetchCryptoPrices } from "@/lib/coingecko";
+import { fetchCryptoPricesWithReasons } from "@/lib/coingecko";
 import { today } from "@/lib/dates";
+import { logError } from "@/lib/log";
+import type { ProviderFailure } from "@/lib/providers/fetch-json";
 import type { ServerContext } from "@/lib/server/context";
+import { dbError } from "@/lib/server/db-errors";
 import { getFxQuote } from "@/lib/server/fx";
 import { chunk, IN_LIST_CHUNK } from "@/lib/server/paginate";
 import { fetchTwelveDataPrices } from "@/lib/twelvedata";
 
-type ActionResult<T> = { data: T } | { error: string };
+/**
+ * Why a request has no price: its provider's failure, no provider to ask (no
+ * ticker or ISIN, or a ticker that names money) and no manual price, or no
+ * rate into the request's currency.
+ */
+export type UnpricedReason = ProviderFailure | "unquotable" | "no_rate";
 
 export type ResolvedPrices = {
   /** Keyed by request key, each in the request's currency. */
@@ -20,6 +29,8 @@ export type ResolvedPrices = {
   ratesToBase: Record<string, number>;
   /** The date each of ratesToBase was quoted for. */
   rateDatesToBase: Record<string, string>;
+  /** Request keys left without a price, and why. */
+  unpriced: Record<string, UnpricedReason>;
 };
 
 type PriceSource = "coingecko" | "twelvedata" | "yahoo" | "manual";
@@ -63,14 +74,15 @@ function isQuotable(request: Pick<PriceRequest, "ticker" | "isin" | "assetType" 
 /**
  * Stored prices for `keys`: provider quotes while fresh, or manual prices of
  * any age. A manual price never passes for a fresh quote, whatever its date.
+ * `error` is the first failed chunk's; the others' rows are still returned.
  */
 async function readStoredPrices(
   { supabase, userId }: ServerContext,
   keys: string[],
   source: "provider" | "manual",
-): Promise<Map<string, CachedPrice>> {
+): Promise<{ stored: Map<string, CachedPrice>; error: { code?: string; message?: string } | null }> {
   const stored = new Map<string, CachedPrice>();
-  if (keys.length === 0) return stored;
+  if (keys.length === 0) return { stored, error: null };
   const freshSince = new Date(Date.now() - PRICE_TTL_MS).toISOString();
   const reads = await Promise.all(
     chunk(keys, IN_LIST_CHUNK).map((keysChunk) => {
@@ -84,9 +96,10 @@ async function readStoredPrices(
         : query.neq("source", "manual").gte("fetched_at", freshSince);
     }),
   );
+  let failure: { code?: string; message?: string } | null = null;
   for (const { data, error } of reads) {
     if (error) {
-      console.error("readStoredPrices:", error.code);
+      failure ??= error;
       continue;
     }
     for (const row of data ?? []) {
@@ -97,7 +110,7 @@ async function readStoredPrices(
       });
     }
   }
-  return stored;
+  return { stored, error: failure };
 }
 
 async function writeCachedPrices(
@@ -110,7 +123,7 @@ async function writeCachedPrices(
     rows.map((row) => ({ ...row, user_id: userId, fetched_at: fetchedAt })),
     { onConflict: "user_id,price_key" },
   );
-  if (error) console.error("writeCachedPrices:", error.code);
+  if (error) logError("writeCachedPrices", error);
 }
 
 /**
@@ -119,7 +132,8 @@ async function writeCachedPrices(
  * or older than the TTL; provider calls run in parallel with a small
  * concurrency cap. `fresh` (an explicit refresh) skips the cache read but
  * still stores what it fetches. A lookup no provider answers takes the user's
- * manual price, if there is one.
+ * manual price, if there is one; a request left without a price says why in
+ * `unpriced`.
  */
 export async function resolvePricesWithSources(
   requests: PriceRequest[],
@@ -132,6 +146,7 @@ export async function resolvePricesWithSources(
     const manualDates: Record<string, string> = {};
     const ratesToBase: Record<string, number> = {};
     const rateDatesToBase: Record<string, string> = {};
+    const unpriced: Record<string, UnpricedReason> = {};
 
     const todayStr = today();
     const quotes = new Map<string, Promise<{ rate: number; rateDate: string } | null>>();
@@ -167,6 +182,7 @@ export async function resolvePricesWithSources(
       })!;
       const rate = await fxRate(unit, currencyOf(request));
       if (rate != null) prices[request.key] = rate;
+      else unpriced[request.key] = "no_rate";
     }
 
     const requestsByLookup = new Map<string, PriceRequest[]>();
@@ -179,10 +195,13 @@ export async function resolvePricesWithSources(
 
     const priceByLookup = new Map<string, number>();
     const manualDateByLookup = new Map<string, string>();
+    const failureByLookup = new Map<string, ProviderFailure>();
 
     if (ctx && !options.fresh) {
       const cached = await readStoredPrices(ctx, quotable.map(([lookup]) => lookup), "provider");
-      for (const [lookup, stored] of cached) priceByLookup.set(lookup, stored.price);
+      // An unreadable cache only costs provider calls.
+      if (cached.error) logError("resolvePricesWithSources", cached.error, { step: "cache read" });
+      for (const [lookup, stored] of cached.stored) priceByLookup.set(lookup, stored.price);
     }
 
     const fetched: { price_key: string; price: number; source: PriceSource }[] = [];
@@ -200,13 +219,14 @@ export async function resolvePricesWithSources(
 
     const cryptoTask = async () => {
       if (cryptoMissing.length === 0) return;
-      const cryptoPrices = await fetchCryptoPrices(
+      const crypto = await fetchCryptoPricesWithReasons(
         [...new Set(cryptoMissing.map((m) => cryptoCode(m.request)))],
         baseCurrency,
       );
       for (const { lookup, request } of cryptoMissing) {
-        const price = cryptoPrices[cryptoCode(request)];
+        const price = crypto.prices[cryptoCode(request)];
         if (price != null) remember(lookup, price, "coingecko");
+        else failureByLookup.set(lookup, crypto.failed[cryptoCode(request)] ?? "not_found");
       }
     };
 
@@ -220,8 +240,9 @@ export async function resolvePricesWithSources(
         })),
       );
       for (const { lookup } of marketMissing) {
-        const resolved = twelveDataPrices[lookup];
+        const resolved = twelveDataPrices.prices[lookup];
         if (resolved) remember(lookup, resolved.price, "twelvedata");
+        else failureByLookup.set(lookup, twelveDataPrices.failed[lookup] ?? "not_found");
       }
 
       const unresolved = marketMissing.filter(
@@ -229,52 +250,69 @@ export async function resolvePricesWithSources(
       );
       if (unresolved.length === 0) return;
       try {
-        const yahooFinance = await import("yahoo-finance2");
-        const yf = yahooFinance.default;
+        const { default: YahooFinance } = await import("yahoo-finance2");
+        const yf = new YahooFinance({ suppressNotices: ["yahooSurvey"] });
         await forEachLimited(unresolved, PROVIDER_CONCURRENCY, async ({ lookup, request }) => {
           try {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const quote: any = await yf.quote(request.ticker!);
-            if (quote && typeof quote.regularMarketPrice === "number") {
-              remember(lookup, quote.regularMarketPrice, "yahoo");
+            const price = quote?.regularMarketPrice;
+            // The bare ticker can name another company's listing: a quote in
+            // another currency than the holding's is taken as a miss.
+            if (
+              typeof price === "number" &&
+              Number.isFinite(price) &&
+              price > 0 &&
+              quote.currency === currencyOf(request)
+            ) {
+              remember(lookup, price, "yahoo");
             }
-          } catch {
+          } catch (e) {
             // Unknown ticker: stays unpriced and is valued at cost upstream.
+            logError("resolvePricesWithSources", e, { step: "yahoo quote" });
           }
         });
       } catch (e) {
-        console.error("resolvePricesWithSources: yahoo fallback unavailable:", e);
+        logError("resolvePricesWithSources", e, { step: "yahoo import" });
       }
     };
 
     await Promise.all([cryptoTask(), marketTask()]);
 
     if (ctx) {
-      const unpriced = [...requestsByLookup.keys()].filter((lookup) => !priceByLookup.has(lookup));
-      const manual = await readStoredPrices(ctx, unpriced, "manual");
-      for (const [lookup, stored] of manual) {
+      await writeCachedPrices(ctx, fetched);
+      const withoutPrice = [...requestsByLookup.keys()].filter((lookup) => !priceByLookup.has(lookup));
+      const manual = await readStoredPrices(ctx, withoutPrice, "manual");
+      // Without its manual price a holding would count at cost.
+      if (manual.error) return dbError("resolvePricesWithSources", manual.error, "Error al obtener precios actuales");
+      for (const [lookup, stored] of manual.stored) {
         priceByLookup.set(lookup, stored.price);
         manualDateByLookup.set(lookup, stored.date);
       }
-      await writeCachedPrices(ctx, fetched);
     }
 
     for (const [lookup, lookupRequests] of requestsByLookup) {
       const price = priceByLookup.get(lookup);
-      if (price == null) continue;
       const manualDate = manualDateByLookup.get(lookup);
       for (const request of lookupRequests) {
+        if (price == null) {
+          unpriced[request.key] = isQuotable(request) ? (failureByLookup.get(lookup) ?? "not_found") : "unquotable";
+          continue;
+        }
         // A crypto price is in the base currency; a lot in another currency
         // without a rate stays unpriced rather than mixing currencies.
         const rate = request.assetType === "crypto" ? await fxRate(baseCurrency, currencyOf(request)) : 1;
-        if (rate == null) continue;
+        if (rate == null) {
+          unpriced[request.key] = "no_rate";
+          continue;
+        }
         prices[request.key] = price * rate;
         if (manualDate) manualDates[request.key] = manualDate;
       }
     }
-    return { data: { prices, manualDates, ratesToBase, rateDatesToBase } };
+    return { data: { prices, manualDates, ratesToBase, rateDatesToBase, unpriced } };
   } catch (e) {
-    console.error("resolvePricesWithSources:", e);
+    logError("resolvePricesWithSources", e);
     return { error: "Error al obtener precios actuales" };
   }
 }

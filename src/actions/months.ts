@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { currentYearMonth } from "@/lib/dates";
 import { getOrFetchFxRate } from "@/lib/server/fx";
-import { getServerContext } from "@/lib/server/context";
+import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
 import { loadMonthsInRange } from "@/lib/server/months";
 import {
   RECALCULATION_FAILED,
@@ -14,8 +14,9 @@ import type {
   NextMonthPreview,
   OpeningBalancePreview,
 } from "@/types/months";
-
-type ActionResult<T> = { data: T } | { error: string };
+import type { ActionResult } from "@/lib/action-result";
+import { logError } from "@/lib/log";
+import { dbError } from "@/lib/server/db-errors";
 
 function nextYearMonth(year: number, month: number) {
   if (month === 12) return { year: year + 1, month: 1 };
@@ -42,7 +43,7 @@ async function getLatestMonth(
     .order("month", { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (error) return { error: error.message };
+  if (error) return dbError("getLatestMonth", error, "Error al obtener el último mes");
   return { data: latest ?? null };
 }
 
@@ -59,9 +60,10 @@ export async function getMonths(): Promise<ActionResult<Month[]>> {
       .order("year", { ascending: false })
       .order("month", { ascending: false });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getMonths", error, "Error al obtener meses");
     return { data: (data ?? []) as Month[] };
-  } catch {
+  } catch (e) {
+    logError("getMonths", e);
     return { error: "Error al obtener meses" };
   }
 }
@@ -83,7 +85,8 @@ export async function createNextMonthFromLatest(): Promise<ActionResult<Month>> 
 
     const next = nextYearMonth(latest.year, latest.month);
     return createMonth(next.year, next.month);
-  } catch {
+  } catch (e) {
+    logError("createNextMonthFromLatest", e);
     return { error: "Error al crear el próximo mes" };
   }
 }
@@ -106,12 +109,9 @@ export async function previewNextMonthFromLatest(): Promise<
     const supabase = await createClient();
 
     // Moneda base actual del usuario
-    const { data: prefsRow } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", userId)
-      .maybeSingle();
-    const baseCurrency = prefsRow?.base_currency ?? "USD";
+    const baseCurrencyResult = await loadBaseCurrency({ supabase, userId });
+    if ("error" in baseCurrencyResult) return baseCurrencyResult;
+    const baseCurrency = baseCurrencyResult.data;
 
     const { data: accounts, error: accountsError } = await supabase
       .from("accounts")
@@ -119,7 +119,7 @@ export async function previewNextMonthFromLatest(): Promise<
       .eq("user_id", userId)
       .eq("is_active", true)
       .order("name", { ascending: true });
-    if (accountsError) return { error: accountsError.message };
+    if (accountsError) return dbError("previewNextMonthFromLatest", accountsError, "Error al previsualizar el próximo mes");
 
     const accountIds = (accounts ?? []).map((a) => a.id);
     const openingsByAccount = new Map<
@@ -128,20 +128,23 @@ export async function previewNextMonthFromLatest(): Promise<
     >();
 
     if (latest && accountIds.length > 0) {
-      const { data: previousMonthRow } = await supabase
+      const { data: previousMonthRow, error: previousMonthError } = await supabase
         .from("months")
         .select("id")
         .eq("user_id", userId)
         .eq("year", latest.year)
         .eq("month", latest.month)
         .maybeSingle();
+      if (previousMonthError) {
+        return dbError("previewNextMonthFromLatest", previousMonthError, "Error al previsualizar el próximo mes");
+      }
 
       if (previousMonthRow) {
         const { data: prevOpenings, error: prevOpeningsError } = await supabase
           .from("opening_balances")
           .select("account_id, opening_amount, opening_base_amount")
           .eq("month_id", previousMonthRow.id);
-        if (prevOpeningsError) return { error: prevOpeningsError.message };
+        if (prevOpeningsError) return dbError("previewNextMonthFromLatest", prevOpeningsError, "Error al previsualizar el próximo mes");
 
         for (const row of prevOpenings ?? []) {
           openingsByAccount.set(row.account_id, {
@@ -157,7 +160,7 @@ export async function previewNextMonthFromLatest(): Promise<
           )
           .eq("transactions.month_id", previousMonthRow.id)
           .is("transactions.deleted_at", null);
-        if (prevMovementsError) return { error: prevMovementsError.message };
+        if (prevMovementsError) return dbError("previewNextMonthFromLatest", prevMovementsError, "Error al previsualizar el próximo mes");
 
         for (const row of prevMovements ?? []) {
           const current = openingsByAccount.get(row.account_id) ?? {
@@ -240,7 +243,8 @@ export async function previewNextMonthFromLatest(): Promise<
         balances,
       },
     };
-  } catch {
+  } catch (e) {
+    logError("previewNextMonthFromLatest", e);
     return { error: "Error al previsualizar el próximo mes" };
   }
 }
@@ -263,7 +267,7 @@ export async function createMonth(
       .eq("year", year)
       .eq("month", month)
       .maybeSingle();
-    if (existingError) return { error: existingError.message };
+    if (existingError) return dbError("createMonth", existingError, "Error al crear mes");
 
     let monthRow = existing as Month | null;
 
@@ -274,7 +278,7 @@ export async function createMonth(
         .from("opening_balances")
         .select("id", { count: "exact", head: true })
         .eq("month_id", monthRow.id);
-      if (countError) return { error: countError.message };
+      if (countError) return dbError("createMonth", countError, "Error al crear mes");
       if ((openingCount ?? 0) > 0) return { data: monthRow };
     } else {
       const { data: created, error: createMonthError } = await supabase
@@ -287,17 +291,18 @@ export async function createMonth(
         // unique-constraint race re-reads the winner's row instead of
         // surfacing a raw duplicate-key error.
         if (createMonthError.code === "23505") {
-          const { data: raced } = await supabase
+          const { data: raced, error: racedError } = await supabase
             .from("months")
             .select("*")
             .eq("user_id", userId)
             .eq("year", year)
             .eq("month", month)
             .maybeSingle();
-          if (!raced) return { error: createMonthError.message };
+          if (racedError) return dbError("createMonth", racedError, "Error al crear mes");
+          if (!raced) return dbError("createMonth", createMonthError, "Error al crear mes");
           monthRow = raced as Month;
         } else {
-          return { error: createMonthError.message };
+          return dbError("createMonth", createMonthError, "Error al crear mes");
         }
       } else {
         monthRow = created as Month;
@@ -311,7 +316,7 @@ export async function createMonth(
 
     return { data: monthRow };
   } catch (e) {
-    console.error("createMonth:", e);
+    logError("createMonth", e);
     return { error: "Error al crear mes" };
   }
 }
@@ -323,7 +328,7 @@ export async function recalculateAllOpeningBalances(): Promise<ActionResult<null
     if (!userId) return { error: "No autenticado" };
     return await recalculateOpeningBalances(null);
   } catch (e) {
-    console.error("recalculateAllOpeningBalances:", e);
+    logError("recalculateAllOpeningBalances", e);
     return { error: "Error al recalcular saldos" };
   }
 }
@@ -336,7 +341,8 @@ export async function getMonthsInRange(
     const ctx = await getServerContext();
     if (!ctx) return { error: "No autenticado" };
     return await loadMonthsInRange(ctx, startMonthId, endMonthId);
-  } catch {
+  } catch (e) {
+    logError("getMonthsInRange", e);
     return { error: "Error al obtener meses del rango" };
   }
 }

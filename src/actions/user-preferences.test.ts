@@ -65,6 +65,20 @@ describe("base currency lock", () => {
     expect(upserts()).toHaveLength(0);
   });
 
+  it("hides the database message of a failed read", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const stored = store({ base: "USD", accounts: 0, budgetLines: 0 });
+    respond = (query) =>
+      query.table === "accounts"
+        ? { data: null, error: { code: "XX000", message: "relation accounts: internal error" } }
+        : stored(query);
+    expect(await getUserPreferences()).toEqual({
+      error: "No se pudo verificar si ya hay cuentas o presupuestos",
+    });
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
+  });
+
   it("saves the same base currency with data present", async () => {
     respond = store({ base: "USD", accounts: 3, budgetLines: 0 });
     expect(await updateUserPreferences({ base_currency: "USD" })).toEqual({

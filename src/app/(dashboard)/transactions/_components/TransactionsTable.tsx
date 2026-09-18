@@ -86,6 +86,7 @@ import { TransferDialog } from "./TransferDialog";
 import { parseISO, format } from "date-fns";
 import type { Month, NextMonthPreview } from "@/types/months";
 import { MONTH_NAMES, formatAmount, amountTone } from "@/lib/format";
+import { errorMessage } from "@/lib/action-result";
 import { getPrimaryLine, type AccountBalance } from "@/lib/finance/period-summary";
 import { SummaryCards } from "../../_components/SummaryCards";
 import { currentYearMonth } from "@/lib/dates";
@@ -208,6 +209,7 @@ export function TransactionsTable() {
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
+    isFetchNextPageError,
   } = useInfiniteTransactions(selectedMonthId, {
     search: searchTerm || undefined,
     transaction_type:
@@ -242,7 +244,9 @@ export function TransactionsTable() {
 
   useEffect(() => {
     const target = loadMoreRef.current;
-    if (!target || !hasNextPage) return;
+    // After a failed page only the button asks again: the sentinel is still
+    // in view and would retry without end.
+    if (!target || !hasNextPage || isFetchNextPageError) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -255,7 +259,7 @@ export function TransactionsTable() {
 
     observer.observe(target);
     return () => observer.disconnect();
-  }, [fetchNextPage, hasNextPage, isFetchingNextPage, feedTransactions.length]);
+  }, [fetchNextPage, hasNextPage, isFetchingNextPage, isFetchNextPageError, feedTransactions.length]);
 
   const tableTransactions = useMemo<TableTransaction[]>(() => {
     return feedTransactions.map((transaction) => {
@@ -513,13 +517,14 @@ export function TransactionsTable() {
     );
   }
 
-  if (isError && error) {
+  // A failed refresh keeps what is on screen (QueryProvider says it failed).
+  if (isError && error && !transactionPages) {
     return (
       <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-center">
         <p className="text-destructive font-medium">
           Error al cargar las transacciones
         </p>
-        <p className="text-muted-foreground mt-1 text-sm">{error.message}</p>
+        <p className="text-muted-foreground mt-1 text-sm">{errorMessage(error)}</p>
         <Button
           variant="outline"
           size="sm"
@@ -548,7 +553,7 @@ export function TransactionsTable() {
 
       {periodError && !period ? (
         <p className="text-destructive text-xs">
-          No se pudo calcular el resumen del mes: {periodError.message}
+          No se pudo calcular el resumen del mes: {errorMessage(periodError)}
         </p>
       ) : !period ? (
         <Skeleton className="h-48 w-full" />

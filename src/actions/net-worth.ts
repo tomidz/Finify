@@ -22,8 +22,9 @@ import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
 import { getOrFetchFxRate } from "@/lib/server/fx";
 import { loadMonths } from "@/lib/server/months";
 import { loadAccountNetWorth, warmCloseRates } from "@/lib/server/net-worth";
-
-type ActionResult<T> = { data: T } | { error: string };
+import type { ActionResult } from "@/lib/action-result";
+import { logError } from "@/lib/log";
+import { dbError } from "@/lib/server/db-errors";
 
 async function getUserId() {
   const supabase = await createClient();
@@ -89,7 +90,7 @@ export async function getNwItems(): Promise<
       .order("side", { ascending: true })
       .order("name", { ascending: true });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getNwItems", error, "Error al obtener ítems de patrimonio");
 
     const mapped = (data ?? []).map((row) => {
       const accountRaw = row.accounts;
@@ -112,7 +113,8 @@ export async function getNwItems(): Promise<
     });
 
     return { data: mapped };
-  } catch {
+  } catch (e) {
+    logError("getNwItems", e);
     return { error: "Error al obtener ítems de patrimonio" };
   }
 }
@@ -143,9 +145,10 @@ export async function createNwItem(
       .select()
       .single();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("createNwItem", error, "Error al crear ítem de patrimonio");
     return { data: data as NwItem };
-  } catch {
+  } catch (e) {
+    logError("createNwItem", e);
     return { error: "Error al crear ítem de patrimonio" };
   }
 }
@@ -178,9 +181,10 @@ export async function updateNwItem(
       .select()
       .single();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("updateNwItem", error, "Error al actualizar ítem de patrimonio");
     return { data: data as NwItem };
-  } catch {
+  } catch (e) {
+    logError("updateNwItem", e);
     return { error: "Error al actualizar ítem de patrimonio" };
   }
 }
@@ -197,9 +201,10 @@ export async function deleteNwItem(id: string): Promise<ActionResult<null>> {
       .eq("id", id)
       .eq("user_id", userId);
 
-    if (error) return { error: error.message };
+    if (error) return dbError("deleteNwItem", error, "Error al eliminar ítem de patrimonio");
     return { data: null };
-  } catch {
+  } catch (e) {
+    logError("deleteNwItem", e);
     return { error: "Error al eliminar ítem de patrimonio" };
   }
 }
@@ -226,7 +231,7 @@ export async function getNwSnapshotsForMonth(
       .order("side", { ascending: true })
       .order("name", { ascending: true });
 
-    if (itemsError) return { error: itemsError.message };
+    if (itemsError) return dbError("getNwSnapshotsForMonth", itemsError, "Error al obtener snapshots de patrimonio");
 
     const itemIds = (items ?? []).map((i) => i.id);
     let snapshots: { nw_item_id: string; amount: number; amount_base: number | null }[] = [];
@@ -239,7 +244,7 @@ export async function getNwSnapshotsForMonth(
         .eq("year", year)
         .eq("month", month);
 
-      if (snapError) return { error: snapError.message };
+      if (snapError) return dbError("getNwSnapshotsForMonth", snapError, "Error al obtener snapshots de patrimonio");
       snapshots = (snap ?? []).map((s) => ({
         nw_item_id: s.nw_item_id,
         amount: Number(s.amount),
@@ -252,12 +257,9 @@ export async function getNwSnapshotsForMonth(
     );
 
     // Fetch base currency
-    const { data: userPref } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", userId)
-      .maybeSingle();
-    const baseCurrency = (userPref as { base_currency?: string })?.base_currency ?? "USD";
+    const baseCurrencyResult = await loadBaseCurrency({ supabase, userId });
+    if ("error" in baseCurrencyResult) return baseCurrencyResult;
+    const baseCurrency = baseCurrencyResult.data;
 
     const itemCurrencies = [...new Set((items ?? []).map((i) => i.currency as string))];
     const fxMap = await buildFxMap(itemCurrencies, baseCurrency, monthCloseDate(year, month));
@@ -305,7 +307,8 @@ export async function getNwSnapshotsForMonth(
         items: summaryItems,
       },
     };
-  } catch {
+  } catch (e) {
+    logError("getNwSnapshotsForMonth", e);
     return { error: "Error al obtener snapshots de patrimonio" };
   }
 }
@@ -331,7 +334,7 @@ export async function getNwSnapshotsForYear(
       .order("side", { ascending: true })
       .order("name", { ascending: true });
 
-    if (itemsError) return { error: itemsError.message };
+    if (itemsError) return dbError("getNwSnapshotsForYear", itemsError, "Error al obtener snapshots anuales de patrimonio");
 
     const itemIds = (items ?? []).map((i) => i.id);
     let snapshots: {
@@ -350,7 +353,7 @@ export async function getNwSnapshotsForYear(
         .eq("year", year)
         .order("month", { ascending: false });
 
-      if (snapError) return { error: snapError.message };
+      if (snapError) return dbError("getNwSnapshotsForYear", snapError, "Error al obtener snapshots anuales de patrimonio");
       snapshots = (snap ?? []).map((s) => ({
         nw_item_id: s.nw_item_id,
         month: s.month,
@@ -371,12 +374,9 @@ export async function getNwSnapshotsForYear(
     }
 
     // Fetch base currency
-    const { data: userPrefYear } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", userId)
-      .maybeSingle();
-    const baseCurrencyYear = (userPrefYear as { base_currency?: string })?.base_currency ?? "USD";
+    const baseCurrencyResult = await loadBaseCurrency({ supabase, userId });
+    if ("error" in baseCurrencyResult) return baseCurrencyResult;
+    const baseCurrencyYear = baseCurrencyResult.data;
 
     const itemCurrenciesYear = [...new Set((items ?? []).map((i) => i.currency as string))];
     // The latest snapshot of each item stands for the year's close.
@@ -429,7 +429,8 @@ export async function getNwSnapshotsForYear(
         items: summaryItems,
       },
     };
-  } catch {
+  } catch (e) {
+    logError("getNwSnapshotsForYear", e);
     return { error: "Error al obtener snapshots anuales de patrimonio" };
   }
 }
@@ -454,7 +455,7 @@ export async function upsertNwSnapshot(
       .eq("user_id", userId)
       .maybeSingle();
 
-    if (itemError) return { error: itemError.message };
+    if (itemError) return dbError("upsertNwSnapshot", itemError, "Error al guardar snapshot de patrimonio");
     if (!item) return { error: "Ítem de patrimonio no encontrado" };
 
     const payload = {
@@ -471,7 +472,7 @@ export async function upsertNwSnapshot(
       .select()
       .single();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("upsertNwSnapshot", error, "Error al guardar snapshot de patrimonio");
     return {
       data: {
         ...data,
@@ -479,7 +480,8 @@ export async function upsertNwSnapshot(
         amount_base: data.amount_base != null ? Number(data.amount_base) : null,
       } as NwSnapshot,
     };
-  } catch {
+  } catch (e) {
+    logError("upsertNwSnapshot", e);
     return { error: "Error al guardar snapshot de patrimonio" };
   }
 }
@@ -525,7 +527,7 @@ export async function getLiabilitiesForMonth(
       .eq("side", "liability")
       .order("name");
 
-    if (itemsError) return { error: itemsError.message };
+    if (itemsError) return dbError("getLiabilitiesForMonth", itemsError, "Error al obtener pasivos del mes");
 
     const itemIds = (items ?? []).map((i) => i.id);
     if (itemIds.length === 0) {
@@ -543,7 +545,7 @@ export async function getLiabilitiesForMonth(
       .lte("month", month)
       .order("month", { ascending: false });
 
-    if (syError) return { error: syError.message };
+    if (syError) return dbError("getLiabilitiesForMonth", syError, "Error al obtener pasivos del mes");
 
     // Keep only the latest snapshot per item from the same year
     const latestByItem = new Map<
@@ -562,13 +564,14 @@ export async function getLiabilitiesForMonth(
     // Carry-forward: for items without a snapshot this year, check previous years
     const missingIds = itemIds.filter((id) => !latestByItem.has(id));
     if (missingIds.length > 0) {
-      const { data: prevSnaps } = await supabase
+      const { data: prevSnaps, error: prevError } = await supabase
         .from("nw_snapshots")
         .select("nw_item_id, amount, amount_base")
         .in("nw_item_id", missingIds)
         .lt("year", year)
         .order("year", { ascending: false })
         .order("month", { ascending: false });
+      if (prevError) return dbError("getLiabilitiesForMonth", prevError, "Error al obtener pasivos del mes");
 
       for (const s of prevSnaps ?? []) {
         if (!latestByItem.has(s.nw_item_id)) {
@@ -581,13 +584,9 @@ export async function getLiabilitiesForMonth(
     }
 
     // Fetch base currency
-    const { data: userPref } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", userId)
-      .maybeSingle();
-    const baseCurrency =
-      (userPref as { base_currency?: string })?.base_currency ?? "USD";
+    const baseCurrencyResult = await loadBaseCurrency({ supabase, userId });
+    if ("error" in baseCurrencyResult) return baseCurrencyResult;
+    const baseCurrency = baseCurrencyResult.data;
 
     const itemCurrencies = [
       ...new Set((items ?? []).map((i) => i.currency as string)),
@@ -623,7 +622,8 @@ export async function getLiabilitiesForMonth(
     });
 
     return { data: { year, month, total, items: summaryItems } };
-  } catch {
+  } catch (e) {
+    logError("getLiabilitiesForMonth", e);
     return { error: "Error al obtener pasivos del mes" };
   }
 }

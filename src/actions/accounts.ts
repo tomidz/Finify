@@ -14,8 +14,9 @@ import {
   recalculateOpeningBalances,
 } from "@/lib/server/opening-balances";
 import type { Account, Currency } from "@/types/accounts";
-
-type ActionResult<T> = { data: T } | { error: string };
+import type { ActionResult } from "@/lib/action-result";
+import { logError } from "@/lib/log";
+import { dbError } from "@/lib/server/db-errors";
 
 /** Devuelve el opening_base_amount correcto usando FX si es necesario. */
 async function resolveOpeningBase(
@@ -62,7 +63,7 @@ async function accountHasHistory(
     supabase.from("recurring_transactions").select("id", countOnly).eq("account_id", accountId),
   ]);
   const failed = results.find((result) => result.error);
-  if (failed?.error) return { error: failed.error.message };
+  if (failed?.error) return dbError("accountHasHistory", failed.error, "Error al revisar los movimientos de la cuenta");
   return { data: results.some((result) => (result.count ?? 0) > 0) };
 }
 
@@ -81,9 +82,10 @@ export async function getAccounts(): Promise<ActionResult<Account[]>> {
       .eq("user_id", user.id)
       .order("name", { ascending: true });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getAccounts", error, "Error al obtener las cuentas");
     return { data: (data ?? []) as Account[] };
-  } catch {
+  } catch (e) {
+    logError("getAccounts", e);
     return { error: "Error al obtener las cuentas" };
   }
 }
@@ -97,9 +99,10 @@ export async function getCurrencies(): Promise<ActionResult<Currency[]>> {
       .select("*")
       .order("code", { ascending: true });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getCurrencies", error, "Error al obtener las monedas");
     return { data: (data ?? []) as Currency[] };
-  } catch {
+  } catch (e) {
+    logError("getCurrencies", e);
     return { error: "Error al obtener las monedas" };
   }
 }
@@ -122,10 +125,11 @@ export async function getAccountById(
       .eq("user_id", user.id)
       .maybeSingle();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getAccountById", error, "Error al obtener la cuenta");
     if (!data) return { error: "Cuenta no encontrada" };
     return { data: data as Account };
-  } catch {
+  } catch (e) {
+    logError("getAccountById", e);
     return { error: "Error al obtener la cuenta" };
   }
 }
@@ -134,7 +138,10 @@ export async function getAccountById(
 async function hasProvider(supabase: ServerContext["supabase"], currency: string): Promise<boolean> {
   const { data, error } = await supabase.from("currencies").select("currency_type").eq("code", currency).maybeSingle();
   // Unknown: better to ask a provider than to show a fiat balance unquoted.
-  if (error) return true;
+  if (error) {
+    logError("hasProvider", error);
+    return true;
+  }
   return data?.currency_type === "fiat";
 }
 
@@ -169,8 +176,8 @@ export async function getAccountBalanceHistory(
         .maybeSingle(),
       loadBaseCurrency(ctx),
     ]);
-    if (error) return { error: error.message };
-    if (account.error) return { error: account.error.message };
+    if (error) return dbError("getAccountBalanceHistory", error, "Error al obtener el historial");
+    if (account.error) return dbError("getAccountBalanceHistory", account.error, "Error al obtener el historial");
     if (!account.data) return { error: "Cuenta no encontrada" };
     if ("error" in baseCurrency) return baseCurrency;
 
@@ -217,7 +224,8 @@ export async function getAccountBalanceHistory(
         };
       }),
     };
-  } catch {
+  } catch (e) {
+    logError("getAccountBalanceHistory", e);
     return { error: "Error al obtener el historial" };
   }
 }
@@ -240,7 +248,7 @@ export async function getAccountInitialBalance(
       .eq("user_id", user.id)
       .maybeSingle();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getAccountInitialBalance", error, "Error al obtener el saldo inicial");
     if (!data) return { error: "Cuenta no encontrada" };
 
     return {
@@ -249,7 +257,8 @@ export async function getAccountInitialBalance(
         opening_base_amount: Number(data.initial_base_amount ?? 0),
       },
     };
-  } catch {
+  } catch (e) {
+    logError("getAccountInitialBalance", e);
     return { error: "Error al obtener el saldo inicial" };
   }
 }
@@ -260,12 +269,13 @@ export async function getAccountCurrentAmount(accountId: string): Promise<Action
     const ctx = await getServerContext();
     if (!ctx) return { error: "No autenticado" };
     const { data, error } = await ctx.supabase.rpc("account_balances", { p_account_ids: [accountId] });
-    if (error) return { error: error.message };
+    if (error) return dbError("getAccountCurrentAmount", error, "Error al obtener el saldo actual");
     const balance = data?.[0];
     if (!balance) return { error: "Cuenta no encontrada" };
     // Not rounded: a crypto balance keeps its 8 decimals.
     return { data: { amount: Number(balance.amount) } };
-  } catch {
+  } catch (e) {
+    logError("getAccountCurrentAmount", e);
     return { error: "Error al obtener el saldo actual" };
   }
 }
@@ -288,8 +298,8 @@ export async function getAccountCurrentBalance(
         .maybeSingle(),
       loadBaseCurrency(ctx),
     ]);
-    if (error) return { error: error.message };
-    if (account.error) return { error: account.error.message };
+    if (error) return dbError("getAccountCurrentBalance", error, "Error al obtener el saldo actual");
+    if (account.error) return dbError("getAccountCurrentBalance", account.error, "Error al obtener el saldo actual");
     if (!account.data) return { error: "Cuenta no encontrada" };
     if ("error" in baseCurrency) return baseCurrency;
     const balance = data?.[0];
@@ -314,7 +324,8 @@ export async function getAccountCurrentBalance(
         rate_missing: rate == null,
       },
     };
-  } catch {
+  } catch (e) {
+    logError("getAccountCurrentBalance", e);
     return { error: "Error al obtener el saldo actual" };
   }
 }
@@ -340,12 +351,9 @@ export async function createAccount(
     const { initial_amount, exchange_rate, base_amount, ...accountFields } = parsed.data;
     const openingAmount = initial_amount ?? 0;
 
-    const { data: prefsRow } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", user.id)
-      .maybeSingle();
-    const baseCurrency = prefsRow?.base_currency ?? "USD";
+    const baseCurrencyResult = await loadBaseCurrency({ supabase, userId: user.id });
+    if ("error" in baseCurrencyResult) return baseCurrencyResult;
+    const baseCurrency = baseCurrencyResult.data;
 
     const openingBase = await resolveOpeningBase(
       openingAmount,
@@ -374,7 +382,7 @@ export async function createAccount(
           error: "Ya existe una cuenta con ese nombre, moneda y tipo",
         };
       }
-      return { error: error.message };
+      return dbError("createAccount", error, "Error al crear la cuenta");
     }
 
     // Every existing month gets an opening row for the new account.
@@ -383,7 +391,7 @@ export async function createAccount(
 
     return { data: data as Account };
   } catch (e) {
-    console.error("createAccount:", e);
+    logError("createAccount", e);
     return { error: "Error al crear la cuenta" };
   }
 }
@@ -420,7 +428,7 @@ export async function updateAccount(
         .eq("id", id)
         .eq("user_id", user.id)
         .maybeSingle();
-      if (storedError) return { error: storedError.message };
+      if (storedError) return dbError("updateAccount", storedError, "Error al actualizar la cuenta");
       if (!stored) return { error: "Cuenta no encontrada" };
       current = stored;
     }
@@ -445,12 +453,9 @@ export async function updateAccount(
       initial_base_currency: string;
     } | null = null;
     if (current && initial_amount !== undefined) {
-      const { data: prefsRow } = await supabase
-        .from("user_preferences")
-        .select("base_currency")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      const baseCurrency = prefsRow?.base_currency ?? "USD";
+      const baseCurrencyResult = await loadBaseCurrency({ supabase, userId: user.id });
+      if ("error" in baseCurrencyResult) return baseCurrencyResult;
+      const baseCurrency = baseCurrencyResult.data;
 
       // The same balance, with no new rate, keeps the base it was converted at.
       const sameBalance =
@@ -497,7 +502,7 @@ export async function updateAccount(
           error: "Ya existe una cuenta con ese nombre, moneda y tipo",
         };
       }
-      return { error: error.message };
+      return dbError("updateAccount", error, "Error al actualizar la cuenta");
     }
 
     // The initial balance is part of every month's opening.
@@ -508,7 +513,7 @@ export async function updateAccount(
 
     return { data: data as Account };
   } catch (e) {
-    console.error("updateAccount:", e);
+    logError("updateAccount", e);
     return { error: "Error al actualizar la cuenta" };
   }
 }
@@ -535,10 +540,11 @@ export async function deleteAccount(id: string): Promise<ActionResult<null>> {
             "No se puede eliminar: la cuenta tiene transacciones asociadas",
         };
       }
-      return { error: error.message };
+      return dbError("deleteAccount", error, "Error al eliminar la cuenta");
     }
     return { data: null };
-  } catch {
+  } catch (e) {
+    logError("deleteAccount", e);
     return { error: "Error al eliminar la cuenta" };
   }
 }

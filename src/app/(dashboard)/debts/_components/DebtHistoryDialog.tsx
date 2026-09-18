@@ -21,6 +21,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useDebtActivities, useReverseDebtActivity } from "@/hooks/useNetWorth";
+import { errorMessage } from "@/lib/action-result";
 import { formatAmount } from "@/lib/format";
 import {
   DEBT_ACTIVITY_TYPE_LABELS,
@@ -58,7 +59,7 @@ export function DebtHistoryDialog({
   open,
   onOpenChange,
 }: DebtHistoryDialogProps) {
-  const { data: activities, isLoading } = useDebtActivities(
+  const { data: activities, isLoading, error } = useDebtActivities(
     open ? debt?.id ?? null : null
   );
   const reverse = useReverseDebtActivity();
@@ -80,6 +81,10 @@ export function DebtHistoryDialog({
             <Skeleton className="h-8 w-full" />
             <Skeleton className="h-8 w-full" />
           </div>
+        ) : !activities && error ? (
+          <p className="text-destructive py-8 text-center text-sm">
+            {errorMessage(error)}
+          </p>
         ) : !activities || activities.length === 0 ? (
           <p className="text-muted-foreground py-8 text-center text-sm">
             No hay movimientos registrados.

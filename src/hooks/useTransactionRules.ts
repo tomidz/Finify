@@ -14,6 +14,7 @@ import type {
 } from "@/lib/validations/transaction-rules.schema";
 import type { TransactionRuleWithCategory } from "@/types/transaction-rules";
 import { toast } from "sonner";
+import { errorMessage, unwrapResult } from "@/lib/action-result";
 
 const RULES_KEYS = {
   all: ["transaction-rules"] as const,
@@ -22,11 +23,7 @@ const RULES_KEYS = {
 export function useTransactionRules() {
   return useQuery({
     queryKey: RULES_KEYS.all,
-    queryFn: async () => {
-      const result = await getTransactionRules();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getTransactionRules()),
     staleTime: 1 * 60_000,
   });
 }
@@ -34,15 +31,12 @@ export function useTransactionRules() {
 export function useCreateTransactionRule() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: CreateTransactionRuleInput) => {
-      const result = await createTransactionRule(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: CreateTransactionRuleInput) =>
+      unwrapResult(await createTransactionRule(input)),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: RULES_KEYS.all });
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => toast.error(errorMessage(err)),
     onSuccess: () => {
       toast.success("Regla creada");
     },
@@ -55,11 +49,8 @@ export function useCreateTransactionRule() {
 export function useUpdateTransactionRule() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: UpdateTransactionRuleInput) => {
-      const result = await updateTransactionRule(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: UpdateTransactionRuleInput) =>
+      unwrapResult(await updateTransactionRule(input)),
     onMutate: async (updatedRule) => {
       await queryClient.cancelQueries({ queryKey: RULES_KEYS.all });
       const previous = queryClient.getQueryData<TransactionRuleWithCategory[]>(
@@ -78,7 +69,7 @@ export function useUpdateTransactionRule() {
       if (context?.previous) {
         queryClient.setQueryData(RULES_KEYS.all, context.previous);
       }
-      toast.error(_err.message);
+      toast.error(errorMessage(_err));
     },
     onSuccess: () => {
       toast.success("Regla actualizada");
@@ -92,11 +83,7 @@ export function useUpdateTransactionRule() {
 export function useDeleteTransactionRule() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      const result = await deleteTransactionRule(id);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (id: string) => unwrapResult(await deleteTransactionRule(id)),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: RULES_KEYS.all });
       const previous = queryClient.getQueryData<TransactionRuleWithCategory[]>(
@@ -112,7 +99,7 @@ export function useDeleteTransactionRule() {
       if (context?.previous) {
         queryClient.setQueryData(RULES_KEYS.all, context.previous);
       }
-      toast.error(_err.message);
+      toast.error(errorMessage(_err));
     },
     onSuccess: () => {
       toast.success("Regla eliminada");
@@ -131,10 +118,6 @@ export function useMatchRules() {
     }: {
       description: string;
       notes?: string | null;
-    }) => {
-      const result = await matchTransactionRules(description, notes);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    }) => unwrapResult(await matchTransactionRules(description, notes)),
   });
 }

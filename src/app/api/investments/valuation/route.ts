@@ -1,3 +1,4 @@
+import { logError } from "@/lib/log";
 import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
 import { loadInvestmentValuation } from "@/lib/server/investment-valuation";
 
@@ -20,7 +21,7 @@ export async function GET() {
 
   const valuation = await loadInvestmentValuation(ctx, baseCurrency.data);
   if ("error" in valuation) {
-    console.error("GET /api/investments/valuation:", valuation.error);
+    logError("GET /api/investments/valuation", valuation.error);
     return Response.json(
       { error: "Error al obtener valor actual de inversiones" },
       { status: 500 },

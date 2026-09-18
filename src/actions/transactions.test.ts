@@ -64,7 +64,7 @@ describe("createTransaction", () => {
 
   it("hides any other database error", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    respond = () => ({ data: null, error: { code: "57014", message: "canceling statement due to statement timeout" } });
+    respond = () => ({ data: null, error: { code: "XX000", message: "could not read block 7 of relation 1663/5/16384" } });
     const result = await createTransaction({
       date: "2026-03-10",
       transaction_type: "income",
@@ -119,6 +119,19 @@ describe("updateTransaction", () => {
         p_id: TX_ID,
       },
     ]);
+  });
+
+  it("reports a failed read as a failure, not as a missing transaction", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    respond = (query) =>
+      query.table === "transactions"
+        ? { data: null, error: { code: "XX000", message: "internal error on row 42" } }
+        : { data: [], error: null };
+    const result = await updateTransaction({ id: TX_ID, description: "Supermercado" });
+    expect(result).toEqual({ error: "No se pudo leer la transacción" });
+    expect(rpcCalls("save_ledger_transaction")).toEqual([]);
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
   });
 });
 

@@ -2,8 +2,11 @@ import "server-only";
 
 import { after } from "next/server";
 
+import type { ActionResult } from "@/lib/action-result";
 import { addDays, monthCloseDate, today } from "@/lib/dates";
+import { logError } from "@/lib/log";
 import type { ServerContext } from "@/lib/server/context";
+import { dbError } from "@/lib/server/db-errors";
 import { maxRateAgeDays } from "@/lib/server/fx";
 import { resolveFxRates, type FxRequest } from "@/lib/server/fx-range";
 import { readAllRows } from "@/lib/server/paginate";
@@ -12,8 +15,6 @@ import type {
   LiabilitiesSummary,
   NetWorthEvolutionPoint,
 } from "@/types/net-worth";
-
-type Result<T> = { data: T } | { error: string };
 
 /**
  * Caches the rates the net worth RPCs read for a year: at the close of each of
@@ -43,7 +44,7 @@ export async function warmCloseRates(
 
   const { data, error } = await ctx.supabase.rpc("user_valued_currencies");
   if (error) {
-    console.error("warmCloseRates:", error.code);
+    logError("warmCloseRates", error, { step: "valued currencies" });
     return;
   }
   const valued = (data ?? []).filter((currency) => currency !== baseCurrency);
@@ -56,7 +57,7 @@ export async function warmCloseRates(
     .in("code", valued)
     .eq("currency_type", "fiat");
   if (fiatError) {
-    console.error("warmCloseRates: currencies read failed:", fiatError.code);
+    logError("warmCloseRates", fiatError, { step: "fiat currencies" });
     return;
   }
   const currencies = (fiat ?? []).map((row) => row.code);
@@ -78,7 +79,8 @@ export async function warmCloseRates(
       .order("id", { ascending: true })
       .range(from, to),
   );
-  if ("error" in cached) console.error("warmCloseRates: cache read failed:", cached.error.code);
+  // Every pair then counts as missing and is looked up.
+  if ("error" in cached) logError("warmCloseRates", cached.error, { step: "cache read" });
   // Only the source fx_rate_asof reads for the pair.
   const sourceOf = (from: string) => (from === "ARS" || baseCurrency === "ARS" ? "dolarapi" : "frankfurter");
   const cachedOn = new Set(
@@ -103,14 +105,14 @@ export async function warmCloseRates(
     try {
       await resolveFxRates(ctx.supabase, requests, baseCurrency);
     } catch (e) {
-      console.error("warmCloseRates: lookup failed:", e);
+      logError("warmCloseRates", e, { step: "lookup" });
     }
   };
   if (stale.length > 0) {
     try {
       after(() => lookUp(stale));
     } catch (e) {
-      console.error("warmCloseRates: could not schedule the refresh:", e);
+      logError("warmCloseRates", e, { step: "schedule refresh" });
     }
   }
   if (missing.length > 0) await lookUp(missing);
@@ -119,14 +121,14 @@ export async function warmCloseRates(
 export async function loadAccountNetWorth(
   { supabase }: ServerContext,
   year: number,
-): Promise<Result<AccountNetWorthSummary>> {
+): Promise<ActionResult<AccountNetWorthSummary>> {
   try {
     const { data, error } = await supabase.rpc("account_net_worth_year", {
       p_year: year,
       p_base_currency: undefined,
     });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("loadAccountNetWorth", error, "Error al calcular patrimonio neto");
 
     const rows = (data ?? []) as Array<{
       month: number | string;
@@ -180,7 +182,7 @@ export async function loadAccountNetWorth(
       },
     };
   } catch (e) {
-    console.error("loadAccountNetWorth:", e);
+    logError("loadAccountNetWorth", e);
     return { error: "Error al calcular patrimonio neto" };
   }
 }
@@ -188,14 +190,14 @@ export async function loadAccountNetWorth(
 export async function loadLiabilitiesForYear(
   { supabase }: ServerContext,
   year: number,
-): Promise<Result<LiabilitiesSummary>> {
+): Promise<ActionResult<LiabilitiesSummary>> {
   try {
     const { data, error } = await supabase.rpc("liabilities_year", {
       p_year: year,
       p_base_currency: undefined,
     });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("loadLiabilitiesForYear", error, "Error al obtener pasivos");
 
     const rows = (data ?? []) as Array<{
       item_id: string;
@@ -223,7 +225,7 @@ export async function loadLiabilitiesForYear(
 
     return { data: { year, close_date: rows[0]?.close_date ?? null, total, items: summaryItems } };
   } catch (e) {
-    console.error("loadLiabilitiesForYear:", e);
+    logError("loadLiabilitiesForYear", e);
     return { error: "Error al obtener pasivos" };
   }
 }
@@ -231,14 +233,14 @@ export async function loadLiabilitiesForYear(
 export async function loadNetWorthEvolution(
   { supabase }: ServerContext,
   year: number,
-): Promise<Result<NetWorthEvolutionPoint[]>> {
+): Promise<ActionResult<NetWorthEvolutionPoint[]>> {
   try {
     const { data, error } = await supabase.rpc("net_worth_evolution_year", {
       p_year: year,
       p_base_currency: undefined,
     });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("loadNetWorthEvolution", error, "Error al calcular evolución de patrimonio");
 
     return {
       data: ((data ?? []) as Array<{
@@ -260,7 +262,7 @@ export async function loadNetWorthEvolution(
       })),
     };
   } catch (e) {
-    console.error("loadNetWorthEvolution:", e);
+    logError("loadNetWorthEvolution", e);
     return { error: "Error al calcular evolución de patrimonio" };
   }
 }

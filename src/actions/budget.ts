@@ -22,8 +22,9 @@ import type {
   BudgetYear,
 } from "@/types/budget";
 import { budgetTotalsByGroup } from "@/lib/finance/budget-status";
-
-type ActionResult<T> = { data: T } | { error: string };
+import type { ActionResult } from "@/lib/action-result";
+import { logError } from "@/lib/log";
+import { dbError } from "@/lib/server/db-errors";
 
 type MonthLite = {
   id: string;
@@ -63,7 +64,7 @@ async function getMonthForUser(
     .eq("user_id", userId)
     .eq("id", monthId)
     .maybeSingle();
-  if (error) return { error: error.message };
+  if (error) return dbError("getMonthForUser", error, "Error al obtener el mes");
   if (!data) return { error: "Mes no encontrado" };
   return { data };
 }
@@ -75,12 +76,13 @@ export async function ensureBudgetSeed(): Promise<ActionResult<null>> {
     if (!userId) return { error: "No autenticado" };
 
     const supabase = await createClient();
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from("user_preferences")
       .select("user_id")
       .eq("user_id", userId)
       .maybeSingle();
 
+    if (existingError) return dbError("ensureBudgetSeed", existingError, "Error al cargar preferencias");
     if (existing) return { data: null };
 
     const { error } = await supabase.from("user_preferences").insert({
@@ -89,9 +91,10 @@ export async function ensureBudgetSeed(): Promise<ActionResult<null>> {
       fx_source: "frankfurter",
     });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("ensureBudgetSeed", error, "Error al cargar preferencias");
     return { data: null };
-  } catch {
+  } catch (e) {
+    logError("ensureBudgetSeed", e);
     return { error: "Error al cargar preferencias" };
   }
 }
@@ -109,9 +112,10 @@ export async function getBudgetYears(): Promise<ActionResult<BudgetYear[]>> {
       .eq("user_id", userId)
       .order("year", { ascending: false });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getBudgetYears", error, "Error al obtener los años");
     return { data: (data ?? []) as BudgetYear[] };
-  } catch {
+  } catch (e) {
+    logError("getBudgetYears", e);
     return { error: "Error al obtener los años" };
   }
 }
@@ -128,13 +132,14 @@ export async function getOrCreateBudgetYear(
     if (!userId) return { error: "No autenticado" };
 
     const supabase = await createClient();
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from("budget_years")
       .select("*")
       .eq("user_id", userId)
       .eq("year", year)
       .maybeSingle();
 
+    if (existingError) return dbError("getOrCreateBudgetYear", existingError, "Error al crear el año");
     if (existing) return { data: existing as BudgetYear };
 
     const { data: created, error } = await supabase
@@ -143,9 +148,10 @@ export async function getOrCreateBudgetYear(
       .select()
       .single();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getOrCreateBudgetYear", error, "Error al crear el año");
     return { data: created as BudgetYear };
-  } catch {
+  } catch (e) {
+    logError("getOrCreateBudgetYear", e);
     return { error: "Error al crear el año" };
   }
 }
@@ -166,9 +172,10 @@ export async function getBudgetCategories(): Promise<
       .order("display_order", { ascending: true })
       .order("name", { ascending: true });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getBudgetCategories", error, "Error al obtener las categorías");
     return { data: (data ?? []) as BudgetCategory[] };
-  } catch {
+  } catch (e) {
+    logError("getBudgetCategories", e);
     return { error: "Error al obtener las categorías" };
   }
 }
@@ -202,10 +209,11 @@ export async function createCategory(
     if (error) {
       if (error.code === "23505")
         return { error: "Ya existe una categoría con ese nombre" };
-      return { error: error.message };
+      return dbError("createCategory", error, "Error al crear la categoría");
     }
     return { data: data as BudgetCategory };
-  } catch {
+  } catch (e) {
+    logError("createCategory", e);
     return { error: "Error al crear la categoría" };
   }
 }
@@ -236,10 +244,11 @@ export async function updateCategory(
     if (error) {
       if (error.code === "23505")
         return { error: "Ya existe una categoría con ese nombre" };
-      return { error: error.message };
+      return dbError("updateCategory", error, "Error al actualizar la categoría");
     }
     return { data: data as BudgetCategory };
-  } catch {
+  } catch (e) {
+    logError("updateCategory", e);
     return { error: "Error al actualizar la categoría" };
   }
 }
@@ -256,9 +265,10 @@ export async function deleteCategory(id: string): Promise<ActionResult<null>> {
       .eq("id", id)
       .eq("user_id", userId);
 
-    if (error) return { error: error.message };
+    if (error) return dbError("deleteCategory", error, "Error al eliminar la categoría");
     return { data: null };
-  } catch {
+  } catch (e) {
+    logError("deleteCategory", e);
     return { error: "Error al eliminar la categoría" };
   }
 }
@@ -287,7 +297,7 @@ export async function getBudgetLines(
       .order("display_order", { ascending: true })
       .order("name", { ascending: true });
 
-    if (linesError) return { error: linesError.message };
+    if (linesError) return dbError("getBudgetLines", linesError, "Error al obtener líneas de presupuesto");
     if (!lines || lines.length === 0) return { data: [] };
 
     const lineIds = lines.map((line) => line.id);
@@ -297,7 +307,7 @@ export async function getBudgetLines(
       .eq("month_id", monthId)
       .in("line_id", lineIds);
 
-    if (plansError) return { error: plansError.message };
+    if (plansError) return dbError("getBudgetLines", plansError, "Error al obtener líneas de presupuesto");
 
     const planByLineId = new Map(
       (plans ?? []).map((plan) => [
@@ -352,7 +362,8 @@ export async function getBudgetLines(
     }) as BudgetLineWithPlan[];
 
     return { data: mapped };
-  } catch {
+  } catch (e) {
+    logError("getBudgetLines", e);
     return { error: "Error al obtener líneas de presupuesto" };
   }
 }
@@ -376,7 +387,7 @@ export async function createBudgetLine(
       .eq("id", parsed.data.category_id)
       .eq("user_id", userId)
       .maybeSingle();
-    if (categoryError) return { error: categoryError.message };
+    if (categoryError) return dbError("createBudgetLine", categoryError, "Error al crear línea de presupuesto");
     if (!category) return { error: "Categoría no encontrada" };
 
     const { data, error } = await supabase
@@ -394,11 +405,12 @@ export async function createBudgetLine(
     if (error) {
       if (error.code === "23505")
         return { error: "Ya existe una línea con ese nombre en la categoría" };
-      return { error: error.message };
+      return dbError("createBudgetLine", error, "Error al crear línea de presupuesto");
     }
 
     return { data: data as BudgetLine };
-  } catch {
+  } catch (e) {
+    logError("createBudgetLine", e);
     return { error: "Error al crear línea de presupuesto" };
   }
 }
@@ -425,7 +437,7 @@ export async function updateBudgetLine(
         .eq("id", updates.category_id)
         .eq("user_id", userId)
         .maybeSingle();
-      if (categoryError) return { error: categoryError.message };
+      if (categoryError) return dbError("updateBudgetLine", categoryError, "Error al actualizar línea de presupuesto");
       if (!category) return { error: "Categoría no encontrada" };
     }
 
@@ -440,10 +452,11 @@ export async function updateBudgetLine(
     if (error) {
       if (error.code === "23505")
         return { error: "Ya existe una línea con ese nombre en la categoría" };
-      return { error: error.message };
+      return dbError("updateBudgetLine", error, "Error al actualizar línea de presupuesto");
     }
     return { data: data as BudgetLine };
-  } catch {
+  } catch (e) {
+    logError("updateBudgetLine", e);
     return { error: "Error al actualizar línea de presupuesto" };
   }
 }
@@ -461,9 +474,10 @@ export async function deleteBudgetLine(
       .delete()
       .eq("id", id)
       .eq("user_id", userId);
-    if (error) return { error: error.message };
+    if (error) return dbError("deleteBudgetLine", error, "Error al eliminar línea de presupuesto");
     return { data: null };
-  } catch {
+  } catch (e) {
+    logError("deleteBudgetLine", e);
     return { error: "Error al eliminar línea de presupuesto" };
   }
 }
@@ -487,7 +501,7 @@ export async function upsertBudgetMonthPlan(
       .eq("id", parsed.data.line_id)
       .eq("user_id", userId)
       .maybeSingle();
-    if (lineError) return { error: lineError.message };
+    if (lineError) return dbError("upsertBudgetMonthPlan", lineError, "Error al guardar plan mensual");
     if (!line) return { error: "Línea de presupuesto no encontrada" };
 
     const month = await getMonthForUser(userId, parsed.data.month_id);
@@ -506,14 +520,15 @@ export async function upsertBudgetMonthPlan(
       .select()
       .single();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("upsertBudgetMonthPlan", error, "Error al guardar plan mensual");
     return {
       data: {
         ...data,
         planned_amount: Number(data.planned_amount),
       } as BudgetMonthPlan,
     };
-  } catch {
+  } catch (e) {
+    logError("upsertBudgetMonthPlan", e);
     return { error: "Error al guardar plan mensual" };
   }
 }
@@ -559,7 +574,7 @@ export async function createBudgetNextMonthFromSource(input: unknown): Promise<
       .select("id, name, display_order")
       .eq("user_id", userId)
       .in("id", entryCategoryIds);
-    if (categoriesError) return { error: categoriesError.message };
+    if (categoriesError) return dbError("createBudgetNextMonthFromSource", categoriesError, "Error al crear presupuesto del mes siguiente");
 
     const validCategoryIds = new Set((categories ?? []).map((c) => c.id));
     if (validCategoryIds.size !== entryCategoryIds.length) {
@@ -573,7 +588,7 @@ export async function createBudgetNextMonthFromSource(input: unknown): Promise<
       .in("category_id", entryCategoryIds)
       .order("display_order", { ascending: true })
       .order("name", { ascending: true });
-    if (linesError) return { error: linesError.message };
+    if (linesError) return dbError("createBudgetNextMonthFromSource", linesError, "Error al crear presupuesto del mes siguiente");
 
     const primaryLineByCategoryId = new Map<string, string>();
     for (const line of lines ?? []) {
@@ -597,7 +612,7 @@ export async function createBudgetNextMonthFromSource(input: unknown): Promise<
             is_active: true,
           })),
         );
-      if (insertLinesError) return { error: insertLinesError.message };
+      if (insertLinesError) return dbError("createBudgetNextMonthFromSource", insertLinesError, "Error al crear presupuesto del mes siguiente");
 
       const { data: refreshedLines, error: refreshedLinesError } =
         await supabase
@@ -607,7 +622,7 @@ export async function createBudgetNextMonthFromSource(input: unknown): Promise<
           .in("category_id", entryCategoryIds)
           .order("display_order", { ascending: true })
           .order("name", { ascending: true });
-      if (refreshedLinesError) return { error: refreshedLinesError.message };
+      if (refreshedLinesError) return dbError("createBudgetNextMonthFromSource", refreshedLinesError, "Error al crear presupuesto del mes siguiente");
 
       primaryLineByCategoryId.clear();
       for (const line of refreshedLines ?? []) {
@@ -621,7 +636,7 @@ export async function createBudgetNextMonthFromSource(input: unknown): Promise<
       .from("budget_lines")
       .select("id")
       .eq("user_id", userId);
-    if (allLinesError) return { error: allLinesError.message };
+    if (allLinesError) return dbError("createBudgetNextMonthFromSource", allLinesError, "Error al crear presupuesto del mes siguiente");
 
     const allUserLineIds = (allUserLines ?? []).map((line) => line.id);
     if (allUserLineIds.length > 0) {
@@ -630,7 +645,7 @@ export async function createBudgetNextMonthFromSource(input: unknown): Promise<
         .delete()
         .eq("month_id", createdMonth.data.id)
         .in("line_id", allUserLineIds);
-      if (deleteError) return { error: deleteError.message };
+      if (deleteError) return dbError("createBudgetNextMonthFromSource", deleteError, "Error al crear presupuesto del mes siguiente");
     }
 
     // Dedupe by line: duplicate category entries used to violate
@@ -656,7 +671,7 @@ export async function createBudgetNextMonthFromSource(input: unknown): Promise<
       const { error: insertPlansError } = await supabase
         .from("budget_month_plans")
         .upsert(rowsToInsert, { onConflict: "line_id,month_id" });
-      if (insertPlansError) return { error: insertPlansError.message };
+      if (insertPlansError) return dbError("createBudgetNextMonthFromSource", insertPlansError, "Error al crear presupuesto del mes siguiente");
     }
 
     return {
@@ -667,7 +682,8 @@ export async function createBudgetNextMonthFromSource(input: unknown): Promise<
         copied_lines: rowsToInsert.length,
       },
     };
-  } catch {
+  } catch (e) {
+    logError("createBudgetNextMonthFromSource", e);
     return { error: "Error al crear presupuesto del mes siguiente" };
   }
 }
@@ -688,7 +704,7 @@ export async function getBudgetSummaryVsActual(
       p_base_currency: undefined,
     });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getBudgetSummaryVsActual", error, "Error al obtener resumen plan vs real");
 
     const categorySummary = ((data ?? []) as Array<{
       category_id: string;
@@ -712,7 +728,8 @@ export async function getBudgetSummaryVsActual(
         categories: categorySummary,
       },
     };
-  } catch {
+  } catch (e) {
+    logError("getBudgetSummaryVsActual", e);
     return { error: "Error al obtener resumen plan vs real" };
   }
 }
@@ -729,7 +746,8 @@ export async function getBudgetSummaryVsActualForRange(
     const endMonth = await getMonthForUser(ctx.userId, endMonthId);
     if ("error" in endMonth) return endMonth;
     return await loadBudgetSummaryRange(ctx, startMonthId, endMonthId);
-  } catch {
+  } catch (e) {
+    logError("getBudgetSummaryVsActualForRange", e);
     return { error: "Error al obtener resumen plan vs real" };
   }
 }

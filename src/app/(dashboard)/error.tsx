@@ -1,21 +1,7 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
+import { RouteError, type RouteErrorProps } from "@/components/route-error";
 
-export default function DashboardError({
-  error,
-  reset,
-}: {
-  error: Error;
-  reset: () => void;
-}) {
-  return (
-    <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-center">
-      <p className="font-medium text-destructive">No se pudo cargar esta vista</p>
-      <p className="mt-1 text-sm text-muted-foreground">{error.message}</p>
-      <Button className="mt-3" variant="outline" onClick={reset}>
-        Reintentar
-      </Button>
-    </div>
-  );
+export default function DashboardError(props: RouteErrorProps) {
+  return <RouteError title="No se pudo cargar esta vista" {...props} />;
 }

@@ -3,8 +3,8 @@
 import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
 import { loadMonths } from "@/lib/server/months";
 import { loadPeriodSummary, type PeriodSummaryData } from "@/lib/server/period-summary";
-
-type ActionResult<T> = { data: T } | { error: string };
+import { logError } from "@/lib/log";
+import type { ActionResult } from "@/lib/action-result";
 
 /** The period summary of the months from `startMonthId` to `endMonthId`. */
 export async function getPeriodSummary(
@@ -22,7 +22,7 @@ export async function getPeriodSummary(
     if (!start || !end) return { error: "Mes no encontrado" };
     return await loadPeriodSummary(ctx, { months: months.data, start, end, baseCurrency: baseCurrency.data });
   } catch (e) {
-    console.error("getPeriodSummary:", e);
+    logError("getPeriodSummary", e);
     return { error: "Error al calcular el resumen del período" };
   }
 }

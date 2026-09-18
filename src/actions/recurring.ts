@@ -11,8 +11,9 @@ import {
   UpdateRecurringSchema,
 } from "@/lib/validations/recurring.schema";
 import type { PendingRecurring, RecurringWithRelations } from "@/types/recurring";
-
-type ActionResult<T> = { data: T } | { error: string };
+import type { ActionResult } from "@/lib/action-result";
+import { logError } from "@/lib/log";
+import { dbError } from "@/lib/server/db-errors";
 
 /** A template's amount is in its account's currency; null when it is. */
 async function recurringCurrencyError(
@@ -27,7 +28,7 @@ async function recurringCurrencyError(
     .eq("id", accountId)
     .eq("user_id", userId)
     .maybeSingle();
-  if (error) return error.message;
+  if (error) return dbError("recurringCurrencyError", error, "Error al verificar la cuenta").error;
   if (!account) return "Cuenta no encontrada";
   if (account.currency !== currency) {
     return `La cuenta está en ${account.currency}: la recurrente tiene que estar en la misma moneda.`;
@@ -59,7 +60,7 @@ export async function getRecurringTransactions(): Promise<
       .eq("user_id", user.id)
       .order("description", { ascending: true });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getRecurringTransactions", error, "Error al obtener las transacciones recurrentes");
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const mapped = (data ?? []).map((row: any) => ({
@@ -77,7 +78,7 @@ export async function getRecurringTransactions(): Promise<
 
     return { data: mapped as RecurringWithRelations[] };
   } catch (e) {
-    console.error("getRecurringTransactions:", e);
+    logError("getRecurringTransactions", e);
     return { error: "Error al obtener las transacciones recurrentes" };
   }
 }
@@ -121,7 +122,7 @@ export async function createRecurring(
       )
       .single();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("createRecurring", error, "Error al crear la transacción recurrente");
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const row = data as any;
@@ -137,7 +138,7 @@ export async function createRecurring(
       } as RecurringWithRelations,
     };
   } catch (e) {
-    console.error("createRecurring:", e);
+    logError("createRecurring", e);
     return { error: "Error al crear la transacción recurrente" };
   }
 }
@@ -169,7 +170,7 @@ export async function updateRecurring(
         .eq("id", id)
         .eq("user_id", user.id)
         .maybeSingle();
-      if (currentError) return { error: currentError.message };
+      if (currentError) return dbError("updateRecurring", currentError, "Error al actualizar la transacción recurrente");
       if (!current) return { error: "Recurrente no encontrada" };
       const currencyError = await recurringCurrencyError(
         supabase,
@@ -195,7 +196,7 @@ export async function updateRecurring(
       )
       .single();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("updateRecurring", error, "Error al actualizar la transacción recurrente");
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const row = data as any;
@@ -211,7 +212,7 @@ export async function updateRecurring(
       } as RecurringWithRelations,
     };
   } catch (e) {
-    console.error("updateRecurring:", e);
+    logError("updateRecurring", e);
     return { error: "Error al actualizar la transacción recurrente" };
   }
 }
@@ -233,10 +234,10 @@ export async function deleteRecurring(
       .eq("id", id)
       .eq("user_id", user.id);
 
-    if (error) return { error: error.message };
+    if (error) return dbError("deleteRecurring", error, "Error al eliminar la transacción recurrente");
     return { data: null };
   } catch (e) {
-    console.error("deleteRecurring:", e);
+    logError("deleteRecurring", e);
     return { error: "Error al eliminar la transacción recurrente" };
   }
 }
@@ -269,7 +270,7 @@ export async function getPendingRecurring(
 
     return { data: results };
   } catch (e) {
-    console.error("getPendingRecurring:", e);
+    logError("getPendingRecurring", e);
     return { error: "Error al obtener las recurrentes pendientes" };
   }
 }
@@ -299,7 +300,7 @@ export async function registerRecurringOccurrence(input: {
       .eq("user_id", user.id)
       .maybeSingle();
 
-    if (recError) return { error: recError.message };
+    if (recError) return dbError("registerRecurringOccurrence", recError, "Error al registrar la recurrente");
     if (!rec) return { error: "Recurrente no encontrada" };
 
     const baseCurrencyResult = await getBaseCurrency();
@@ -339,7 +340,7 @@ export async function registerRecurringOccurrence(input: {
     }
     return { data: null };
   } catch (e) {
-    console.error("registerRecurringOccurrence:", e);
+    logError("registerRecurringOccurrence", e);
     return { error: "Error al registrar la recurrente" };
   }
 }

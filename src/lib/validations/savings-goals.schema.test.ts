@@ -107,4 +107,9 @@ describe("UpdateSavingsGoalSchema", () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it("leaves out what the update does not send", () => {
+    const result = UpdateSavingsGoalSchema.safeParse({ id: UUID, is_completed: true });
+    expect(result.success && result.data).toEqual({ id: UUID, is_completed: true });
+  });
 });
