@@ -9,7 +9,7 @@ import { getBudgetSummaryVsActual } from "@/actions/budget";
 import { getForecast } from "@/actions/forecast";
 import {
   getInvestments,
-  getCurrentInvestmentValuesByMonth,
+  getCurrentInvestmentValuesByAccount,
   getInvestmentSales,
 } from "@/actions/investments";
 import { getMonths } from "@/actions/months";
@@ -52,7 +52,7 @@ const tools = {
   }),
   get_account_balance: tool({
     description:
-      "Saldo actual de una cuenta: amount en la moneda de la cuenta y base_amount en moneda base.",
+      "Saldo actual de una cuenta: amount en la moneda de la cuenta y base_amount en moneda base a la cotización de hoy (rate_missing: sin cotización, base_amount es el valor de carga).",
     inputSchema: z.object({
       accountId: z.string().describe("id de la cuenta (de get_accounts)"),
     }),
@@ -98,14 +98,14 @@ const tools = {
   }),
   get_net_worth_evolution: tool({
     description:
-      "Evolución mensual del patrimonio neto de un año: activos, pasivos y net worth en moneda base.",
+      "Evolución mensual del patrimonio neto de un año: activos, pasivos y net worth en moneda base, cada mes a la cotización de su cierre (hoy para el mes en curso). Las inversiones van al costo; su valor de mercado de hoy está en get_investment_values. fxMissing: el mes deja afuera inversiones o deudas sin cotización; cashFxMissing: cuenta algún saldo sin cotización a su valor de carga.",
     inputSchema: z.object({
       year: z.number().int().describe("año calendario, ej. 2026"),
     }),
     execute: async ({ year }) => unwrap(await getNetWorthEvolution(year)),
   }),
   get_liabilities: tool({
-    description: "Pasivos/deudas por mes para un año dado, en moneda base.",
+    description: "Pasivos/deudas al último mes de un año, en moneda base a la cotización de ese cierre.",
     inputSchema: z.object({ year: z.number().int() }),
     execute: async ({ year }) => unwrap(await getLiabilitiesForYear(year)),
   }),
@@ -123,14 +123,13 @@ const tools = {
   }),
   get_investment_values: tool({
     description:
-      "Valor de mercado actual vs costo del portafolio por mes para un año dado, en moneda base.",
-    inputSchema: z.object({ year: z.number().int() }),
-    execute: async ({ year }) =>
-      unwrap(await getCurrentInvestmentValuesByMonth(year)),
+      "Valor de mercado actual vs costo del portafolio por cuenta (clave: id de get_accounts), en moneda base. Solo de hoy: los meses pasados valúan al costo.",
+    inputSchema: z.object({}),
+    execute: async () => unwrap(await getCurrentInvestmentValuesByAccount()),
   }),
   get_forecast: tool({
     description:
-      "Proyección de los próximos meses (ingresos/gastos esperados) basada en históricos y recurrentes.",
+      "Proyección del saldo desde hoy hasta el cierre de los próximos meses: movimientos ya cargados, fechas de las recurrentes, presupuesto y mediana de los meses cerrados. Cada punto trae de qué fuentes salió.",
     inputSchema: z.object({
       monthsAhead: z.number().int().min(1).max(24).default(6),
     }),

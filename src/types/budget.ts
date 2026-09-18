@@ -1,3 +1,5 @@
+import type { BudgetExecution, BudgetGroup } from "@/lib/finance/budget-status";
+
 export const BUDGET_CATEGORY_TYPES = [
   "income",
   "essential_expenses",
@@ -73,10 +75,7 @@ export interface BudgetCategorySummary {
 }
 
 export interface BudgetSummaryVsActual {
-  totals: {
-    planned: number;
-    actual: number;
-    variance: number;
-  };
+  /** Per group: income and expenses are never added together. */
+  totals: Record<BudgetGroup, BudgetExecution>;
   categories: BudgetCategorySummary[];
 }

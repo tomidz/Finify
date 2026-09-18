@@ -10,7 +10,6 @@ import type { QueryClient, QueryKey } from "@tanstack/react-query";
 export const LEDGER_DERIVED_KEYS: readonly QueryKey[] = [
   ["transactions"],
   ["months"],
-  ["opening-balances"],
   ["accounts"],
   ["account"],
   ["accountInitialBalance"],

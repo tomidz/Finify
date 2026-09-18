@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  keepPreviousData,
   useQuery,
   useMutation,
   useQueryClient,
@@ -18,6 +19,7 @@ import {
   deleteTransaction,
   restoreTransaction,
 } from "@/actions/transactions";
+import { getPeriodSummary } from "@/actions/period-summary";
 import type { CreateTransactionInput, CreateTransferInput, UpdateTransactionInput } from "@/lib/validations/transaction.schema";
 import type { TransactionFeedFilters } from "@/types/transactions";
 import { invalidateLedger } from "@/lib/query-keys";
@@ -26,12 +28,29 @@ import { toast } from "sonner";
 export const TRANSACTION_KEYS = {
   all: ["transactions"] as const,
   list: (monthId: string) => ["transactions", "month", monthId] as const,
+  summary: (startMonthId: string, endMonthId: string) =>
+    ["transactions", "summary", startMonthId, endMonthId] as const,
   feed: (monthId: string, filters: TransactionFeedFilters) =>
     ["transactions", "month", monthId, "feed", filters] as const,
   usageCounts: ["transactions", "usage-counts"] as const,
   baseCurrency: ["preferences", "base-currency"] as const,
 };
 
+
+/** Opening, income, expenses, other movements and closing of a month range. */
+export function usePeriodSummary(startMonthId: string | null, endMonthId: string | null) {
+  return useQuery({
+    queryKey: TRANSACTION_KEYS.summary(startMonthId ?? "", endMonthId ?? ""),
+    enabled: !!startMonthId && !!endMonthId,
+    queryFn: async () => {
+      const result = await getPeriodSummary(startMonthId!, endMonthId!);
+      if ("error" in result) throw new Error(result.error);
+      return result.data;
+    },
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
+  });
+}
 
 export function useBaseCurrency() {
   return useQuery({

@@ -6,13 +6,11 @@ import { getOrFetchFxRate } from "@/lib/server/fx";
 import { getServerContext } from "@/lib/server/context";
 import { loadMonthsInRange } from "@/lib/server/months";
 import {
-  loadOpeningBalances,
   RECALCULATION_FAILED,
   recalculateOpeningBalances,
 } from "@/lib/server/opening-balances";
 import type {
   Month,
-  OpeningBalance,
   NextMonthPreview,
   OpeningBalancePreview,
 } from "@/types/months";
@@ -343,10 +341,3 @@ export async function getMonthsInRange(
   }
 }
 
-export async function getOpeningBalances(
-  monthId: string
-): Promise<ActionResult<OpeningBalance[]>> {
-  const ctx = await getServerContext();
-  if (!ctx) return { error: "No autenticado" };
-  return loadOpeningBalances(ctx, monthId);
-}

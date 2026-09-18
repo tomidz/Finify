@@ -7,11 +7,12 @@ import {
   CardHeader,
 } from "@/components/ui/card";
 import { formatAmount } from "@/lib/format";
-import type { MonthSummary } from "@/hooks/useMonthSummary";
+import { remainingPlannedExpenses } from "@/lib/finance/budget-status";
+import type { PeriodSummary } from "@/lib/finance/period-summary";
 import type { BudgetSummaryVsActual } from "@/types/budget";
 
 interface SafeToSpendCardProps {
-  summary: MonthSummary;
+  summary: PeriodSummary;
   budgetSummary: BudgetSummaryVsActual | undefined;
   currencySymbol: string;
 }
@@ -21,19 +22,7 @@ export function SafeToSpendCard({
   budgetSummary,
   currencySymbol,
 }: SafeToSpendCardProps) {
-  // Calculate remaining planned expenses (what's budgeted but not yet spent)
-  const expenseCategories = (budgetSummary?.categories ?? []).filter(
-    (c) =>
-      c.category_type === "essential_expenses" ||
-      c.category_type === "discretionary_expenses" ||
-      c.category_type === "debt_payments"
-  );
-
-  const remainingPlanned = expenseCategories.reduce((acc, cat) => {
-    // variance = planned - actual (positive means still to spend)
-    const remaining = Math.max(0, cat.planned_amount - cat.actual_amount);
-    return acc + remaining;
-  }, 0);
+  const remainingPlanned = remainingPlannedExpenses(budgetSummary?.categories ?? []);
 
   // Safe to spend = closing balance - remaining planned expenses
   const safeToSpend = summary.closingBase - remainingPlanned;

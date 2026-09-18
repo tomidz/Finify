@@ -7,19 +7,10 @@ import { loadInvestmentValuation } from "@/lib/server/investment-valuation";
  * waits on external price providers, so as an action it held up every other
  * read on the page behind it.
  */
-export async function GET(request: Request) {
+export async function GET() {
   const ctx = await getServerContext();
   if (!ctx) {
     return Response.json({ error: "No autenticado" }, { status: 401 });
-  }
-
-  const yearParam = new URL(request.url).searchParams.get("year");
-  let year: number | null = null;
-  if (yearParam !== null) {
-    year = Number(yearParam);
-    if (!Number.isInteger(year) || year < 1900 || year > 3000) {
-      return Response.json({ error: "Año inválido" }, { status: 400 });
-    }
   }
 
   const baseCurrency = await loadBaseCurrency(ctx);
@@ -27,7 +18,7 @@ export async function GET(request: Request) {
     return Response.json({ error: baseCurrency.error }, { status: 500 });
   }
 
-  const valuation = await loadInvestmentValuation(ctx, baseCurrency.data, year);
+  const valuation = await loadInvestmentValuation(ctx, baseCurrency.data);
   if ("error" in valuation) {
     console.error("GET /api/investments/valuation:", valuation.error);
     return Response.json(

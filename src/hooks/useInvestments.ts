@@ -41,8 +41,7 @@ export const INVESTMENT_KEYS = {
   all: ["investments"] as const,
   sales: ["investments", "sales"] as const,
   valuationAll: ["investments", "valuation"] as const,
-  valuation: (year: number | null) =>
-    ["investments", "valuation", year ?? "current"] as const,
+  valuation: ["investments", "valuation", "current"] as const,
   prices: (baseCurrency: string, tickersKey: string) =>
     ["investments", "prices", baseCurrency, tickersKey] as const,
 };
@@ -84,13 +83,8 @@ export function useSuspenseInvestments() {
   });
 }
 
-async function fetchInvestmentValuation(
-  year: number | null,
-): Promise<InvestmentValuation> {
-  const response = await fetch(
-    `/api/investments/valuation${year ? `?year=${year}` : ""}`,
-    { cache: "no-store" },
-  );
+async function fetchInvestmentValuation(): Promise<InvestmentValuation> {
+  const response = await fetch("/api/investments/valuation", { cache: "no-store" });
   const body = await response.json().catch(() => null);
   if (!response.ok || !body) {
     throw new Error(body?.error ?? "Error al obtener valor actual de inversiones");
@@ -99,22 +93,22 @@ async function fetchInvestmentValuation(
 }
 
 /**
- * Market value vs cost per account and, when a year is given, per month.
- * Fetched from a route handler (not a server action) so the price lookups it
- * waits on never block the page's other reads.
+ * Today's market value vs cost per account. Fetched from a route handler (not
+ * a server action) so the price lookups it waits on never block the page's
+ * other reads.
  */
-export function useInvestmentValuation(year: number | null) {
+export function useInvestmentValuation({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
-    queryKey: INVESTMENT_KEYS.valuation(year),
-    enabled: year === null || year > 0,
-    queryFn: () => fetchInvestmentValuation(year),
+    queryKey: INVESTMENT_KEYS.valuation,
+    enabled,
+    queryFn: () => fetchInvestmentValuation(),
     staleTime: 60_000,
     gcTime: 10 * 60_000,
   });
 }
 
 export function useCurrentInvestmentValuesByAccount() {
-  const query = useInvestmentValuation(null);
+  const query = useInvestmentValuation();
   return { ...query, data: query.data?.byAccount };
 }
 

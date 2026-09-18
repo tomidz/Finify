@@ -10,7 +10,6 @@ import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
 import {
   loadInvestmentValuation,
   type ValuationByAccount,
-  type ValuationByMonth,
 } from "@/lib/server/investment-valuation";
 import { priceCacheKey, resolvePricesWithSources, type ResolvedPrices } from "@/lib/server/prices";
 import { priceRequestFor, type PriceRequest } from "@/lib/asset-classes";
@@ -327,7 +326,7 @@ export async function getCurrentInvestmentValuesByAccount(): Promise<
     if (!ctx) return { error: "No autenticado" };
     const baseCurrency = await loadBaseCurrency(ctx);
     if ("error" in baseCurrency) return baseCurrency;
-    const valuation = await loadInvestmentValuation(ctx, baseCurrency.data, null);
+    const valuation = await loadInvestmentValuation(ctx, baseCurrency.data);
     if ("error" in valuation) return valuation;
     return { data: valuation.data.byAccount };
   } catch {
@@ -335,21 +334,6 @@ export async function getCurrentInvestmentValuesByAccount(): Promise<
   }
 }
 
-export async function getCurrentInvestmentValuesByMonth(
-  year: number,
-): Promise<ActionResult<ValuationByMonth>> {
-  try {
-    const ctx = await getServerContext();
-    if (!ctx) return { error: "No autenticado" };
-    const baseCurrency = await loadBaseCurrency(ctx);
-    if ("error" in baseCurrency) return baseCurrency;
-    const valuation = await loadInvestmentValuation(ctx, baseCurrency.data, year);
-    if ("error" in valuation) return valuation;
-    return { data: valuation.data.byMonth ?? {} };
-  } catch {
-    return { error: "Error al obtener valores actuales por mes" };
-  }
-}
 
 export async function lookupInvestmentInstrument(input: {
   ticker?: string | null;

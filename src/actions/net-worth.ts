@@ -2,7 +2,6 @@
 
 import { createClient } from "@/lib/supabase/server";
 import type { TablesUpdate } from "@/types/database.types";
-import { today as appToday } from "@/lib/dates";
 import {
   CreateNwItemSchema,
   UpdateNwItemSchema,
@@ -20,13 +19,15 @@ import type {
   NetWorthEvolutionPoint,
 } from "@/types/net-worth";
 
+import { monthCloseDate } from "@/lib/dates";
 import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
 import { getOrFetchFxRate } from "@/lib/server/fx";
+import { loadMonths } from "@/lib/server/months";
 import {
   loadAccountNetWorth,
   loadLiabilitiesForYear,
   loadNetWorthEvolution,
-  warmTodayRates,
+  warmCloseRates,
 } from "@/lib/server/net-worth";
 
 type ActionResult<T> = { data: T } | { error: string };
@@ -40,15 +41,17 @@ async function getUserId() {
 }
 
 /**
- * Build an FX rate map for converting currencies to baseCurrency, using
- * today's rate through the shared getOrFetchFxRate path (one cache, one
- * fallback policy, fetched rates persist to fx_rates). The previous custom
- * lookup took ANY cached date as "live" and never persisted API fetches, so
- * it could serve years-old rates and re-hit the API on every render.
+ * Build an FX rate map for converting currencies to baseCurrency at `date`
+ * (a month's close, see monthCloseDate) through the shared getOrFetchFxRate
+ * path (one cache, one fallback policy, fetched rates persist to fx_rates).
+ * The previous custom lookup took ANY cached date as "live" and never
+ * persisted API fetches, so it could serve years-old rates and re-hit the API
+ * on every render.
  */
 async function buildFxMap(
   currencies: string[],
-  baseCurrency: string
+  baseCurrency: string,
+  date: string
 ): Promise<Map<string, number>> {
   const fxMap = new Map<string, number>();
   fxMap.set(baseCurrency, 1);
@@ -56,12 +59,10 @@ async function buildFxMap(
   const nonBase = [...new Set(currencies.filter((c) => c !== baseCurrency))];
   if (nonBase.length === 0) return fxMap;
 
-  const today = appToday();
-
   await Promise.all(
     nonBase.map(async (currency) => {
       const result = await getOrFetchFxRate({
-        date: today,
+        date,
         from: currency,
         to: baseCurrency,
       });
@@ -266,7 +267,7 @@ export async function getNwSnapshotsForMonth(
     const baseCurrency = (userPref as { base_currency?: string })?.base_currency ?? "USD";
 
     const itemCurrencies = [...new Set((items ?? []).map((i) => i.currency as string))];
-    const fxMap = await buildFxMap(itemCurrencies, baseCurrency);
+    const fxMap = await buildFxMap(itemCurrencies, baseCurrency, monthCloseDate(year, month));
 
     let totalAssets = 0;
     let totalLiabilities = 0;
@@ -274,8 +275,8 @@ export async function getNwSnapshotsForMonth(
     const summaryItems = (items ?? []).map((item) => {
       const snap = snapByItem.get(item.id);
       const amount = snap?.amount ?? 0;
-      // Today's rate for another currency; without one the item has no base
-      // amount and is left out of the totals.
+      // The month's close rate for another currency; without one the item has
+      // no base amount and is left out of the totals.
       const rate = fxMap.get(item.currency as string);
       const amountBase = amount === 0 ? 0 : rate != null ? amount * rate : null;
 
@@ -385,7 +386,8 @@ export async function getNwSnapshotsForYear(
     const baseCurrencyYear = (userPrefYear as { base_currency?: string })?.base_currency ?? "USD";
 
     const itemCurrenciesYear = [...new Set((items ?? []).map((i) => i.currency as string))];
-    const fxMapYear = await buildFxMap(itemCurrenciesYear, baseCurrencyYear);
+    // The latest snapshot of each item stands for the year's close.
+    const fxMapYear = await buildFxMap(itemCurrenciesYear, baseCurrencyYear, monthCloseDate(year, 12));
 
     let totalAssets = 0;
     let totalLiabilities = 0;
@@ -394,8 +396,8 @@ export async function getNwSnapshotsForYear(
       const snap = snapByItem.get(item.id);
       const amount = snap?.amount ?? 0;
       const snapshotMonth = snap?.month ?? 0;
-      // Today's rate for another currency; without one the item has no base
-      // amount and is left out of the totals.
+      // The year's close rate for another currency; without one the item has
+      // no base amount and is left out of the totals.
       const rate = fxMapYear.get(item.currency as string);
       const amountBase = amount === 0 ? 0 : rate != null ? amount * rate : null;
 
@@ -498,9 +500,10 @@ export async function getAccountNetWorth(
 ): Promise<ActionResult<AccountNetWorthSummary>> {
   const ctx = await getServerContext();
   if (!ctx) return { error: "No autenticado" };
-  const baseCurrency = await loadBaseCurrency(ctx);
+  const [baseCurrency, months] = await Promise.all([loadBaseCurrency(ctx), loadMonths(ctx)]);
   if ("error" in baseCurrency) return baseCurrency;
-  await warmTodayRates(ctx, baseCurrency.data);
+  if ("error" in months) return months;
+  await warmCloseRates(ctx, baseCurrency.data, { months: months.data, year, latestOnly: true });
   return loadAccountNetWorth(ctx, year);
 }
 
@@ -513,9 +516,10 @@ export async function getLiabilitiesForYear(
 ): Promise<ActionResult<LiabilitiesSummary>> {
   const ctx = await getServerContext();
   if (!ctx) return { error: "No autenticado" };
-  const baseCurrency = await loadBaseCurrency(ctx);
+  const [baseCurrency, months] = await Promise.all([loadBaseCurrency(ctx), loadMonths(ctx)]);
   if ("error" in baseCurrency) return baseCurrency;
-  await warmTodayRates(ctx, baseCurrency.data);
+  if ("error" in months) return months;
+  await warmCloseRates(ctx, baseCurrency.data, { months: months.data, year, latestOnly: true });
   return loadLiabilitiesForYear(ctx, year);
 }
 
@@ -607,14 +611,14 @@ export async function getLiabilitiesForMonth(
     const itemCurrencies = [
       ...new Set((items ?? []).map((i) => i.currency as string)),
     ];
-    const fxMap = await buildFxMap(itemCurrencies, baseCurrency);
+    const fxMap = await buildFxMap(itemCurrencies, baseCurrency, monthCloseDate(year, month));
 
     let total = 0;
     const summaryItems = (items ?? []).map((item) => {
       const snap = latestByItem.get(item.id);
       const amount = snap?.amount ?? 0;
-      // Today's rate for another currency; without one the debt has no base
-      // amount and is left out of the total.
+      // The month's close rate for another currency; without one the debt has
+      // no base amount and is left out of the total.
       const rate = fxMap.get(item.currency as string);
       const amountBase = amount === 0 ? 0 : rate != null ? amount * rate : null;
 
@@ -652,8 +656,9 @@ export async function getNetWorthEvolution(
 ): Promise<ActionResult<NetWorthEvolutionPoint[]>> {
   const ctx = await getServerContext();
   if (!ctx) return { error: "No autenticado" };
-  const baseCurrency = await loadBaseCurrency(ctx);
+  const [baseCurrency, months] = await Promise.all([loadBaseCurrency(ctx), loadMonths(ctx)]);
   if ("error" in baseCurrency) return baseCurrency;
-  await warmTodayRates(ctx, baseCurrency.data);
+  if ("error" in months) return months;
+  await warmCloseRates(ctx, baseCurrency.data, { months: months.data, year });
   return loadNetWorthEvolution(ctx, year);
 }

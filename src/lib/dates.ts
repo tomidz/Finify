@@ -27,3 +27,10 @@ export function addDays(date: string, days: number): string {
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
 }
+
+/** The date a month's balances are valued at: its last day, or today while it runs. */
+export function monthCloseDate(year: number, month: number, todayStr: string = today()): string {
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const monthEnd = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+  return monthEnd < todayStr ? monthEnd : todayStr;
+}

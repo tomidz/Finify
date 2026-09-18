@@ -11,20 +11,18 @@ import {
   loadAccountNetWorth,
   loadLiabilitiesForYear,
   loadNetWorthEvolution,
-  warmTodayRates,
+  warmCloseRates,
 } from "@/lib/server/net-worth";
-import { loadOpeningBalances } from "@/lib/server/opening-balances";
-import { loadTransactionsForMonths } from "@/lib/server/transactions";
+import { loadPeriodSummary, type PeriodSummaryData } from "@/lib/server/period-summary";
 import type { Currency } from "@/types/accounts";
 import type { BudgetSummaryVsActual } from "@/types/budget";
 import type { ForecastPoint } from "@/types/forecast";
-import type { Month, OpeningBalance } from "@/types/months";
+import type { Month } from "@/types/months";
 import type {
   AccountNetWorthSummary,
   LiabilitiesSummary,
   NetWorthEvolutionPoint,
 } from "@/types/net-worth";
-import type { TransactionWithRelations } from "@/types/transactions";
 
 /*
  * One server action per screen. The client dispatches server actions one at a
@@ -57,8 +55,8 @@ export type DashboardData = {
   endMonthId: string | null;
   baseCurrency: string;
   currencies: Currency[];
-  transactions: TransactionWithRelations[];
-  openingBalances: OpeningBalance[];
+  /** Null only while there are no months. */
+  period: PeriodSummaryData | null;
   budgetSummary: BudgetSummaryVsActual | null;
   /** Only for a single-month view. */
   forecast: ForecastPoint[] | null;
@@ -84,8 +82,7 @@ export async function getDashboardData(input: {
       endMonthId: null,
       baseCurrency,
       currencies,
-      transactions: [],
-      openingBalances: [],
+      period: null,
       budgetSummary: null,
       forecast: null,
     };
@@ -100,33 +97,22 @@ export async function getDashboardData(input: {
     if (toYearMonthCode(start.year, start.month) > toYearMonthCode(end.year, end.month)) {
       start = end;
     }
-    const startCode = toYearMonthCode(start.year, start.month);
-    const endCode = toYearMonthCode(end.year, end.month);
-    const monthIds = months
-      .filter((m) => {
-        const code = toYearMonthCode(m.year, m.month);
-        return code >= startCode && code <= endCode;
-      })
-      .map((m) => m.id);
     const isSingleMonth = start.id === end.id;
 
-    const [transactions, openingBalances, budgetSummary, forecast] =
-      await Promise.all([
-        loadTransactionsForMonths(ctx, monthIds, baseCurrency).then(unwrap),
-        loadOpeningBalances(ctx, start.id).then(unwrap),
-        loadBudgetSummaryRange(ctx, start.id, end.id).then(orNull("budget summary")),
-        isSingleMonth
-          ? loadForecast(ctx, baseCurrency, 6).then(orNull("forecast"))
-          : Promise.resolve(null),
-      ]);
+    const [period, budgetSummary, forecast] = await Promise.all([
+      loadPeriodSummary(ctx, { months, start, end, baseCurrency }).then(unwrap),
+      loadBudgetSummaryRange(ctx, start.id, end.id).then(orNull("budget summary")),
+      isSingleMonth
+        ? loadForecast(ctx, baseCurrency, 6, months).then(orNull("forecast"))
+        : Promise.resolve(null),
+    ]);
 
     return {
       data: {
         ...empty,
         startMonthId: start.id,
         endMonthId: end.id,
-        transactions,
-        openingBalances,
+        period,
         budgetSummary,
         forecast,
       },
@@ -181,7 +167,8 @@ export async function getNetWorthData(input: {
       };
     }
 
-    await warmTodayRates(ctx, baseCurrency);
+    // Every month of the year: the evolution reads each one's close.
+    await warmCloseRates(ctx, baseCurrency, { months, year });
     const [accounts, liabilities, evolution] = await Promise.all([
       loadAccountNetWorth(ctx, year).then(unwrap),
       loadLiabilitiesForYear(ctx, year).then(unwrap),

@@ -15,7 +15,7 @@ import {
   getAccountInitialBalance,
   getAccountById,
   getAccountBalanceHistory,
-  getAccountCurrentBalance,
+  getAccountCurrentAmount,
 } from "@/actions/accounts";
 import type { CreateAccountInput, UpdateAccountInput } from "@/lib/validations/account.schema";
 import type { Account } from "@/types/accounts";
@@ -167,7 +167,7 @@ export function useAccountCurrentBalance(accountId: string | undefined) {
     enabled: !!accountId,
     queryFn: async () => {
       if (!accountId) return null;
-      const result = await getAccountCurrentBalance(accountId);
+      const result = await getAccountCurrentAmount(accountId);
       if ("error" in result) throw new Error(result.error);
       return result.data;
     },

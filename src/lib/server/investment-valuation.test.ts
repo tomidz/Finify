@@ -43,14 +43,10 @@ describe("loadInvestmentValuation", () => {
     resolvePricesWithSources.mockReset();
   });
 
-  it("asks once per lot lookup, the way the holdings table does, for both views", async () => {
+  it("asks once per lot lookup, the way the holdings table does", async () => {
     resolvePricesWithSources.mockResolvedValue(priced({ "stock:USD:|US0378331005": 200 }));
 
-    const result = await loadInvestmentValuation(
-      context([lot({ isin: "US0378331005" })]),
-      "USD",
-      2026,
-    );
+    const result = await loadInvestmentValuation(context([lot({ isin: "US0378331005" })]), "USD");
 
     expect(resolvePricesWithSources.mock.calls[0][0]).toEqual([
       {
@@ -63,14 +59,7 @@ describe("loadInvestmentValuation", () => {
       },
     ]);
     expect(result).toEqual({
-      data: {
-        byAccount: { broker: { current: 2 * 200, cost: 300 } },
-        byMonth: expect.objectContaining({
-          3: { currentValue: 2 * 200, costBasis: 300 },
-          12: { currentValue: 2 * 200, costBasis: 300 },
-        }),
-        fxRateDate: null,
-      },
+      data: { byAccount: { broker: { current: 2 * 200, cost: 300 } }, fxRateDate: null },
     });
   });
 
@@ -80,10 +69,9 @@ describe("loadInvestmentValuation", () => {
     const result = await loadInvestmentValuation(
       context([lot({ ticker: "SAP", currency: "EUR", total_cost: 1000 })]),
       "USD",
-      null,
     );
 
-    expect(result).toEqual({ data: { byAccount: { broker: { current: 1100, cost: 1100 } }, byMonth: null, fxRateDate: "2026-09-15" } });
+    expect(result).toEqual({ data: { byAccount: { broker: { current: 1100, cost: 1100 } }, fxRateDate: "2026-09-15" } });
   });
 
   it("converts a crypto lot's value and cost from its own currency", async () => {
@@ -92,10 +80,9 @@ describe("loadInvestmentValuation", () => {
     const result = await loadInvestmentValuation(
       context([lot({ asset_name: "BTC", asset_type: "crypto", currency: "EUR", quantity: 0.5, total_cost: 10_000 })]),
       "USD",
-      null,
     );
 
-    expect(result).toEqual({ data: { byAccount: { broker: { current: 33_000, cost: 11_000 } }, byMonth: null, fxRateDate: "2026-09-15" } });
+    expect(result).toEqual({ data: { byAccount: { broker: { current: 33_000, cost: 11_000 } }, fxRateDate: "2026-09-15" } });
   });
 
   it("values cash held at the exchange rate, against what it cost", async () => {
@@ -104,16 +91,9 @@ describe("loadInvestmentValuation", () => {
     const result = await loadInvestmentValuation(
       context([lot({ asset_name: "Euros", ticker: "EUR", asset_type: "cash", quantity: 1000, total_cost: 1050 })]),
       "USD",
-      2026,
     );
 
-    expect(result).toEqual({
-      data: {
-        byAccount: { broker: { current: 1100, cost: 1050 } },
-        byMonth: expect.objectContaining({ 3: { currentValue: 1100, costBasis: 1050 } }),
-        fxRateDate: null,
-      },
-    });
+    expect(result).toEqual({ data: { byAccount: { broker: { current: 1100, cost: 1050 } }, fxRateDate: null } });
   });
 
   it("prices the same code held against two currencies separately", async () => {
@@ -135,7 +115,6 @@ describe("loadInvestmentValuation", () => {
         }),
       ]),
       "USD",
-      null,
     );
 
     expect((resolvePricesWithSources.mock.calls[0][0] as PriceRequest[]).map((r) => r.key)).toEqual([
@@ -148,7 +127,6 @@ describe("loadInvestmentValuation", () => {
           broker: { current: 100, cost: 100 },
           exchange: { current: expect.closeTo(99, 6), cost: expect.closeTo(99, 6) },
         },
-        byMonth: null,
         fxRateDate: "2026-09-15",
       },
     });
@@ -157,7 +135,7 @@ describe("loadInvestmentValuation", () => {
   it("fails rather than mixing currencies when a lot's currency has no rate", async () => {
     resolvePricesWithSources.mockResolvedValue(priced({}, { USD: 1 }));
 
-    const result = await loadInvestmentValuation(context([lot({ ticker: "SAP", currency: "EUR" })]), "USD", null);
+    const result = await loadInvestmentValuation(context([lot({ ticker: "SAP", currency: "EUR" })]), "USD");
 
     expect(result).toEqual({ error: "No hay tipo de cambio de EUR a USD" });
   });

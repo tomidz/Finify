@@ -4,20 +4,15 @@ import { createClient } from "@/lib/supabase/server";
 import { getBaseCurrency } from "@/actions/transactions";
 import { getOrFetchFxRate } from "@/lib/server/fx";
 import { ledgerRpcError } from "@/lib/server/ledger-rpc";
-import { getExpectedDatesInMonth } from "@/lib/recurrence";
+import { getServerContext } from "@/lib/server/context";
+import { loadRecurringOccurrences } from "@/lib/server/recurring-calendar";
 import {
   CreateRecurringSchema,
   UpdateRecurringSchema,
 } from "@/lib/validations/recurring.schema";
-import type {
-  RecurringWithRelations,
-  PendingRecurring,
-} from "@/types/recurring";
+import type { PendingRecurring, RecurringWithRelations } from "@/types/recurring";
 
 type ActionResult<T> = { data: T } | { error: string };
-
-/** Tolerance for matching recurring amounts against existing transactions (15%) */
-const RECURRING_AMOUNT_TOLERANCE = 0.15;
 
 /** A template's amount is in its account's currency; null when it is. */
 async function recurringCurrencyError(
@@ -253,156 +248,17 @@ export async function getPendingRecurring(
   month: number
 ): Promise<ActionResult<PendingRecurring[]>> {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return { error: "No autenticado" };
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
 
-    // 1. Get all active recurring transactions
-    const { data: recurrings, error: recError } = await supabase
-      .from("recurring_transactions")
-      .select(
-        `
-        *,
-        accounts ( name ),
-        budget_categories ( name ),
-        currencies!currency ( symbol )
-      `
-      )
-      .eq("user_id", user.id)
-      .eq("is_active", true);
+    const occurrences = await loadRecurringOccurrences(ctx, { year, month }, { year, month });
+    if ("error" in occurrences) return occurrences;
 
-    if (recError) return { error: recError.message };
-    if (!recurrings || recurrings.length === 0) return { data: [] };
-
-    // 2. Get all transactions for this month to match against
-    const { data: monthRow } = await supabase
-      .from("months")
-      .select("id")
-      .eq("user_id", user.id)
-      .eq("year", year)
-      .eq("month", month)
-      .maybeSingle();
-
-    // 3. For each recurring, calculate expected dates and check if already registered
-    const monthStart = new Date(year, month - 1, 1);
-    const monthEnd = new Date(year, month, 0); // last day of month
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const firstDay = `${year}-${pad(month)}-01`;
-    const lastDay = `${year}-${pad(month)}-${pad(monthEnd.getDate())}`;
-
-    // Occurrences registered from a template, wherever their transaction's
-    // date ended up.
-    const { data: linkedData, error: linkedError } = await supabase
-      .from("transactions")
-      .select("recurring_id, occurrence_date")
-      .eq("user_id", user.id)
-      .not("recurring_id", "is", null)
-      .gte("occurrence_date", firstDay)
-      .lte("occurrence_date", lastDay)
-      .is("deleted_at", null);
-    if (linkedError) return { error: linkedError.message };
-    const linked = new Set(
-      (linkedData ?? []).map((tx) => `${tx.recurring_id}:${tx.occurrence_date}`),
-    );
-
-    // Transactions entered by hand, matched approximately.
-    let existingTxs: {
-      description: string;
-      account_id: string;
-      amount: number;
-    }[] = [];
-    if (monthRow) {
-      const { data: txData, error: txError } = await supabase
-        .from("transactions")
-        .select("description, transaction_amounts ( account_id, amount )")
-        .eq("user_id", user.id)
-        .eq("month_id", monthRow.id)
-        .is("recurring_id", null)
-        .is("deleted_at", null);
-      if (txError) return { error: txError.message };
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      existingTxs = (txData ?? []).map((tx: any) => {
-        const firstLine = Array.isArray(tx.transaction_amounts)
-          ? tx.transaction_amounts[0]
-          : tx.transaction_amounts;
-        return {
-          description: (tx.description ?? "").toLowerCase().trim(),
-          account_id: firstLine?.account_id ?? "",
-          amount: Math.abs(Number(firstLine?.amount ?? 0)),
-        };
-      });
-    }
-    const results: PendingRecurring[] = [];
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for (const rec of recurrings as any[]) {
-      // Parse as local midnight so getDate()/getDay()/getMonth() are correct
-      // regardless of timezone offset.
-      const startStr = String(rec.start_date).slice(0, 10);
-      const endStr = rec.end_date ? String(rec.end_date).slice(0, 10) : null;
-      const startDate = new Date(`${startStr}T00:00:00`);
-      const endDate = endStr ? new Date(`${endStr}T00:00:00`) : null;
-
-      // Skip if not yet started or already ended
-      if (startDate > monthEnd) continue;
-      if (endDate && endDate < monthStart) continue;
-
-      // Clamp generated dates to the active [start, end] window. Per-recurrence
-      // generators work on the calendar month, so dates before the start or
-      // after the end must be dropped here.
-      const expectedDates = getExpectedDatesInMonth(
-        rec.recurrence,
-        rec.day_of_month,
-        rec.day_of_week,
-        year,
-        month,
-        startDate
-      ).filter((d) => d >= startStr && (!endStr || d <= endStr));
-
-      const mapped: RecurringWithRelations = {
-        ...rec,
-        amount: Number(rec.amount),
-        exchange_rate: rec.exchange_rate ? Number(rec.exchange_rate) : null,
-        base_amount: rec.base_amount ? Number(rec.base_amount) : null,
-        account_name: rec.accounts?.name ?? "",
-        category_name: rec.budget_categories?.name ?? null,
-        currency_symbol: rec.currencies?.symbol ?? rec.currency,
-      };
-
-      for (const expectedDate of expectedDates) {
-        if (linked.has(`${rec.id}:${expectedDate}`)) {
-          results.push({ recurring: mapped, expected_date: expectedDate, is_registered: true });
-          continue;
-        }
-
-        // A matching transaction covers exactly ONE occurrence: consume it so
-        // a single payment doesn't mark every weekly date as registered.
-        // The comparison is in the account's currency, which is the
-        // template's: a base amount fixed when the template was created
-        // drifts with the exchange rate.
-        const descLower = rec.description.toLowerCase().trim();
-        const recAmount = Math.abs(Number(rec.amount));
-        const matchIndex = existingTxs.findIndex((tx) => {
-          if (tx.description !== descLower) return false;
-          if (tx.account_id !== rec.account_id) return false;
-          return (
-            Math.abs(tx.amount - recAmount) / (recAmount || 1) <
-            RECURRING_AMOUNT_TOLERANCE
-          );
-        });
-        const isRegistered = matchIndex !== -1;
-        if (isRegistered) existingTxs.splice(matchIndex, 1);
-
-        results.push({
-          recurring: mapped,
-          expected_date: expectedDate,
-          is_registered: isRegistered,
-        });
-      }
-    }
+    const results: PendingRecurring[] = occurrences.data.map((occurrence) => ({
+      recurring: occurrence.recurring,
+      expected_date: occurrence.date,
+      is_registered: occurrence.registered,
+    }));
 
     // Sort: unregistered first, then by date
     results.sort((a, b) => {

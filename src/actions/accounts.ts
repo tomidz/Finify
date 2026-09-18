@@ -6,7 +6,9 @@ import {
   UpdateAccountSchema,
 } from "@/lib/validations/account.schema";
 import { getOrFetchFxRate } from "@/lib/server/fx";
-import { today } from "@/lib/dates";
+import { monthCloseDate, today } from "@/lib/dates";
+import { getServerContext, loadBaseCurrency, type ServerContext } from "@/lib/server/context";
+import { resolveFxRates } from "@/lib/server/fx-range";
 import {
   RECALCULATION_FAILED,
   recalculateOpeningBalances,
@@ -128,6 +130,14 @@ export async function getAccountById(
   }
 }
 
+/** Only fiat currencies have a provider: asking for any other rate only waits for a failure. */
+async function hasProvider(supabase: ServerContext["supabase"], currency: string): Promise<boolean> {
+  const { data, error } = await supabase.from("currencies").select("currency_type").eq("code", currency).maybeSingle();
+  // Unknown: better to ask a provider than to show a fiat balance unquoted.
+  if (error) return true;
+  return data?.currency_type === "fiat";
+}
+
 // --- GET ACCOUNT BALANCE HISTORY (per month, latest first) ---
 export interface AccountMonthBalance {
   year: number;
@@ -137,39 +147,73 @@ export interface AccountMonthBalance {
   month_movements: number;
   month_base_movements: number;
   closing_amount: number;
+  /** At the month's close rate; without one, the stored base amounts. */
   closing_base_amount: number;
+  closing_rate_missing: boolean;
 }
 
 export async function getAccountBalanceHistory(
   accountId: string,
 ): Promise<ActionResult<AccountMonthBalance[]>> {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return { error: "No autenticado" };
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
 
-    const { data, error } = await supabase.rpc("account_month_balances", {
-      p_account_id: accountId,
-    });
+    const [{ data, error }, account, baseCurrency] = await Promise.all([
+      ctx.supabase.rpc("account_month_balances", { p_account_id: accountId }),
+      ctx.supabase
+        .from("accounts")
+        .select("currency")
+        .eq("id", accountId)
+        .eq("user_id", ctx.userId)
+        .maybeSingle(),
+      loadBaseCurrency(ctx),
+    ]);
     if (error) return { error: error.message };
+    if (account.error) return { error: account.error.message };
+    if (!account.data) return { error: "Cuenta no encontrada" };
+    if ("error" in baseCurrency) return baseCurrency;
+
+    const currency = account.data.currency;
+    const rows = ((data ?? []) as Array<{
+      year: number;
+      month: number;
+      opening_amount: number | string;
+      opening_base_amount: number | string;
+      movements: number | string;
+      base_movements: number | string;
+    }>).map((row) => ({
+      year: row.year,
+      month: row.month,
+      opening_amount: Number(row.opening_amount),
+      opening_base_amount: Number(row.opening_base_amount),
+      month_movements: Number(row.movements),
+      month_base_movements: Number(row.base_movements),
+      closing_amount: Number(row.opening_amount) + Number(row.movements),
+    }));
+    // Every balance is valued at the rate of its month's close.
+    const rateAt = (await hasProvider(ctx.supabase, currency))
+      ? await resolveFxRates(
+          ctx.supabase,
+          rows.map((row) => ({ date: monthCloseDate(row.year, row.month), from: currency })),
+          baseCurrency.data,
+        )
+      : null;
 
     return {
-      data: (data ?? []).map((row) => {
-        const opening = Number(row.opening_amount);
-        const openingBase = Number(row.opening_base_amount);
-        const movements = Number(row.movements);
-        const baseMovements = Number(row.base_movements);
+      data: rows.map((row) => {
+        const rate =
+          currency === baseCurrency.data ? 1 : (rateAt?.(monthCloseDate(row.year, row.month), currency) ?? null);
+        const missing = row.closing_amount !== 0 && rate == null;
         return {
-          year: row.year,
-          month: row.month,
-          opening_amount: opening,
-          opening_base_amount: openingBase,
-          month_movements: movements,
-          month_base_movements: baseMovements,
-          closing_amount: opening + movements,
-          closing_base_amount: openingBase + baseMovements,
+          ...row,
+          closing_base_amount:
+            row.closing_amount === 0
+              ? 0
+              : rate != null
+                ? row.closing_amount * rate
+                : row.opening_base_amount + row.month_base_movements,
+          closing_rate_missing: missing,
         };
       }),
     };
@@ -210,29 +254,64 @@ export async function getAccountInitialBalance(
   }
 }
 
-// --- GET ACCOUNT CURRENT BALANCE (closing as of now, account currency) ---
-export async function getAccountCurrentBalance(
-  accountId: string,
-): Promise<ActionResult<{ amount: number; base_amount: number }>> {
+// --- GET ACCOUNT CURRENT AMOUNT (closing as of now, account currency) ---
+export async function getAccountCurrentAmount(accountId: string): Promise<ActionResult<{ amount: number }>> {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return { error: "No autenticado" };
-
-    const { data, error } = await supabase.rpc("account_balances", {
-      p_account_ids: [accountId],
-    });
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
+    const { data, error } = await ctx.supabase.rpc("account_balances", { p_account_ids: [accountId] });
     if (error) return { error: error.message };
     const balance = data?.[0];
     if (!balance) return { error: "Cuenta no encontrada" };
-
     // Not rounded: a crypto balance keeps its 8 decimals.
+    return { data: { amount: Number(balance.amount) } };
+  } catch {
+    return { error: "Error al obtener el saldo actual" };
+  }
+}
+
+// --- GET ACCOUNT CURRENT BALANCE (also in the base currency, at today's rate) ---
+export async function getAccountCurrentBalance(
+  accountId: string,
+): Promise<ActionResult<{ amount: number; base_amount: number; rate_missing: boolean }>> {
+  try {
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
+
+    const [{ data, error }, account, baseCurrency] = await Promise.all([
+      ctx.supabase.rpc("account_balances", { p_account_ids: [accountId] }),
+      ctx.supabase
+        .from("accounts")
+        .select("currency")
+        .eq("id", accountId)
+        .eq("user_id", ctx.userId)
+        .maybeSingle(),
+      loadBaseCurrency(ctx),
+    ]);
+    if (error) return { error: error.message };
+    if (account.error) return { error: account.error.message };
+    if (!account.data) return { error: "Cuenta no encontrada" };
+    if ("error" in baseCurrency) return baseCurrency;
+    const balance = data?.[0];
+    if (!balance) return { error: "Cuenta no encontrada" };
+
+    // The balance is valued at today's rate, like every other balance.
+    const amount = Number(balance.amount);
+    const rate =
+      amount === 0 || account.data.currency === baseCurrency.data
+        ? 1
+        : !(await hasProvider(ctx.supabase, account.data.currency))
+          ? null
+          : await getOrFetchFxRate({ date: today(), from: account.data.currency, to: baseCurrency.data }).then(
+            (result) => ("error" in result ? null : result.data),
+          );
+
+    // Without a rate, the base amounts stored with its movements.
     return {
       data: {
-        amount: Number(balance.amount),
-        base_amount: Number(balance.base_amount),
+        amount,
+        base_amount: rate != null ? amount * rate : Number(balance.base_amount),
+        rate_missing: rate == null,
       },
     };
   } catch {

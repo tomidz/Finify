@@ -1,5 +1,6 @@
 -- fx_rate_asof() (0053) finds a cached rate with its date, and the net worth
 -- RPCs leave out, and mark, what has no recent rate instead of valuing it 1:1.
+-- The month is the one in progress, which 0054 values at today's rate.
 begin;
 create extension if not exists pgtap with schema extensions;
 
@@ -11,8 +12,8 @@ insert into auth.users (id, email) values
 insert into public.accounts (id, user_id, name, account_type, currency, initial_amount, initial_base_amount, initial_base_currency) values
   ('aaaaaaaa-0000-4000-8000-000000000001', '11111111-1111-4111-8111-111111111111', 'Broker EUR', 'investment_broker', 'USD', 0, 0, 'USD'),
   ('aaaaaaaa-0000-4000-8000-000000000002', '11111111-1111-4111-8111-111111111111', 'Broker CHF', 'investment_broker', 'USD', 0, 0, 'USD');
-insert into public.months (user_id, year, month) values
-  ('11111111-1111-4111-8111-111111111111', 2026, 1);
+insert into public.months (user_id, year, month)
+select '11111111-1111-4111-8111-111111111111', extract(year from public.app_today())::int, extract(month from public.app_today())::int;
 insert into public.investments (user_id, account_id, asset_name, ticker, asset_type, quantity, price_per_unit, total_cost, currency, purchase_date) values
   ('11111111-1111-4111-8111-111111111111', 'aaaaaaaa-0000-4000-8000-000000000001', 'SAP', 'SAP', 'stock', 1, 100, 100, 'EUR', '2026-01-05'),
   ('11111111-1111-4111-8111-111111111111', 'aaaaaaaa-0000-4000-8000-000000000002', 'Nestle', 'NESN', 'stock', 1, 50, 50, 'CHF', '2026-01-05');
@@ -49,31 +50,31 @@ select is_empty(
 
 select results_eq(
   $$ select investment_value, investment_value_base, investment_fx_missing, investment_fx_rate_date
-     from public.account_net_worth_year(2026) where account_name = 'Broker EUR' $$,
+     from public.account_net_worth_year(extract(year from public.app_today())::int) where account_name = 'Broker EUR' $$,
   $$ values (100::numeric, 110::numeric, false, current_date - 3) $$,
   'a lot with a rate is valued at it, with the rate''s date'
 );
 select results_eq(
   $$ select investment_value, investment_value_base, investment_fx_missing
-     from public.account_net_worth_year(2026) where account_name = 'Broker CHF' $$,
+     from public.account_net_worth_year(extract(year from public.app_today())::int) where account_name = 'Broker CHF' $$,
   $$ values (50::numeric, null::numeric, true) $$,
   'a lot without a rate has no base value, and is marked'
 );
 
 select results_eq(
-  $$ select name, amount_base, fx_missing from public.liabilities_year(2026) order by name $$,
+  $$ select name, amount_base, fx_missing from public.liabilities_year(extract(year from public.app_today())::int) order by name $$,
   $$ values ('Préstamo EUR'::text, 220::numeric, false), ('Tarjeta GBP'::text, null::numeric, true) $$,
   'a debt without a recent rate has no base amount, and is marked, rather than its stored or unconverted amount'
 );
 
 select results_eq(
   $$ select c from public.user_valued_currencies() c order by 1 $$,
-  $$ values ('CHF'::text), ('EUR'::text), ('GBP'::text) $$,
-  'the currencies to value are those of the lots, sales and debts'
+  $$ values ('CHF'::text), ('EUR'::text), ('GBP'::text), ('USD'::text) $$,
+  'the currencies to value are those of the accounts, lots, sales and debts'
 );
 
 select results_eq(
-  $$ select assets, liabilities, fx_missing from public.net_worth_evolution_year(2026) where month = 1 $$,
+  $$ select assets, liabilities, fx_missing from public.net_worth_evolution_year(extract(year from public.app_today())::int) $$,
   $$ values (110::numeric, 220::numeric, true) $$,
   'the month leaves out what has no rate and is marked'
 );

@@ -20,8 +20,9 @@ export type FxLookup = ((date: string, from: string) => number | null) & {
 };
 
 const PROVIDER_CONCURRENCY = 4;
-/** Uncached past days of the peso from which the whole history is fetched at once. */
+/** Uncached past days of a currency from which its series is fetched at once. */
 const ARS_HISTORY_THRESHOLD = 3;
+const SERIES_THRESHOLD = 3;
 /** Days a peso quote carries over to the days after it without one (weekends, holidays). */
 const ARS_CARRY_DAYS = 3;
 /** The same for the ECB, which closes up to four days in a row at Easter. */
@@ -64,6 +65,16 @@ export async function resolveFxRates(
 
   const pending = requests.filter((r) => r.date && r.from && r.from !== to);
   if (pending.length === 0) return lookup;
+
+  type CacheRow = { rate_date: string; from_currency: string; to_currency: string; rate: number; source: string };
+  // Rates from a series, cached under each day asked like getFxQuote does.
+  const cacheRows = async (rows: CacheRow[]) => {
+    if (rows.length === 0) return;
+    const { error } = await supabase
+      .from("fx_rates")
+      .upsert(rows, { onConflict: "rate_date,from_currency,to_currency,source", ignoreDuplicates: true });
+    if (error) console.error("resolveFxRates: could not cache a rate series:", error.code);
+  };
 
   const sourceFor = (from: string) =>
     from === "ARS" || to === "ARS" ? "dolarapi" : "frankfurter";
@@ -118,7 +129,7 @@ export async function resolveFxRates(
         ),
       );
     }
-    const rows: { rate_date: string; from_currency: string; to_currency: string; rate: number; source: string }[] = [];
+    const rows: CacheRow[] = [];
     for (const [requestKey, request] of history ? arsPast : []) {
       const arsPerUsd = carried(history, request.date, ARS_CARRY_DAYS);
       const other = otherOf(request);
@@ -129,13 +140,33 @@ export async function resolveFxRates(
       unresolved.delete(requestKey);
       rows.push({ rate_date: request.date, from_currency: request.from, to_currency: to, rate, source: "dolarapi" });
     }
-    if (rows.length > 0) {
-      const { error } = await supabase
-        .from("fx_rates")
-        .upsert(rows, { onConflict: "rate_date,from_currency,to_currency,source", ignoreDuplicates: true });
-      if (error) console.error("resolveFxRates: could not cache the peso history:", error.code);
-    }
+    await cacheRows(rows);
   }
+
+  // Many past days of another currency: its daily series in one request.
+  const seriesPast = new Map<string, [string, FxRequest][]>();
+  for (const entry of unresolved) {
+    const [, request] = entry;
+    if (request.date >= today || request.from === "ARS" || to === "ARS") continue;
+    seriesPast.set(request.from, [...(seriesPast.get(request.from) ?? []), entry]);
+  }
+  const seriesRows: CacheRow[] = [];
+  await Promise.all(
+    [...seriesPast]
+      .filter(([, entries]) => entries.length >= SERIES_THRESHOLD)
+      .map(async ([from, entries]) => {
+        const dates = entries.map(([, r]) => r.date).sort();
+        const series = await fetchFrankfurterSeries(from, to, dates[0], dates[dates.length - 1]);
+        for (const [requestKey, request] of series ? entries : []) {
+          const rate = carried(series, request.date, ECB_CARRY_DAYS);
+          if (rate == null) continue;
+          quotes.set(requestKey, { rate, rateDate: request.date });
+          unresolved.delete(requestKey);
+          seriesRows.push({ rate_date: request.date, from_currency: from, to_currency: to, rate, source: "frankfurter" });
+        }
+      }),
+  );
+  await cacheRows(seriesRows);
 
   // Once a currency's provider fails, the rest of the batch only reads the
   // cache: waiting out the timeout for every date would stall the page.

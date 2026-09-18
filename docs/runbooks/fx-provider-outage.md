@@ -21,7 +21,7 @@ Con el paso 3 la pantalla sigue funcionando y muestra **"TC del dd/mm"**. Si tam
 cotización reciente:
 
 - **Lecturas**: el monto queda **sin cotización**, fuera de los totales, y la pantalla lo marca.
-  Nunca se valúa 1:1.
+  Nunca se valúa 1:1. Un saldo de caja queda a la base guardada con sus movimientos, marcado.
 - **Escrituras** que necesitan la base (un gasto en otra moneda, un saldo inicial, un pago de deuda):
   fallan con "No hay cotización de X a Y…". Si el formulario tiene un campo de tipo de cambio,
   cargarlo a mano permite guardar.

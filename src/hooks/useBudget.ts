@@ -37,6 +37,7 @@ import type {
 } from "@/lib/validations/budget.schema";
 import { invalidateBudgetPlan, invalidateLedger } from "@/lib/query-keys";
 import { toast } from "sonner";
+import { budgetTotalsByGroup } from "@/lib/finance/budget-status";
 
 export const BUDGET_KEYS = {
   years: ["budget", "years"] as const,
@@ -400,22 +401,16 @@ export function useUpsertBudgetMonthPlan() {
             BUDGET_KEYS.summary(targetMonthId),
             (old) => {
               if (!old) return old;
-              return {
-                totals: {
-                  ...old.totals,
-                  planned: old.totals.planned + diff,
-                  variance: old.totals.variance + diff,
-                },
-                categories: old.categories.map((cat) =>
-                  cat.category_id === updatedLine.category_id
-                    ? {
-                        ...cat,
-                        planned_amount: cat.planned_amount + diff,
-                        variance: cat.variance + diff,
-                      }
-                    : cat
-                ),
-              };
+              const categories = old.categories.map((cat) =>
+                cat.category_id === updatedLine.category_id
+                  ? {
+                      ...cat,
+                      planned_amount: cat.planned_amount + diff,
+                      variance: cat.variance + diff,
+                    }
+                  : cat
+              );
+              return { totals: budgetTotalsByGroup(categories), categories };
             }
           );
         }
@@ -478,10 +473,7 @@ export function useBudgetSummary(monthId: string | null) {
     enabled: !!monthId,
     queryFn: async () => {
       if (!monthId) {
-        return {
-          totals: { planned: 0, actual: 0, variance: 0 },
-          categories: [],
-        };
+        return { totals: budgetTotalsByGroup([]), categories: [] };
       }
       const result = await getBudgetSummaryVsActual(monthId);
       if ("error" in result) throw new Error(result.error);

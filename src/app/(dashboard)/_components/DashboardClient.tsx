@@ -1,6 +1,7 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Select,
   SelectContent,
@@ -11,7 +12,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useEnsureCurrentMonth } from "@/hooks/useMonths";
 import { useDashboardData } from "@/hooks/useScreens";
-import { useMonthSummary } from "@/hooks/useMonthSummary";
 import { MONTH_NAMES } from "@/lib/format";
 import type { ForecastPoint } from "@/types/forecast";
 import type { Month } from "@/types/months";
@@ -25,11 +25,22 @@ import { BudgetExecutionChart } from "./BudgetExecutionChart";
 import { ForecastChart } from "./ForecastChart";
 
 export function DashboardClient() {
-  // Requested range; the server resolves defaults (latest month) and order.
-  const [requestedRange, setRequestedRange] = useState<{
-    from: string | null;
-    to: string | null;
-  }>({ from: null, to: null });
+  // Requested range, kept in the URL; the server resolves defaults (the
+  // current month) and order.
+  const searchParams = useSearchParams();
+  const requestedRange = useMemo(
+    () => ({ from: searchParams.get("from"), to: searchParams.get("to") }),
+    [searchParams],
+  );
+  const setRequestedRange = useCallback((range: { from: string | null; to: string | null }) => {
+    const params = new URLSearchParams(window.location.search);
+    for (const [key, value] of Object.entries(range)) {
+      if (value) params.set(key, value);
+      else params.delete(key);
+    }
+    const query = params.toString();
+    window.history.replaceState(null, "", query ? `?${query}` : window.location.pathname);
+  }, []);
 
   const { data, isPending, isPlaceholderData, error } = useDashboardData(
     requestedRange.from,
@@ -72,11 +83,11 @@ export function DashboardClient() {
 
   const onFromMonthChange = useCallback(
     (id: string) => setRequestedRange({ from: id, to: selectedToId }),
-    [selectedToId],
+    [selectedToId, setRequestedRange],
   );
   const onToMonthChange = useCallback(
     (id: string) => setRequestedRange({ from: selectedFromId, to: id }),
-    [selectedFromId],
+    [selectedFromId, setRequestedRange],
   );
 
   const baseCurrency = data?.baseCurrency ?? null;
@@ -86,17 +97,13 @@ export function DashboardClient() {
     return found?.symbol ?? baseCurrency;
   }, [baseCurrency, data?.currencies]);
 
-  const { monthSummary, accountMonthlyBalances } = useMonthSummary(
-    data?.transactions,
-    data?.openingBalances,
-  );
-
-  if (isPending) {
+  // No period until the first month exists (see ensureCurrentMonth).
+  if (isPending || (data && !data.period && !ensureCurrentMonth.isError && !error)) {
     return (
       <div className="space-y-4">
         <Skeleton className="h-10 w-64" />
-        <div className="grid gap-3 grid-cols-2 lg:grid-cols-5">
-          {Array.from({ length: 5 }).map((_, i) => (
+        <div className="grid gap-3 grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-24 w-full" />
           ))}
         </div>
@@ -106,11 +113,13 @@ export function DashboardClient() {
   }
 
   // A failed background refetch keeps showing the last figures.
-  if (!data) {
+  if (!data?.period) {
     return (
       <div className="rounded-md border border-destructive/40 p-4 text-sm">
         <p className="font-medium">No se pudo cargar el dashboard.</p>
-        <p className="text-muted-foreground text-xs">{error?.message}</p>
+        <p className="text-muted-foreground text-xs">
+          {error?.message ?? ensureCurrentMonth.error?.message}
+        </p>
       </div>
     );
   }
@@ -142,11 +151,12 @@ export function DashboardClient() {
       <div className={isPlaceholderData ? "space-y-6 opacity-60" : "space-y-6"}>
         <DashboardContent
           isRange={isRange}
-          monthSummary={monthSummary}
+          monthId={isRange ? null : fromMonthId}
+          monthSummary={data.period.summary}
           budgetSummary={data.budgetSummary ?? undefined}
           forecast={data.forecast}
           currencySymbol={currencySymbol}
-          accountMonthlyBalances={accountMonthlyBalances}
+          accountMonthlyBalances={data.period.accountBalances}
           fromMonth={fromMonth}
           toMonth={toMonth}
           baseCurrency={baseCurrency}
@@ -209,6 +219,7 @@ const DashboardRangeSelector = memo(function DashboardRangeSelector({
 
 const DashboardContent = memo(function DashboardContent({
   isRange,
+  monthId,
   monthSummary,
   budgetSummary,
   forecast,
@@ -219,6 +230,8 @@ const DashboardContent = memo(function DashboardContent({
   baseCurrency,
 }: {
   isRange: boolean;
+  /** The month the charts link to, for a single-month view. */
+  monthId: string | null;
   monthSummary: Parameters<typeof SummaryCards>[0]["summary"];
   budgetSummary: Parameters<typeof BudgetExecutionChart>[0]["budgetSummary"];
   forecast: ForecastPoint[] | null;
@@ -248,12 +261,14 @@ const DashboardContent = memo(function DashboardContent({
         <ExpenseBreakdownChart
           summary={monthSummary}
           currencySymbol={currencySymbol}
+          monthId={monthId}
         />
       </div>
 
       <BudgetExecutionChart
         budgetSummary={budgetSummary}
         currencySymbol={currencySymbol}
+        monthId={monthId}
       />
 
       {!isRange && <ForecastChart forecast={forecast} currencySymbol={currencySymbol} />}

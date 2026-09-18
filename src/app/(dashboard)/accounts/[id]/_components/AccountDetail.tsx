@@ -98,6 +98,9 @@ export function AccountDetail({ accountId }: { accountId: string }) {
             <CardContent className="px-4 pb-4">
               <p className="text-2xl font-bold">
                 {baseSymbol} {formatAmount(currentBalance.closing_base_amount)}
+                {currentBalance.closing_rate_missing && (
+                  <span className="text-muted-foreground ml-2 text-xs font-normal">sin cotización</span>
+                )}
               </p>
             </CardContent>
           </Card>
@@ -167,6 +170,7 @@ export function AccountDetail({ accountId }: { accountId: string }) {
                     </TableCell>
                     <TableCell className="text-right text-muted-foreground text-xs">
                       {baseSymbol} {formatAmount(row.closing_base_amount)}
+                      {row.closing_rate_missing && " (sin cotización)"}
                     </TableCell>
                   </TableRow>
                 ))

@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { formatAmount, amountTone, MONTH_NAMES } from "@/lib/format";
-import type { AccountBalance } from "@/hooks/useMonthSummary";
+import type { AccountBalance } from "@/lib/finance/period-summary";
 import type { Month } from "@/types/months";
 import { fetchCryptoPrices } from "@/lib/coingecko";
 

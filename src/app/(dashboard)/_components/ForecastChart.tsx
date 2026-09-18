@@ -33,6 +33,7 @@ export function ForecastChart({ forecast, currencySymbol }: ForecastChartProps) 
         label: point.label,
         balance: point.projected_balance,
         isActual: point.is_actual,
+        sources: point.sources,
       })),
     [forecast]
   );
@@ -47,10 +48,7 @@ export function ForecastChart({ forecast, currencySymbol }: ForecastChartProps) 
       <CardHeader>
         <CardTitle className="text-base">Proyección de saldo</CardTitle>
         <CardDescription>
-          Saldo proyectado a 6 meses basado en{" "}
-          {forecast?.some((p) => !p.is_actual && p.projected_income > 0)
-            ? "transacciones recurrentes"
-            : "promedio histórico"}
+          Desde hoy: lo cargado, recurrentes, presupuesto e historial.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -72,11 +70,12 @@ export function ForecastChart({ forecast, currencySymbol }: ForecastChartProps) 
               width={90}
             />
             <Tooltip
-              formatter={(value) => {
+              formatter={(value, _name, item) => {
                 const numeric = typeof value === "number" ? value : 0;
+                const sources: string[] = item?.payload?.sources ?? [];
                 return [
                   `${currencySymbol} ${formatAmount(numeric)}`,
-                  "Saldo",
+                  sources.length > 0 ? `Saldo (${sources.join(", ")})` : "Saldo",
                 ];
               }}
             />
@@ -85,7 +84,6 @@ export function ForecastChart({ forecast, currencySymbol }: ForecastChartProps) 
                 x={chartData[actualCount - 1]?.label}
                 stroke="#94a3b8"
                 strokeDasharray="4 4"
-                label={{ value: "Hoy", fontSize: 11, fill: "#94a3b8" }}
               />
             )}
             <Area

@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   useReactTable,
   getCoreRowModel,
@@ -60,7 +61,7 @@ import {
 import {
   useBaseCurrency,
   useInfiniteTransactions,
-  useTransactions,
+  usePeriodSummary,
   useDeleteTransaction,
 } from "@/hooks/useTransactions";
 import {
@@ -72,7 +73,6 @@ import {
   useEnsureCurrentMonth,
   useCreateNextMonth,
   usePreviewNextMonth,
-  useOpeningBalances,
 } from "@/hooks/useMonths";
 import { useAccounts, useCurrencies } from "@/hooks/useAccounts";
 import { useBudgetCategories } from "@/hooks/useBudget";
@@ -86,7 +86,8 @@ import { TransferDialog } from "./TransferDialog";
 import { parseISO, format } from "date-fns";
 import type { Month, NextMonthPreview } from "@/types/months";
 import { MONTH_NAMES, formatAmount, amountTone } from "@/lib/format";
-import { useMonthSummary, getPrimaryLine } from "@/hooks/useMonthSummary";
+import { getPrimaryLine, type AccountBalance } from "@/lib/finance/period-summary";
+import { SummaryCards } from "../../_components/SummaryCards";
 import { currentYearMonth } from "@/lib/dates";
 import { defaultMonth } from "@/lib/months";
 
@@ -114,13 +115,31 @@ const AMOUNT_COLOR: Record<string, string> = {
 };
 
 export function TransactionsTable() {
-  const [selectedMonthId, setSelectedMonthId] = useState<string | null>(null);
-  const [searchDraft, setSearchDraft] = useState("");
-  const [searchTerm, setSearchTerm] = useState("");
-  const [transactionTypeFilter, setTransactionTypeFilter] = useState("all");
-  const [accountIdFilter, setAccountIdFilter] = useState("all");
-  const [categoryIdFilter, setCategoryIdFilter] = useState("all");
-  const [categoryTypeFilter, setCategoryTypeFilter] = useState("all");
+  // The month and the filters live in the URL, so a link from the budget or a
+  // chart opens the list already filtered.
+  const searchParams = useSearchParams();
+  const urlMonthId = searchParams.get("month");
+  const searchTerm = searchParams.get("q") ?? "";
+  const transactionTypeFilter = searchParams.get("type") ?? "all";
+  const accountIdFilter = searchParams.get("account") ?? "all";
+  const categoryIdFilter = searchParams.get("category") ?? "all";
+  const categoryTypeFilter = searchParams.get("categoryType") ?? "all";
+  const [searchDraft, setSearchDraft] = useState(searchTerm);
+
+  const setParams = useCallback((updates: Record<string, string | null>) => {
+    const params = new URLSearchParams(window.location.search);
+    for (const [key, value] of Object.entries(updates)) {
+      if (!value || value === "all") params.delete(key);
+      else params.set(key, value);
+    }
+    const query = params.toString();
+    window.history.replaceState(null, "", query ? `?${query}` : window.location.pathname);
+  }, []);
+  const setSelectedMonthId = useCallback((id: string) => setParams({ month: id }), [setParams]);
+  const setTransactionTypeFilter = useCallback((value: string) => setParams({ type: value }), [setParams]);
+  const setAccountIdFilter = useCallback((value: string) => setParams({ account: value }), [setParams]);
+  const setCategoryIdFilter = useCallback((value: string) => setParams({ category: value }), [setParams]);
+  const setCategoryTypeFilter = useCallback((value: string) => setParams({ categoryType: value }), [setParams]);
 
   const [txDialogOpen, setTxDialogOpen] = useState(false);
   const [editingTx, setEditingTx] = useState<TransactionWithRelations | null>(
@@ -148,25 +167,19 @@ export function TransactionsTable() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [months]);
 
-  useEffect(() => {
-    if (!sortedMonths.length) return;
-    if (
-      !selectedMonthId ||
-      !sortedMonths.some((month) => month.id === selectedMonthId)
-    ) {
-      setSelectedMonthId(
-        (defaultMonth(sortedMonths, currentYearMonth()) ?? sortedMonths[0]).id,
-      );
-    }
-  }, [selectedMonthId, sortedMonths]);
+  const selectedMonthId = useMemo(() => {
+    if (sortedMonths.some((month) => month.id === urlMonthId)) return urlMonthId;
+    if (!sortedMonths.length) return null;
+    return (defaultMonth(sortedMonths, currentYearMonth()) ?? sortedMonths[0]).id;
+  }, [urlMonthId, sortedMonths]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
-      setSearchTerm(searchDraft.trim());
+      if (searchDraft.trim() !== searchTerm) setParams({ q: searchDraft.trim() });
     }, 180);
 
     return () => window.clearTimeout(timeoutId);
-  }, [searchDraft]);
+  }, [searchDraft, searchTerm, setParams]);
 
   const selectedMonth =
     sortedMonths.find((month) => month.id === selectedMonthId) ?? null;
@@ -178,9 +191,14 @@ export function TransactionsTable() {
     categoryTypeFilter !== "all";
 
   const {
-    data: transactions,
+    data: period,
     isLoading: summaryLoading,
-  } = useTransactions(selectedMonthId);
+    isPlaceholderData: periodIsPrevious,
+    error: periodError,
+  } = usePeriodSummary(
+    selectedMonthId,
+    selectedMonthId,
+  );
   const {
     data: transactionPages,
     isLoading: isFeedLoading,
@@ -203,7 +221,6 @@ export function TransactionsTable() {
         ? null
         : (categoryTypeFilter as NonNullable<TransactionWithRelations["category_type"]>),
   });
-  const { data: openingBalances } = useOpeningBalances(selectedMonthId);
   const deleteMutation = useDeleteTransaction();
   const { data: baseCurrency } = useBaseCurrency();
   const { data: currencies } = useCurrencies();
@@ -259,10 +276,6 @@ export function TransactionsTable() {
     });
   }, [feedTransactions]);
 
-  const { monthSummary, accountMonthlyBalances } = useMonthSummary(
-    transactions,
-    openingBalances,
-  );
   const { data: allInvestments } = useInvestments();
   const { data: currentInvestmentByAccount } =
     useCurrentInvestmentValuesByAccount();
@@ -447,12 +460,8 @@ export function TransactionsTable() {
 
   const handleClearFilters = useCallback(() => {
     setSearchDraft("");
-    setSearchTerm("");
-    setTransactionTypeFilter("all");
-    setAccountIdFilter("all");
-    setCategoryIdFilter("all");
-    setCategoryTypeFilter("all");
-  }, []);
+    setParams({ q: null, type: null, account: null, category: null, categoryType: null });
+  }, [setParams]);
 
   const handleEdit = useCallback((tx: TransactionWithRelations) => {
     if (tx.transaction_type === "transfer") {
@@ -537,18 +546,25 @@ export function TransactionsTable() {
         onCreateTransaction={handleCreateTx}
       />
 
-      <TransactionsSummaryCards
-        monthSummary={monthSummary}
-        baseCurrencySymbol={baseCurrencySymbol}
-      />
-
-      <TransactionsAccountBalances
-        selectedMonth={selectedMonth}
-        accountMonthlyBalances={accountMonthlyBalances}
-        investmentByAccount={investmentByAccount}
-        currentInvestmentByAccount={currentInvestmentByAccount}
-        baseCurrencySymbol={baseCurrencySymbol}
-      />
+      {periodError && !period ? (
+        <p className="text-destructive text-xs">
+          No se pudo calcular el resumen del mes: {periodError.message}
+        </p>
+      ) : !period ? (
+        <Skeleton className="h-48 w-full" />
+      ) : (
+        // While another month loads, the previous one's figures stay dimmed.
+        <div className={periodIsPrevious ? "space-y-6 opacity-60" : "space-y-6"}>
+          <SummaryCards summary={period.summary} currencySymbol={baseCurrencySymbol} detailed />
+          <TransactionsAccountBalances
+            selectedMonth={selectedMonth}
+            accountMonthlyBalances={period.accountBalances}
+            investmentByAccount={investmentByAccount}
+            currentInvestmentByAccount={currentInvestmentByAccount}
+            baseCurrencySymbol={baseCurrencySymbol}
+          />
+        </div>
+      )}
 
       <div className="flex flex-wrap items-start justify-start gap-2">
         <Input
@@ -950,43 +966,6 @@ const TransactionsToolbar = memo(function TransactionsToolbar({
   );
 });
 
-const TransactionsSummaryCards = memo(function TransactionsSummaryCards({
-  monthSummary,
-  baseCurrencySymbol,
-}: {
-  monthSummary: ReturnType<typeof useMonthSummary>["monthSummary"];
-  baseCurrencySymbol: string;
-}) {
-  const cards = [
-    { label: "Saldo apertura", value: monthSummary.openingBase, tone: amountTone(monthSummary.openingBase) },
-    { label: "Ingresos", value: Math.abs(monthSummary.income), tone: "text-green-600" },
-    { label: "Gastos Esenciales", value: Math.abs(monthSummary.essentialExpenses), tone: "text-red-600" },
-    { label: "Gastos Discrecionales", value: Math.abs(monthSummary.discretionaryExpenses), tone: "text-orange-600" },
-    { label: "Pago de Deudas", value: Math.abs(monthSummary.debtPayments), tone: "text-rose-600" },
-    { label: "Ahorros", value: Math.abs(monthSummary.savings), tone: "text-cyan-600" },
-    { label: "Inversiones", value: Math.abs(monthSummary.investments), tone: "text-indigo-600" },
-    { label: "Saldo cierre", value: monthSummary.closingBase, tone: amountTone(monthSummary.closingBase) },
-  ];
-
-  return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      {cards.map((card) => (
-        <Card key={card.label} className="gap-0 py-0">
-          <CardHeader className="px-4 pt-4 pb-2">
-            <CardDescription>{card.label}</CardDescription>
-          </CardHeader>
-          <CardContent className="px-4 pb-4">
-            <p className={`text-2xl font-semibold ${card.tone}`}>
-              {baseCurrencySymbol ? `${baseCurrencySymbol} ` : ""}
-              {formatAmount(card.value)}
-            </p>
-          </CardContent>
-        </Card>
-      ))}
-    </div>
-  );
-});
-
 const TransactionsAccountBalances = memo(function TransactionsAccountBalances({
   selectedMonth,
   accountMonthlyBalances,
@@ -995,7 +974,7 @@ const TransactionsAccountBalances = memo(function TransactionsAccountBalances({
   baseCurrencySymbol,
 }: {
   selectedMonth: Month | null;
-  accountMonthlyBalances: ReturnType<typeof useMonthSummary>["accountMonthlyBalances"];
+  accountMonthlyBalances: AccountBalance[];
   investmentByAccount: Map<string, number>;
   currentInvestmentByAccount:
     | Record<string, { current: number; cost: number }>

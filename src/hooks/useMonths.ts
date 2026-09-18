@@ -9,7 +9,6 @@ import {
 import {
   createNextMonthFromLatest,
   getMonths,
-  getOpeningBalances,
   getOrCreateCurrentMonth,
   previewNextMonthFromLatest,
 } from "@/actions/months";
@@ -18,7 +17,6 @@ import { toast } from "sonner";
 
 export const MONTH_KEYS = {
   all: ["months"] as const,
-  openingBalances: (monthId: string) => ["opening-balances", monthId] as const,
 };
 
 export function useMonths() {
@@ -87,16 +85,3 @@ export function usePreviewNextMonth() {
   });
 }
 
-export function useOpeningBalances(monthId: string | null) {
-  return useQuery({
-    queryKey: MONTH_KEYS.openingBalances(monthId ?? ""),
-    enabled: !!monthId,
-    queryFn: async () => {
-      if (!monthId) return [];
-      const result = await getOpeningBalances(monthId);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
-    staleTime: 5 * 60_000,
-  });
-}

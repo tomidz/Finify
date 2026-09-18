@@ -55,6 +55,9 @@ export interface TransactionAmountWithRelations extends TransactionAmount {
 }
 
 export interface TransactionWithRelations extends Transaction {
+  /** The recurring template and date it was registered from (0049). */
+  recurring_id?: string | null;
+  occurrence_date?: string | null;
   category_name: string | null;
   category_type: BudgetCategoryType | null;
   amounts: TransactionAmountWithRelations[];

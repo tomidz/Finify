@@ -16,7 +16,7 @@ import { useNetWorthData } from "@/hooks/useScreens";
 import { useInvestmentValuation } from "@/hooks/useInvestments";
 import { MONTH_NAMES, formatAmount, amountTone, formatDayMonth } from "@/lib/format";
 import { today } from "@/lib/dates";
-import { ACCOUNT_TYPE_LABELS, type AccountType } from "@/types/accounts";
+import { buildNetWorthView } from "@/lib/finance/net-worth-view";
 import type { NetWorthData } from "@/actions/screens";
 import { NetWorthEvolutionChart } from "./_components/NetWorthEvolutionChart";
 
@@ -132,91 +132,38 @@ function NetWorthContent({
   baseCurrency: string;
 }) {
   const { accounts: assetsSummary, liabilities, evolution } = data;
-  // Market values arrive after the ledger figures: until then accounts show
-  // their investments at cost, and the chart has no unrealized gains.
-  const { data: valuation, isPending: valuing } = useInvestmentValuation(data.year);
+  const todayStr = today();
+  // Market values only exist for today: a past close keeps investments at
+  // cost, and until they arrive the current month does too.
+  const closesToday = assetsSummary.close_date === todayStr;
+  const { data: valuation } = useInvestmentValuation({ enabled: closesToday });
 
-  const accountsWithCurrentValues = useMemo(
+  const view = useMemo(
     () =>
-      assetsSummary.accounts.map((account) => ({
-        ...account,
-        investment_value_base:
-          valuation?.byAccount[account.id]?.current ??
-          account.investment_value_base,
-      })),
-    [assetsSummary.accounts, valuation],
-  );
-
-  const evolutionWithCurrentValues = useMemo(
-    () =>
-      evolution.map((point) => {
-        const monthValues = valuation?.byMonth?.[point.month];
-        if (!monthValues) return point;
-
-        const delta = monthValues.currentValue - monthValues.costBasis;
-
-        return {
-          ...point,
-          assets: point.assets + delta,
-          netWorth: point.netWorth + delta,
-        };
+      buildNetWorthView({
+        accounts: assetsSummary,
+        liabilities,
+        evolution,
+        valuation,
+        today: todayStr,
       }),
-    [valuation, evolution],
+    [assetsSummary, liabilities, evolution, valuation, todayStr],
   );
+  const { totalAssets, totalLiabilities, netWorth, groups } = view;
 
-  // Amounts without a rate to the base currency are left out of the totals.
-  const totalAssets = accountsWithCurrentValues.reduce(
-    (sum, account) => sum + account.balance_base + (account.investment_value_base ?? 0),
-    0,
-  );
-  const fxMissing =
-    accountsWithCurrentValues.some((a) => a.investment_value_base === null && a.investment_value !== 0) ||
-    liabilities.items.some((item) => item.amount_base === null && item.amount !== 0) ||
-    evolution.some((point) => point.fxMissing);
-  // The oldest rate shown: today's valuation for the accounts it covers, the
-  // stored rates for the rest and for debts.
-  const fxRateDate =
-    [
-      valuation?.fxRateDate ?? null,
-      ...assetsSummary.accounts
-        .filter((a) => valuation?.byAccount[a.id] == null)
-        .map((a) => a.investment_fx_rate_date),
-      ...liabilities.items.map((item) => item.fx_rate_date),
-    ]
-      .filter((date): date is string => date != null)
-      .sort()[0] ?? null;
   const fxNote = [
-    fxMissing ? "montos sin cotización fuera de los totales" : null,
-    fxRateDate && fxRateDate < today() ? `TC del ${formatDayMonth(fxRateDate)}` : null,
+    view.fxMissing ? "montos sin cotización fuera de los totales" : null,
+    view.cashAtBookValue ? "saldos sin cotización a su valor de carga" : null,
+    view.fxRateDate ? `TC del ${formatDayMonth(view.fxRateDate)}` : null,
+    Math.round(view.fxRevaluation * 100) !== 0
+      ? `incluye diferencia de cambio de ${currencySymbol} ${formatAmount(view.fxRevaluation)}`
+      : null,
   ]
     .filter(Boolean)
     .join(" · ");
-  const totalLiabilities = liabilities.total ?? 0;
-  const netWorth = totalAssets - totalLiabilities;
 
-  const groupedAccounts = useMemo(() => {
-    const map = new Map<
-      string,
-      { type: AccountType; label: string; accounts: typeof accountsWithCurrentValues; total: number }
-    >();
-    for (const acc of accountsWithCurrentValues) {
-      const type = acc.account_type as AccountType;
-      if (!map.has(type)) {
-        map.set(type, {
-          type,
-          label: ACCOUNT_TYPE_LABELS[type] ?? type,
-          accounts: [],
-          total: 0,
-        });
-      }
-      const group = map.get(type)!;
-      group.accounts.push(acc);
-      group.total += acc.balance_base + (acc.investment_value_base ?? 0);
-    }
-    return Array.from(map.values());
-  }, [accountsWithCurrentValues]);
-
-  const pendingHint = !valuing ? null : (
+  const atCost = !view.marketValued && view.accounts.some((account) => account.investment_value !== 0);
+  const pendingHint = !atCost ? null : (
     <span className="text-muted-foreground ml-2 text-xs font-normal">inversiones a costo</span>
   );
 
@@ -229,35 +176,39 @@ function NetWorthContent({
       </div>
       {fxNote && <p className="text-muted-foreground -mt-4 text-xs">{fxNote}</p>}
 
-      <NetWorthEvolutionChart data={evolutionWithCurrentValues} currencySymbol={currencySymbol} />
+      <NetWorthEvolutionChart data={view.evolution} currencySymbol={currencySymbol} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="space-y-3">
           <h2 className="text-lg font-semibold">Activos</h2>
-          {groupedAccounts.length === 0 ? (
-            <div className="rounded-md border border-dashed p-6 text-center"><p className="text-muted-foreground text-sm">No hay cuentas activas.</p></div>
+          {groups.length === 0 ? (
+            <div className="rounded-md border border-dashed p-6 text-center"><p className="text-muted-foreground text-sm">No hay cuentas.</p></div>
           ) : (
-            groupedAccounts.map((group) => (
+            groups.map((group) => (
               <div key={group.type} className="overflow-hidden rounded-md border">
                 <div className="border-b bg-muted/30 px-4 py-2"><span className="text-sm font-semibold">{group.label}</span><span className="text-muted-foreground ml-2 text-xs">{currencySymbol} {formatAmount(group.total)}</span></div>
                 {group.accounts.map((acc) => {
-                  const totalValueBase = acc.balance_base + (acc.investment_value_base ?? 0);
-                  const cashValueBase = acc.balance_base;
-                  const investmentWithoutRate = acc.investment_value_base === null && acc.investment_value !== 0;
-                  const showInvestmentBreakdown =
-                    ((acc.investment_value_base ?? 0) > 0 || investmentWithoutRate) &&
-                    Math.abs(cashValueBase) > 0.01;
+                  const inBase = (value: number | null) =>
+                    value !== null ? `${currencySymbol} ${formatAmount(value)}` : "sin cotización";
+                  const hasCash = Math.abs(acc.balance_base) > 0.01;
+                  const hasInvestments = acc.investment_value_base === null || acc.investment_value_base > 0;
+                  const showInvestmentBreakdown = hasCash && hasInvestments;
+                  const withoutRate = acc.balance_fx_missing || acc.investment_value_base === null;
                   return (
                     <div key={acc.id} className="flex items-center justify-between border-b px-4 py-3 last:border-b-0">
                       <div>
                         <span className="text-sm font-medium">{acc.name}</span>
+                        {!acc.is_active && <span className="text-muted-foreground ml-1 text-xs">(inactiva)</span>}
                         {showInvestmentBreakdown && (
                           <span className="text-muted-foreground ml-2 text-xs">
-                            (cash: {currencySymbol} {formatAmount(cashValueBase)} · inv: {acc.investment_value_base !== null ? `${currencySymbol} ${formatAmount(acc.investment_value_base)}` : "sin cotización"})
+                            (cash: {inBase(acc.balance_base)} · inv: {inBase(acc.investment_value_base)})
                           </span>
                         )}
                       </div>
-                      <div className="text-right"><span className="text-sm font-medium">{currencySymbol} {formatAmount(totalValueBase)}</span></div>
+                      <div className="text-right">
+                        <span className="text-sm font-medium">{currencySymbol} {formatAmount(acc.total)}</span>
+                        {withoutRate && !showInvestmentBreakdown && <span className="text-muted-foreground ml-2 text-xs">sin cotización</span>}
+                      </div>
                     </div>
                   );
                 })}

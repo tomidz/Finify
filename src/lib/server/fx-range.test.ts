@@ -193,6 +193,34 @@ describe("resolveFxRates", () => {
     expect(fxAt("2026-09-08", "EUR")).toBeCloseTo(1420 / 0.85);
   });
 
+  it("loads a currency's series once for many uncached past days, carrying a rate over a weekend", async () => {
+    const { client, queries } = withCache([]);
+    fetchFrankfurterSeries.mockResolvedValue(
+      new Map([
+        ["2026-09-04", 1.1],
+        ["2026-09-07", 1.2],
+        ["2026-09-08", 1.3],
+      ]),
+    );
+
+    const fxAt = await resolveFxRates(
+      asClient(client),
+      [
+        { date: "2026-09-06", from: "EUR" },
+        { date: "2026-09-07", from: "EUR" },
+        { date: "2026-09-08", from: "EUR" },
+      ],
+      "USD",
+    );
+
+    expect(fetchFrankfurterSeries).toHaveBeenCalledWith("EUR", "USD", "2026-09-06", "2026-09-08");
+    expect(getFxQuote).not.toHaveBeenCalled();
+    expect(fxAt("2026-09-06", "EUR")).toBe(1.1);
+    expect(fxAt("2026-09-08", "EUR")).toBe(1.3);
+    const cached = queries.flatMap((q) => (argsOf(q, "upsert")?.[0] as { source: string }[] | undefined) ?? []);
+    expect(cached.map((row) => row.source)).toEqual(["frankfurter", "frankfurter", "frankfurter"]);
+  });
+
   it("stops asking a provider that failed for the rest of the batch", async () => {
     const { client } = withCache([]);
     getFxQuote.mockImplementation(async ({ offline }: { offline: boolean }) =>

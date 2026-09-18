@@ -19,7 +19,6 @@ describe("invalidateLedger", () => {
     ["net-worth", "items"],
     ["transactions", "month", "m1"],
     ["months"],
-    ["opening-balances", "m1"],
     ["accounts"],
     ["account", "a1", "current-balance"],
     ["budget", "summary", "m1"],

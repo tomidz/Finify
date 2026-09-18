@@ -21,6 +21,7 @@ import type {
   BudgetSummaryVsActual,
   BudgetYear,
 } from "@/types/budget";
+import { budgetTotalsByGroup } from "@/lib/finance/budget-status";
 
 type ActionResult<T> = { data: T } | { error: string };
 
@@ -705,18 +706,9 @@ export async function getBudgetSummaryVsActual(
       variance: Number(category.variance ?? 0),
     }));
 
-    const totals = categorySummary.reduce(
-      (acc, category) => ({
-        planned: acc.planned + category.planned_amount,
-        actual: acc.actual + category.actual_amount,
-        variance: acc.variance + category.variance,
-      }),
-      { planned: 0, actual: 0, variance: 0 },
-    );
-
     return {
       data: {
-        totals,
+        totals: budgetTotalsByGroup(categorySummary),
         categories: categorySummary,
       },
     };

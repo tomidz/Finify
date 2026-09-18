@@ -817,14 +817,14 @@ const InvestmentAccountsBreakdown = React.memo(function InvestmentAccountsBreakd
           </TableHeader>
           <TableBody>
             {accounts.map((account) => {
+              const inBase = (value: number | null) =>
+                value !== null ? `${currencySymbol} ${formatAmount(value)}` : "sin cotización";
               const cash = account.balance_base;
               const valuation = valuationByAccount?.[account.id];
               // Until prices arrive the holdings count at cost; null when a
               // lot's currency has no rate.
               const cost = valuation?.cost ?? account.investment_value_base;
               const current = valuation?.current ?? cost;
-              const inBase = (value: number | null) =>
-                value !== null ? `${currencySymbol} ${formatAmount(value)}` : "sin cotización";
               const label =
                 ACCOUNT_TYPE_LABELS[
                   account.account_type as keyof typeof ACCOUNT_TYPE_LABELS

@@ -18,10 +18,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { formatAmount, CATEGORY_COLORS } from "@/lib/format";
-import type { MonthSummary } from "@/hooks/useMonthSummary";
+import type { PeriodSummary } from "@/lib/finance/period-summary";
 
 interface IncomeVsExpensesChartProps {
-  summary: MonthSummary;
+  summary: PeriodSummary;
   currencySymbol: string;
 }
 
@@ -60,6 +60,9 @@ export function IncomeVsExpensesChart({
       value: summary.investments,
       fill: CATEGORY_COLORS.investments,
     },
+    ...(summary.uncategorizedExpenses !== 0
+      ? [{ name: "Sin categoría", value: summary.uncategorizedExpenses, fill: "#94a3b8" }]
+      : []),
   ], [summary]);
 
   const allZero = data.every((d) => d.value === 0);

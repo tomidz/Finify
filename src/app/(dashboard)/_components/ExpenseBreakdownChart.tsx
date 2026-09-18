@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   PieChart,
   Pie,
@@ -19,7 +20,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { formatAmount, CATEGORY_COLORS } from "@/lib/format";
-import type { MonthSummary } from "@/hooks/useMonthSummary";
+import type { PeriodSummary } from "@/lib/finance/period-summary";
 import { BUDGET_CATEGORY_LABELS, type BudgetCategoryType } from "@/types/budget";
 
 // Palette for individual categories inside a type
@@ -30,14 +31,18 @@ const DETAIL_PALETTE = [
 ];
 
 interface ExpenseBreakdownChartProps {
-  summary: MonthSummary;
+  summary: PeriodSummary;
   currencySymbol: string;
+  /** A category of a single month opens its transactions. */
+  monthId: string | null;
 }
 
 export function ExpenseBreakdownChart({
   summary,
   currencySymbol,
+  monthId,
 }: ExpenseBreakdownChartProps) {
+  const router = useRouter();
   const [drillType, setDrillType] = useState<BudgetCategoryType | null>(null);
 
   const typeData = useMemo(() => {
@@ -72,6 +77,12 @@ export function ExpenseBreakdownChart({
         fill: CATEGORY_COLORS.investments,
         type: "investments" as BudgetCategoryType,
       },
+      {
+        name: "Sin categoría",
+        value: summary.uncategorizedExpenses,
+        fill: "#94a3b8",
+        type: null,
+      },
     ];
     return raw.filter((d) => d.value > 0);
   }, [summary]);
@@ -84,6 +95,7 @@ export function ExpenseBreakdownChart({
         name: c.categoryName,
         value: c.amount,
         fill: DETAIL_PALETTE[i % DETAIL_PALETTE.length],
+        categoryId: c.categoryId,
       }));
   }, [drillType, summary.categoryBreakdown]);
 
@@ -136,11 +148,15 @@ export function ExpenseBreakdownChart({
                 innerRadius={50}
                 outerRadius={90}
                 paddingAngle={2}
-                style={{ cursor: isDetail ? "default" : "pointer" }}
+                style={{ cursor: isDetail && !monthId ? "default" : "pointer" }}
                 onClick={(_data, index) => {
-                  if (!isDetail && typeData[index]) {
-                    setDrillType(typeData[index].type);
+                  if (isDetail) {
+                    const categoryId = detailData[index]?.categoryId;
+                    if (monthId && categoryId) router.push(`/transactions?month=${monthId}&category=${categoryId}`);
+                    return;
                   }
+                  const type = typeData[index]?.type;
+                  if (type) setDrillType(type);
                 }}
               >
                 {chartData.map((entry) => (

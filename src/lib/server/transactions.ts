@@ -79,6 +79,8 @@ async function withCurrentBaseAmounts(
       user_id: row.user_id,
       month_id: row.month_id,
       category_id: row.category_id,
+      recurring_id: row.recurring_id ?? null,
+      occurrence_date: row.occurrence_date ?? null,
       transaction_type: row.transaction_type,
       date: row.date,
       description: row.description,

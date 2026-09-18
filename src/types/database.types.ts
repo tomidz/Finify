@@ -1360,16 +1360,22 @@ export type Database = {
           account_type: string
           balance: number
           balance_base: number
+          balance_book_base: number
+          balance_fx_missing: boolean
+          balance_fx_rate_date: string
+          close_date: string
           currency: string
           currency_symbol: string
           investment_fx_missing: boolean
           investment_fx_rate_date: string
           investment_value: number
           investment_value_base: number
+          is_active: boolean
           month: number
           year: number
         }[]
       }
+      app_today: { Args: never; Returns: string }
       apply_debt_balance_change: {
         Args: {
           p_date: string
@@ -1458,6 +1464,7 @@ export type Database = {
         Returns: {
           amount: number
           amount_base: number
+          close_date: string
           currency: string
           currency_symbol: string
           fx_missing: boolean
@@ -1470,6 +1477,8 @@ export type Database = {
         Args: { p_base_currency?: string; p_year: number }
         Returns: {
           assets: number
+          cash_fx_missing: boolean
+          close_date: string
           fx_missing: boolean
           liabilities: number
           month: number

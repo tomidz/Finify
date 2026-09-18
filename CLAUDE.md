@@ -46,23 +46,43 @@ correspondiente en `node_modules/next/dist/docs/`.
 8. Ninguna lectura que necesite "todas las filas" depende de `max_rows` (1000): sumar en SQL o
    paginar.
 
+## Cálculos de dominio
+
+Los números que muestran varias pantallas (y el agente) salen de módulos puros en
+`src/lib/finance/`, con tests; los componentes no los recalculan:
+
+- `period-summary.ts`: apertura, ingresos y gastos por tipo (con el signo del presupuesto), otros
+  movimientos (inversiones, correcciones, comisiones, cambio en transferencias, diferencia de
+  cambio) y cierre. Cuadra: apertura + ingresos − gastos + otros = cierre. Lo carga
+  `loadPeriodSummary`.
+- `budget-status.ts`: estado y varianza de una línea según para qué es la categoría; totales por
+  grupo, sin sumar ingresos con gastos.
+- `project-cashflow.ts`: forecast desde el saldo de hoy; por categoría gana la recurrente, después
+  el presupuesto, después la mediana de los meses cerrados.
+- `net-worth-view.ts`: patrimonio de la pantalla y su gráfico, con el valor de mercado solo para el
+  mes en curso.
+
 ## Política de FX
 
 - **Flujos** (movimientos, pagos de deuda, compras y ventas): a la tasa de su fecha. Se guarda
   `base_amount` al registrarlos y las listas y el dashboard los revalúan a esa misma fecha.
-- **Saldos y patrimonio**: a la tasa de cierre de cada mes (hoy para el mes en curso). Todavía no
-  todas las vistas lo cumplen: patrimonio suma la caja a la base histórica de sus movimientos y
-  valúa inversiones y pasivos a la tasa de hoy.
+- **Saldos y patrimonio**: a la tasa de cierre de cada mes (el último día del mes, hoy para el mes
+  en curso). Vale para caja, inversiones y deudas, en el dashboard, en patrimonio, en el detalle de
+  una cuenta y en el forecast. La diferencia contra la base histórica de los movimientos es
+  diferencia de cambio, y se muestra aparte.
 - **Búsqueda** (`getFxQuote`, `resolveFxRates` en TS; `fx_rate_asof` en SQL): la cotización
   guardada para esa fecha; si no está, el proveedor (que se guarda); si falla, la última guardada
   dentro de 7 días (3 para ARS), con su fecha. Una fecha futura usa la de hoy.
 - **Proveedores**: Frankfurter (BCE, fiat con historial). ARS oficial: dolarapi para hoy y
   argentinadatos para fechas pasadas; los cruces ARS↔otra moneda pasan por USD.
 - **Sin cotización**: un monto sin tasa no tiene base. Queda fuera de los totales y la pantalla lo
-  marca ("sin cotización"); una escritura que necesita la base falla con un mensaje. Las RPCs de
+  marca ("sin cotización"); una escritura que necesita la base falla con un mensaje. Un saldo de
+  caja sin tasa (una moneda que ningún proveedor cotiza, como un código cripto) cuenta a la base
+  guardada con sus movimientos, sin diferencia de cambio, y también se marca. Las RPCs de
   patrimonio devuelven `NULL` y `fx_missing`, y solo leen cotizaciones guardadas dentro de la misma
-  ventana: antes de llamarlas se trae la de hoy (`warmTodayRates`), esperando solo por las monedas
-  sin ninguna dentro de la ventana; las demás se actualizan después de responder (`after`).
+  ventana: antes de llamarlas se traen las de los cierres que van a leer (`warmCloseRates`),
+  esperando solo por las que no tienen ninguna dentro de la ventana; las demás se actualizan después
+  de responder (`after`).
 - **Frescura**: cuando una tasa es anterior a la fecha que se pidió, la pantalla muestra "TC del
   dd/mm".
 
