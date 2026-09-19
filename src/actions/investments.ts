@@ -24,6 +24,7 @@ import type {
   AssetType,
 } from "@/types/investments";
 import { fetchTwelveDataInstrument } from "@/lib/twelvedata";
+import { bareTicker, fetchYahooInstrument, yahooSymbols } from "@/lib/yahoo";
 import { dbError } from "@/lib/server/db-errors";
 import { logError } from "@/lib/log";
 import type { ActionResult } from "@/lib/action-result";
@@ -321,6 +322,7 @@ export async function deleteInvestment(
 export async function lookupInvestmentInstrument(input: {
   ticker?: string | null;
   isin?: string | null;
+  asset_type?: string | null;
 }): Promise<
   ActionResult<{
     ticker: string | null;
@@ -335,6 +337,24 @@ export async function lookupInvestmentInstrument(input: {
 
     const query = input.isin?.trim() || input.ticker?.trim();
     if (!query) return { error: "Ingresá un ticker o ISIN" };
+
+    // A CEDEAR is quoted only on the BCBA, under "<ticker>.BA": the ticker on
+    // its own names the foreign share it represents, at many times its price.
+    // The user writes the ticker; the exchange is the asset type's.
+    if (input.asset_type === "cedear") {
+      const ticker = input.ticker?.trim();
+      if (!ticker) return { error: "Ingresá el ticker del CEDEAR" };
+      const cedear = await fetchYahooInstrument(yahooSymbols(ticker, "cedear"));
+      if (!cedear.ok) return { error: "No se encontró el CEDEAR. Revisá el ticker." };
+      return {
+        data: {
+          ticker: bareTicker(cedear.data.symbol),
+          asset_name: cedear.data.name,
+          currency: cedear.data.currency,
+          price_per_unit: cedear.data.price,
+        },
+      };
+    }
 
     const lookup = await fetchTwelveDataInstrument(query);
     if (!lookup.ok) {

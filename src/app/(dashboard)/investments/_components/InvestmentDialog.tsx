@@ -247,6 +247,7 @@ export function InvestmentDialog({
       const result = await lookupInstrumentMutation.mutateAsync({
         ticker: ticker || null,
         isin: isin || null,
+        asset_type: form.getValues("asset_type"),
       });
 
       if (result.asset_name && !form.getValues("asset_name").trim()) {

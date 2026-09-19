@@ -77,6 +77,7 @@ type ResolvedSymbol = {
 };
 
 const MIC_TO_YAHOO_SUFFIX: Record<string, string> = {
+  XBUE: ".BA",
   XETR: ".DE",
   XLON: ".L",
   XMIL: ".MI",

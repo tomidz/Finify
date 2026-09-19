@@ -1,4 +1,4 @@
-export const ASSET_TYPES = ["stock", "etf", "crypto", "bond", "stablecoin", "cash", "other"] as const;
+export const ASSET_TYPES = ["stock", "etf", "cedear", "crypto", "bond", "stablecoin", "cash", "other"] as const;
 
 /** Account types that can hold investments (single source of truth). */
 export const INVESTMENT_ACCOUNT_TYPES = new Set([
@@ -11,6 +11,7 @@ export type AssetType = (typeof ASSET_TYPES)[number];
 export const ASSET_TYPE_LABELS: Record<AssetType, string> = {
   stock: "Acción",
   etf: "ETF",
+  cedear: "CEDEAR",
   crypto: "Crypto",
   bond: "Bono",
   stablecoin: "Stablecoin",

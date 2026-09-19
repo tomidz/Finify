@@ -12,6 +12,7 @@ import { dbError } from "@/lib/server/db-errors";
 import { getFxQuote } from "@/lib/server/fx";
 import { chunk, IN_LIST_CHUNK } from "@/lib/server/paginate";
 import { fetchTwelveDataPrices } from "@/lib/twelvedata";
+import { yahooSymbols } from "@/lib/yahoo";
 
 /**
  * Why a request has no price: its provider's failure, no provider to ask (no
@@ -46,9 +47,11 @@ const PROVIDER_CONCURRENCY = 4;
  * Identifies a lookup, not a holding: requests that ask the same question
  * share a price, and a different ticker/ISIN for the same holding never reads
  * another lookup's answer. Crypto prices are stored in the user's base
- * currency (CoinGecko vs_currency) and market prices in the instrument's own
- * currency, so the base currency is part of the key only for crypto. A lookup
- * no provider can be asked about (no ticker or ISIN, or a ticker that names
+ * currency (CoinGecko vs_currency), and a market price in the currency of the
+ * holding that asked: a ticker names a different listing per currency (GGAL
+ * is the Nasdaq ADR in dollars and GGAL.BA the share in pesos), so two
+ * holdings of the same ticker in two currencies are two lookups. A lookup no
+ * provider can be asked about (no ticker or ISIN, or a ticker that names
  * money) only has a manual price, kept per class and currency.
  */
 export function priceCacheKey(
@@ -56,9 +59,24 @@ export function priceCacheKey(
   baseCurrency: string,
 ): string {
   if (request.assetType === "crypto") return `crypto:${cryptoCode(request)}:${baseCurrency}`;
-  if (isQuotable(request)) return `market:${request.ticker ?? ""}|${request.isin ?? ""}`;
+  if (isQuotable(request)) {
+    return `market:${request.currency ?? baseCurrency}:${request.ticker ?? ""}|${request.isin ?? ""}`;
+  }
   const id = (request.ticker ?? request.name ?? request.key).trim();
   return `unlisted:${request.assetType}:${request.currency ?? baseCurrency}:${id}`;
+}
+
+/**
+ * The market key of a lookup before it named the currency, or null for a
+ * lookup that never had one. Manual prices stored under it are still read, so
+ * adding the currency does not silently drop a price the user set; the next
+ * time they set it, it is written under the current key.
+ */
+export function legacyPriceCacheKey(
+  request: Pick<PriceRequest, "ticker" | "isin" | "assetType" | "currency">,
+): string | null {
+  if (request.assetType === "crypto" || !isQuotable(request)) return null;
+  return `market:${request.ticker ?? ""}|${request.isin ?? ""}`;
 }
 
 function cryptoCode(request: Pick<PriceRequest, "key" | "ticker">): string {
@@ -232,17 +250,28 @@ export async function resolvePricesWithSources(
 
     const marketTask = async () => {
       if (marketMissing.length === 0) return;
-      const twelveDataPrices = await fetchTwelveDataPrices(
-        marketMissing.map(({ lookup, request }) => ({
-          key: lookup,
-          symbol: request.ticker,
-          isin: request.isin,
-        })),
-      );
-      for (const { lookup } of marketMissing) {
-        const resolved = twelveDataPrices.prices[lookup];
-        if (resolved) remember(lookup, resolved.price, "twelvedata");
-        else failureByLookup.set(lookup, twelveDataPrices.failed[lookup] ?? "not_found");
+      // A CEDEAR is its own instrument, a fraction of the foreign share it
+      // represents (a share of Apple is 20 of them). Only its BCBA listing
+      // prices it: the bare ticker quotes the underlying, ten or twenty times
+      // its price, so no provider is asked about it by ticker alone.
+      const listed = marketMissing.filter(({ request }) => request.assetType !== "cedear");
+
+      if (listed.length > 0) {
+        const twelveDataPrices = await fetchTwelveDataPrices(
+          listed.map(({ lookup, request }) => ({
+            key: lookup,
+            symbol: request.ticker,
+            isin: request.isin,
+          })),
+        );
+        for (const { lookup, request } of listed) {
+          const resolved = twelveDataPrices.prices[lookup];
+          // Like Yahoo's below: a quote in another currency than the holding's
+          // names another listing of the same company, not its price.
+          const matches = resolved && (resolved.currency == null || resolved.currency === currencyOf(request));
+          if (matches) remember(lookup, resolved.price, "twelvedata");
+          else failureByLookup.set(lookup, resolved ? "not_found" : (twelveDataPrices.failed[lookup] ?? "not_found"));
+        }
       }
 
       const unresolved = marketMissing.filter(
@@ -253,23 +282,26 @@ export async function resolvePricesWithSources(
         const { default: YahooFinance } = await import("yahoo-finance2");
         const yf = new YahooFinance({ suppressNotices: ["yahooSurvey"] });
         await forEachLimited(unresolved, PROVIDER_CONCURRENCY, async ({ lookup, request }) => {
-          try {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const quote: any = await yf.quote(request.ticker!);
-            const price = quote?.regularMarketPrice;
-            // The bare ticker can name another company's listing: a quote in
-            // another currency than the holding's is taken as a miss.
-            if (
-              typeof price === "number" &&
-              Number.isFinite(price) &&
-              price > 0 &&
-              quote.currency === currencyOf(request)
-            ) {
-              remember(lookup, price, "yahoo");
+          for (const symbol of yahooSymbols(request.ticker!, request.assetType, currencyOf(request))) {
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const quote: any = await yf.quote(symbol);
+              const price = quote?.regularMarketPrice;
+              // The bare ticker can name another company's listing: a quote in
+              // another currency than the holding's is taken as a miss.
+              if (
+                typeof price === "number" &&
+                Number.isFinite(price) &&
+                price > 0 &&
+                quote.currency === currencyOf(request)
+              ) {
+                remember(lookup, price, "yahoo");
+                return;
+              }
+            } catch (e) {
+              // Unknown ticker: stays unpriced and is valued at cost upstream.
+              logError("resolvePricesWithSources", e, { step: "yahoo quote" });
             }
-          } catch (e) {
-            // Unknown ticker: stays unpriced and is valued at cost upstream.
-            logError("resolvePricesWithSources", e, { step: "yahoo quote" });
           }
         });
       } catch (e) {
@@ -282,10 +314,20 @@ export async function resolvePricesWithSources(
     if (ctx) {
       await writeCachedPrices(ctx, fetched);
       const withoutPrice = [...requestsByLookup.keys()].filter((lookup) => !priceByLookup.has(lookup));
-      const manual = await readStoredPrices(ctx, withoutPrice, "manual");
+      // A manual price set before the market key named the currency is still
+      // read, under the key it was stored with.
+      const legacyByLookup = new Map<string, string>();
+      for (const lookup of withoutPrice) {
+        const legacy = legacyPriceCacheKey(requestsByLookup.get(lookup)![0]);
+        if (legacy && legacy !== lookup) legacyByLookup.set(lookup, legacy);
+      }
+      const manual = await readStoredPrices(ctx, [...withoutPrice, ...legacyByLookup.values()], "manual");
       // Without its manual price a holding would count at cost.
       if (manual.error) return dbError("resolvePricesWithSources", manual.error, "Error al obtener precios actuales");
-      for (const [lookup, stored] of manual.stored) {
+      for (const lookup of withoutPrice) {
+        const legacy = legacyByLookup.get(lookup);
+        const stored = manual.stored.get(lookup) ?? (legacy ? manual.stored.get(legacy) : undefined);
+        if (!stored) continue;
         priceByLookup.set(lookup, stored.price);
         manualDateByLookup.set(lookup, stored.date);
       }

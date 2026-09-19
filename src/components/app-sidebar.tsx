@@ -89,7 +89,8 @@ export function AppSidebar({ userEmail }: { userEmail?: string }) {
 
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader className="border-b">
+      {/* Same height as the page header, so both bottom borders are one line. */}
+      <SidebarHeader className="h-16 shrink-0 justify-center border-b">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton

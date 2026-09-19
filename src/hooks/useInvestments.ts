@@ -107,7 +107,7 @@ export function useCurrentInvestmentValuesByAccount() {
 
 export function useLookupInvestmentInstrument() {
   return useMutation({
-    mutationFn: async (input: { ticker?: string | null; isin?: string | null }) =>
+    mutationFn: async (input: { ticker?: string | null; isin?: string | null; asset_type?: string | null }) =>
       unwrapResult(await lookupInvestmentInstrument(input)),
     onError: (err: Error) => {
       toast.error(errorMessage(err));

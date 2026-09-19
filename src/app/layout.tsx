@@ -43,7 +43,7 @@ export default function RootLayout({
               <ConfirmProvider>{children}</ConfirmProvider>
             </TooltipProvider>
           </QueryProvider>
-          <Toaster richColors closeButton />
+          <Toaster closeButton />
         </ThemeProvider>
       </body>
     </html>
