@@ -1,204 +1,115 @@
 import "server-only";
 
-import { ToolLoopAgent, tool, isStepCount } from "ai";
+import { ToolLoopAgent, isStepCount, type LanguageModelUsage } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
-import { z } from "zod";
 
-import { getAccounts, getAccountCurrentBalance } from "@/actions/accounts";
-import { getBudgetSummaryVsActual } from "@/actions/budget";
-import { getForecast } from "@/actions/forecast";
-import {
-  getInvestments,
-  getCurrentInvestmentValuesByMonth,
-  getInvestmentSales,
-} from "@/actions/investments";
-import { getMonths } from "@/actions/months";
-import {
-  getNetWorthEvolution,
-  getLiabilitiesForYear,
-} from "@/actions/net-worth";
-import { getPendingRecurring } from "@/actions/recurring";
-import { getSavingsGoals } from "@/actions/savings-goals";
-import { getTransactionsForRange } from "@/actions/transactions";
-import { getUserPreferences } from "@/actions/user-preferences";
+import { createAicfoTools, type AicfoContext, type AicfoTools } from "@/lib/ai/aicfo-tools";
+import { AI_FALLBACK_MODEL, AI_MODEL, MAX_OUTPUT_TOKENS } from "@/lib/ai/model";
+import { MONTH_NAMES } from "@/lib/format";
+import { currentYearMonth, today } from "@/lib/dates";
+import { toYearMonthCode } from "@/lib/months";
 
-type ActionResult<T> = { data: T } | { error: string };
+export type { AicfoContext } from "@/lib/ai/aicfo-tools";
 
-function unwrap<T>(result: ActionResult<T>): T | { error: string } {
-  if ("error" in result) return { error: result.error };
-  return result.data;
-}
+// The rules, fixed, and then the context, which changes with the day and the
+// months: each is cached on its own, so a new day only rewrites the context.
+export const RULES = `Sos el AI CFO de Finify, la app de finanzas personales del usuario.
 
-const MAX_TRANSACTIONS = 300;
-
-const tools = {
-  get_months: tool({
-    description:
-      "Lista los meses cargados en Finify (id, año, mes). Usá los ids devueltos como monthId en las demás tools.",
-    inputSchema: z.object({}),
-    execute: async () => unwrap(await getMonths()),
-  }),
-  get_user_preferences: tool({
-    description:
-      "Preferencias del usuario, incluida la moneda base en la que están expresados todos los montos consolidados.",
-    inputSchema: z.object({}),
-    execute: async () => unwrap(await getUserPreferences()),
-  }),
-  get_accounts: tool({
-    description:
-      "Lista las cuentas del usuario (nombre, tipo, moneda). No incluye saldos: usá get_account_balance.",
-    inputSchema: z.object({}),
-    execute: async () => unwrap(await getAccounts()),
-  }),
-  get_account_balance: tool({
-    description:
-      "Saldo actual de una cuenta: amount en la moneda de la cuenta y base_amount en moneda base.",
-    inputSchema: z.object({
-      accountId: z.string().describe("id de la cuenta (de get_accounts)"),
-    }),
-    execute: async ({ accountId }) =>
-      unwrap(await getAccountCurrentBalance(accountId)),
-  }),
-  get_budget_summary: tool({
-    description:
-      "Resumen presupuesto estimado vs real de un mes, por categoría (ingresos, gastos esenciales, discrecionales, deudas, ahorro, inversión) con variaciones.",
-    inputSchema: z.object({
-      monthId: z.string().describe("id del mes (de get_months)"),
-    }),
-    execute: async ({ monthId }) =>
-      unwrap(await getBudgetSummaryVsActual(monthId)),
-  }),
-  get_transactions: tool({
-    description:
-      "Transacciones de un rango de meses (inclusive), compactadas: fecha, descripción, categoría, tipo y monto en moneda base. Máximo 300 filas por llamada; si se trunca, pedí un rango menor.",
-    inputSchema: z.object({
-      startMonthId: z.string().describe("id del mes inicial (de get_months)"),
-      endMonthId: z.string().describe("id del mes final (de get_months)"),
-    }),
-    execute: async ({ startMonthId, endMonthId }) => {
-      const result = await getTransactionsForRange(startMonthId, endMonthId);
-      if ("error" in result) return { error: result.error };
-      const rows = result.data.map((tx) => ({
-        date: tx.date,
-        description: tx.description,
-        category: tx.category_name,
-        type: tx.transaction_type,
-        base_amount: tx.amounts.reduce(
-          (sum, line) => sum + (line.current_base_amount ?? line.base_amount),
-          0,
-        ),
-        accounts: tx.amounts.map((line) => line.account_name),
-      }));
-      return {
-        total: rows.length,
-        truncated: rows.length > MAX_TRANSACTIONS,
-        transactions: rows.slice(0, MAX_TRANSACTIONS),
-      };
-    },
-  }),
-  get_net_worth_evolution: tool({
-    description:
-      "Evolución mensual del patrimonio neto de un año: activos, pasivos y net worth en moneda base.",
-    inputSchema: z.object({
-      year: z.number().int().describe("año calendario, ej. 2026"),
-    }),
-    execute: async ({ year }) => unwrap(await getNetWorthEvolution(year)),
-  }),
-  get_liabilities: tool({
-    description: "Pasivos/deudas por mes para un año dado, en moneda base.",
-    inputSchema: z.object({ year: z.number().int() }),
-    execute: async ({ year }) => unwrap(await getLiabilitiesForYear(year)),
-  }),
-  get_investments: tool({
-    description:
-      "Posiciones de inversión (lotes): instrumento, ticker, cantidad, costo, fecha de compra, cuenta.",
-    inputSchema: z.object({}),
-    execute: async () => unwrap(await getInvestments()),
-  }),
-  get_investment_sales: tool({
-    description:
-      "Ventas de inversiones registradas, con resultado realizado (ganancia/pérdida).",
-    inputSchema: z.object({}),
-    execute: async () => unwrap(await getInvestmentSales()),
-  }),
-  get_investment_values: tool({
-    description:
-      "Valor de mercado actual vs costo del portafolio por mes para un año dado, en moneda base.",
-    inputSchema: z.object({ year: z.number().int() }),
-    execute: async ({ year }) =>
-      unwrap(await getCurrentInvestmentValuesByMonth(year)),
-  }),
-  get_forecast: tool({
-    description:
-      "Proyección de los próximos meses (ingresos/gastos esperados) basada en históricos y recurrentes.",
-    inputSchema: z.object({
-      monthsAhead: z.number().int().min(1).max(24).default(6),
-    }),
-    execute: async ({ monthsAhead }) => unwrap(await getForecast(monthsAhead)),
-  }),
-  get_savings_goals: tool({
-    description: "Metas de ahorro con progreso actual.",
-    inputSchema: z.object({}),
-    execute: async () => unwrap(await getSavingsGoals()),
-  }),
-  get_pending_recurring: tool({
-    description:
-      "Transacciones recurrentes que todavía no fueron registradas en un mes dado.",
-    inputSchema: z.object({
-      year: z.number().int(),
-      month: z.number().int().min(1).max(12),
-    }),
-    execute: async ({ year, month }) =>
-      unwrap(await getPendingRecurring(year, month)),
-  }),
-};
-
-function buildInstructions(): string {
-  const today = new Date().toISOString().slice(0, 10);
-  return `Sos el AI CFO de Finify, la app de finanzas personales del usuario. Hoy es ${today}.
-
-Tu trabajo: analizar sus gastos, presupuesto, inversiones, deudas y patrimonio, y responder con criterio de CFO — números concretos, tendencias y recomendaciones accionables.
+Tu trabajo: analizar sus gastos, presupuesto, inversiones, deudas y patrimonio, y responder con criterio de CFO: números concretos, tendencias y recomendaciones accionables.
 
 Reglas:
-- Todos los datos salen EXCLUSIVAMENTE de las tools. Nunca inventes montos, meses ni posiciones. Si una tool devuelve { error }, decilo tal cual.
-- Empezá casi siempre por get_months y get_user_preferences para saber qué meses existen y cuál es la moneda base; expresá los totales en esa moneda e indicala.
+- Los datos salen EXCLUSIVAMENTE de las tools. Nunca inventes montos, meses ni posiciones.
+- Si una tool devuelve { error }, decilo tal cual y no sigas como si el dato fuera cero.
+- Un dato que falta no es cero: null, "sin cotización" (fxMissing, rate_missing) o un error quieren decir que no se sabe; decilo así.
+- Si una consulta no trae datos, decí qué consultaste (qué tool y qué período).
+- Los montos en moneda base (base_amount, *Base, totales) ya están convertidos: no los vuelvas a convertir. Para convertir otro monto usá convert_currency.
+- Para totales de un período usá get_period_summary, que es el mismo cálculo del dashboard; get_transactions es para ver los movimientos.
 - Sos de solo lectura: no podés crear ni modificar nada. Si el usuario pide un cambio (registrar un gasto, editar el presupuesto), explicá en qué pantalla hacerlo.
 - No des asesoramiento financiero regulado; analizá los datos y presentá opciones con sus trade-offs.
-- Respondé en el idioma del usuario (por defecto español rioplatense). Montos con separador de miles y 0-2 decimales.
+- Respondé en el idioma del usuario (por defecto español rioplatense). Montos con separador de miles y 0-2 decimales, con la moneda.
 - Sé selectivo: mostrá los números que cambian la conclusión, no volcados completos de datos. Usá tablas Markdown solo para comparaciones cortas.`;
+
+const monthLabel = (m: { year: number; month: number }) => `${MONTH_NAMES[m.month - 1]} ${m.year}`;
+
+export function buildContext(ctx: Pick<AicfoContext, "baseCurrency" | "months">, now: Date = new Date()): string {
+  const sorted = [...ctx.months].sort(
+    (a, b) => toYearMonthCode(a.year, a.month) - toYearMonthCode(b.year, b.month),
+  );
+  const { year, month } = currentYearMonth(now);
+  const current = sorted.find((m) => m.year === year && m.month === month);
+  const monthsLine =
+    sorted.length === 0
+      ? "- No hay meses cargados."
+      : `- Meses cargados: de ${monthLabel(sorted[0])} (id ${sorted[0].id}) a ${monthLabel(sorted[sorted.length - 1])} (id ${sorted[sorted.length - 1].id}). ${
+          current
+            ? `El mes en curso es ${monthLabel(current)} (id ${current.id}).`
+            : `El mes en curso (${monthLabel({ year, month })}) todavía no está cargado.`
+        }`;
+  return `Contexto:
+- Moneda base: ${ctx.baseCurrency}. Todos los totales están en esa moneda.
+- Hoy: ${today(now)} (hora de Argentina).
+${monthsLine}`;
 }
 
-export type AgentUsageReport = {
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  toolNames: string[];
-};
+/** What one step (one model call) spent, and the tools it called. */
+export type StepUsage = { usage: LanguageModelUsage; toolNames: string[] };
 
-export function createAicfoAgent(hooks?: {
-  onUsage?: (usage: AgentUsageReport) => Promise<void> | void;
-}) {
-  const onUsage = hooks?.onUsage;
+/**
+ * Tools that answer the same question once per turn: the loop often asks
+ * twice. A failed read is asked again.
+ */
+function memoized(tools: AicfoTools): AicfoTools {
+  const cache = new Map<string, Promise<unknown>>();
+  const wrapped: Record<string, unknown> = {};
+  for (const [name, definition] of Object.entries(tools)) {
+    const execute = definition.execute as ((input: unknown, options: unknown) => Promise<unknown>) | undefined;
+    wrapped[name] = !execute
+      ? definition
+      : {
+          ...definition,
+          execute: (input: unknown, options: unknown) => {
+            const key = `${name}:${JSON.stringify(input)}`;
+            const hit = cache.get(key);
+            if (hit) return hit;
+            const result = execute(input, options);
+            cache.set(key, result);
+            void result.then(
+              (value) => {
+                if (value && typeof value === "object" && "error" in value) cache.delete(key);
+              },
+              () => cache.delete(key),
+            );
+            return result;
+          },
+        };
+  }
+  return wrapped as AicfoTools;
+}
+
+export function createAicfoAgent(ctx: AicfoContext, hooks?: { onStep?: (step: StepUsage) => void }) {
   return new ToolLoopAgent({
-    model: anthropic("claude-opus-4-8"),
-    instructions: buildInstructions(),
-    tools,
+    model: anthropic(AI_MODEL),
+    instructions: [
+      { role: "system", content: RULES, providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } } },
+      { role: "system", content: buildContext(ctx) },
+    ],
+    tools: memoized(createAicfoTools(ctx)),
     stopWhen: isStepCount(15),
-    onEnd: onUsage
-      ? async ({ usage, steps }) => {
-          await onUsage({
-            inputTokens: usage.inputTokens ?? 0,
-            outputTokens: usage.outputTokens ?? 0,
-            cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens ?? 0,
-            toolNames: [
-              ...new Set(
-                steps.flatMap((step) =>
-                  step.toolCalls.map((call) => call.toolName),
-                ),
-              ),
-            ],
-          });
-        }
+    // Per model call, thinking included (the model thinks by default).
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
+    providerOptions: {
+      anthropic: {
+        // Also caches the conversation so far, so each step of the loop and
+        // the next turn only pay for what is new.
+        cacheControl: { type: "ephemeral" },
+        fallbacks: [{ model: AI_FALLBACK_MODEL }],
+        // Thinks less than the default (high), which keeps a turn inside its
+        // time limit and costs less; the answers are chat, not long work.
+        effort: "medium",
+      },
+    },
+    onStepEnd: hooks?.onStep
+      ? (step) => hooks.onStep?.({ usage: step.usage, toolNames: step.toolCalls.map((call) => call.toolName) })
       : undefined,
   });
 }

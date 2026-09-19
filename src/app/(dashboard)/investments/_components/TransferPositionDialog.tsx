@@ -29,16 +29,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { AccountCombobox } from "@/components/account-combobox";
-import { formatAmount } from "@/lib/format";
-import { formatNumberInput, parseNumberInput } from "@/lib/utils";
-import { useAccounts } from "@/hooks/useAccounts";
+import { MoneyInput } from "@/components/money-input";
+import { Spinner } from "@/components/ui/spinner";
+import { parseMoney, toMoneyInput } from "@/lib/format";
+import { useAccounts, useCurrencies } from "@/hooks/useAccounts";
 import { useTransferInvestmentPosition } from "@/hooks/useInvestments";
 import type { HoldingPosition } from "@/types/investments";
-import { INVESTMENT_ACCOUNT_TYPES } from "@/types/investments";
-
-function holdingKeyOf(holding: HoldingPosition): string {
-  return `${holding.ticker}::${holding.account_id}`;
-}
+import { INVESTMENT_ACCOUNT_TYPES, holdingGroupKey } from "@/types/investments";
+import { QUANTITY_DECIMALS, exceedsQuantity, formatExactQuantity } from "./investment-format";
 
 type FormValues = {
   holding_key: string;
@@ -74,14 +72,15 @@ export function TransferPositionDialog({
   });
   const transferMutation = useTransferInvestmentPosition();
   const { data: accounts } = useAccounts();
+  const { data: currencies } = useCurrencies();
   const selectedHoldingKey = form.watch("holding_key");
 
   const resolvedHolding = useMemo(() => {
     const byKey = holdings.find(
-      (item) => holdingKeyOf(item) === selectedHoldingKey,
+      (item) => holdingGroupKey(item) === selectedHoldingKey,
     );
     if (byKey) return byKey;
-    if (holding && holdingKeyOf(holding) === selectedHoldingKey) return holding;
+    if (holding && holdingGroupKey(holding) === selectedHoldingKey) return holding;
     return null;
   }, [holding, holdings, selectedHoldingKey]);
 
@@ -103,15 +102,14 @@ export function TransferPositionDialog({
       )?.currency ?? "",
     [accounts, resolvedHolding?.account_id],
   );
+  const sourceCurrencyInfo = currencies?.find((c) => c.code === sourceCurrency);
 
   const watchQuantity = form.watch("quantity");
   const watchFeeQuantity = form.watch("fee_quantity");
   const receivedQuantity = useMemo(() => {
-    const qty = parseNumberInput(watchQuantity);
-    const fee = parseNumberInput(watchFeeQuantity);
-    const safeQty = Number.isNaN(qty) ? 0 : qty;
-    const safeFee = Number.isNaN(fee) ? 0 : fee;
-    return Math.max(0, safeQty - safeFee);
+    const qty = parseMoney(watchQuantity) ?? 0;
+    const fee = parseMoney(watchFeeQuantity) ?? 0;
+    return Math.max(0, qty - fee);
   }, [watchQuantity, watchFeeQuantity]);
 
   const firstDestinationIdFor = useCallback(
@@ -136,10 +134,10 @@ export function TransferPositionDialog({
     if (!justOpened) return;
     const targetHolding = holding ?? holdings[0] ?? null;
     form.reset({
-      holding_key: targetHolding ? holdingKeyOf(targetHolding) : "",
+      holding_key: targetHolding ? holdingGroupKey(targetHolding) : "",
       destination_account_id: firstDestinationIdFor(targetHolding),
       quantity: targetHolding
-        ? formatNumberInput(String(targetHolding.total_quantity).replace(".", ","))
+        ? toMoneyInput(targetHolding.total_quantity, QUANTITY_DECIMALS)
         : "",
       fee_quantity: "",
       fee_cash: "",
@@ -151,19 +149,18 @@ export function TransferPositionDialog({
   const onSubmit = async (values: FormValues) => {
     if (!resolvedHolding) return;
 
-    const quantity = parseNumberInput(values.quantity);
-    if (Number.isNaN(quantity) || quantity <= 0) {
-      form.setError("quantity", { message: "Cantidad invalida" });
+    const quantity = parseMoney(values.quantity);
+    if (quantity == null || quantity <= 0) {
+      form.setError("quantity", { message: "Cantidad inválida" });
       return;
     }
 
-    if (quantity > resolvedHolding.total_quantity) {
+    if (exceedsQuantity(quantity, resolvedHolding.total_quantity)) {
       form.setError("quantity", { message: "Supera la cantidad disponible" });
       return;
     }
 
-    const feeQuantityRaw = parseNumberInput(values.fee_quantity);
-    const feeQuantity = Number.isNaN(feeQuantityRaw) ? 0 : feeQuantityRaw;
+    const feeQuantity = parseMoney(values.fee_quantity) ?? 0;
     if (feeQuantity < 0) {
       form.setError("fee_quantity", { message: "Comisión inválida" });
       return;
@@ -175,8 +172,7 @@ export function TransferPositionDialog({
       return;
     }
 
-    const feeCashRaw = parseNumberInput(values.fee_cash);
-    const feeCash = Number.isNaN(feeCashRaw) ? 0 : feeCashRaw;
+    const feeCash = parseMoney(values.fee_cash) ?? 0;
     if (feeCash < 0) {
       form.setError("fee_cash", { message: "Comisión inválida" });
       return;
@@ -207,11 +203,11 @@ export function TransferPositionDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Transferir posicion</DialogTitle>
+          <DialogTitle>Transferir posición</DialogTitle>
           <DialogDescription>
             {resolvedHolding
-              ? `Move ${resolvedHolding.asset_name} desde ${resolvedHolding.account_name} a otra cuenta de inversion.`
-              : "Selecciona una posicion para transferir."}
+              ? `${resolvedHolding.asset_name} de ${resolvedHolding.account_name} a otra cuenta de inversión.`
+              : "Elegí la posición a transferir."}
           </DialogDescription>
         </DialogHeader>
 
@@ -224,50 +220,49 @@ export function TransferPositionDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Posición</FormLabel>
-                    <FormControl>
-                      <Select
-                        value={field.value}
-                        onValueChange={(value) => {
-                          field.onChange(value);
-                          const next = holdings.find(
-                            (item) => holdingKeyOf(item) === value,
+                    <Select
+                      value={field.value}
+                      onValueChange={(value) => {
+                        field.onChange(value);
+                        const next = holdings.find(
+                          (item) => holdingGroupKey(item) === value,
+                        );
+                        if (next) {
+                          form.setValue(
+                            "quantity",
+                            toMoneyInput(next.total_quantity, QUANTITY_DECIMALS),
                           );
-                          if (next) {
-                            form.setValue(
-                              "quantity",
-                              formatNumberInput(
-                                String(next.total_quantity).replace(".", ","),
-                              ),
-                            );
-                            form.setValue(
-                              "destination_account_id",
-                              firstDestinationIdFor(next),
-                            );
-                          }
-                        }}
-                      >
+                          form.setValue(
+                            "destination_account_id",
+                            firstDestinationIdFor(next),
+                          );
+                        }
+                      }}
+                    >
+                      <FormControl>
                         <SelectTrigger>
                           <SelectValue placeholder="Seleccionar posición" />
                         </SelectTrigger>
-                        <SelectContent>
-                          {holdings.map((item) => {
-                            const value = holdingKeyOf(item);
-                            return (
-                              <SelectItem key={value} value={value}>
-                                {item.asset_name} - {item.account_name} - {formatAmount(item.total_quantity)} {item.currency}
-                              </SelectItem>
-                            );
-                          })}
-                        </SelectContent>
-                      </Select>
-                    </FormControl>
+                      </FormControl>
+                      <SelectContent>
+                        {holdings.map((item) => {
+                          const value = holdingGroupKey(item);
+                          return (
+                            <SelectItem key={value} value={value}>
+                              {item.asset_name} · {item.account_name} ·{" "}
+                              {formatExactQuantity(item.total_quantity)} {item.currency}
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
                     <FormMessage />
                   </FormItem>
                 )}
               />
             )}
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <FormItem>
                 <FormLabel>Cuenta origen</FormLabel>
                 <FormControl>
@@ -304,7 +299,7 @@ export function TransferPositionDialog({
               )}
             />
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <FormField
                 control={form.control}
                 name="quantity"
@@ -312,15 +307,18 @@ export function TransferPositionDialog({
                   <FormItem>
                     <FormLabel>Cantidad</FormLabel>
                     <FormControl>
-                      <Input
-                        value={field.value}
-                        onChange={(event) => field.onChange(formatNumberInput(event.target.value))}
-                        inputMode="decimal"
+                      <MoneyInput
+                        decimals={QUANTITY_DECIMALS}
+                        placeholder="0"
+                        {...field}
                         disabled={transferMutation.isPending}
                       />
                     </FormControl>
                     <p className="text-muted-foreground text-xs">
-                      Disponible: {resolvedHolding ? formatNumberInput(String(resolvedHolding.total_quantity).replace(".", ",")) : "0"}
+                      Disponible:{" "}
+                      {resolvedHolding
+                        ? formatExactQuantity(resolvedHolding.total_quantity)
+                        : "0"}
                     </p>
                     <FormMessage />
                   </FormItem>
@@ -342,7 +340,7 @@ export function TransferPositionDialog({
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <FormField
                 control={form.control}
                 name="fee_quantity"
@@ -350,21 +348,16 @@ export function TransferPositionDialog({
                   <FormItem>
                     <FormLabel>Comisión (cantidad)</FormLabel>
                     <FormControl>
-                      <Input
-                        value={field.value}
-                        onChange={(event) =>
-                          field.onChange(formatNumberInput(event.target.value))
-                        }
-                        inputMode="decimal"
+                      <MoneyInput
+                        decimals={QUANTITY_DECIMALS}
                         placeholder="0"
+                        {...field}
                         disabled={transferMutation.isPending}
                       />
                     </FormControl>
                     <p className="text-muted-foreground text-xs">
                       Llega al destino:{" "}
-                      {formatNumberInput(
-                        String(receivedQuantity).replace(".", ","),
-                      )}
+                      {formatExactQuantity(receivedQuantity)}
                     </p>
                     <FormMessage />
                   </FormItem>
@@ -380,18 +373,16 @@ export function TransferPositionDialog({
                       Comisión en efectivo{sourceCurrency ? ` (${sourceCurrency})` : ""}
                     </FormLabel>
                     <FormControl>
-                      <Input
-                        value={field.value}
-                        onChange={(event) =>
-                          field.onChange(formatNumberInput(event.target.value))
-                        }
-                        inputMode="decimal"
-                        placeholder="0,00"
+                      <MoneyInput
+                        currency={sourceCurrencyInfo?.symbol}
+                        // A cash fee is stored with 8 decimals: at least 4, like the other fees.
+                        decimals={Math.max(sourceCurrencyInfo?.decimals ?? 2, 4)}
+                        {...field}
                         disabled={transferMutation.isPending}
                       />
                     </FormControl>
                     <p className="text-muted-foreground text-xs">
-                      Se descuenta del cash de la cuenta origen.
+                      Se descuenta del efectivo de la cuenta origen.
                     </p>
                     <FormMessage />
                   </FormItem>
@@ -414,11 +405,17 @@ export function TransferPositionDialog({
             />
 
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                disabled={transferMutation.isPending}
+              >
                 Cancelar
               </Button>
               <Button type="submit" disabled={transferMutation.isPending || !resolvedHolding}>
-                {transferMutation.isPending ? "Transfiriendo..." : "Transferir posicion"}
+                {!transferMutation.isPending ? null : <Spinner />}
+                Transferir
               </Button>
             </DialogFooter>
           </form>

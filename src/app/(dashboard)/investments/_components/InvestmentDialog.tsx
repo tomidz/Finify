@@ -28,7 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useAccounts } from "@/hooks/useAccounts";
+import { useAccounts, useCurrencies } from "@/hooks/useAccounts";
 import { useAccountNetWorth } from "@/hooks/useNetWorth";
 import {
   useCreateInvestment,
@@ -36,8 +36,10 @@ import {
   useUpdateInvestment,
 } from "@/hooks/useInvestments";
 import { AccountCombobox } from "@/components/account-combobox";
-import { formatNumberInput, numberToInputString, parseNumberInput } from "@/lib/utils";
-import { formatAmount } from "@/lib/format";
+import { Callout } from "@/components/callout";
+import { MoneyInput } from "@/components/money-input";
+import { Spinner } from "@/components/ui/spinner";
+import { formatAmount, parseMoney, toMoneyInput } from "@/lib/format";
 import {
   ASSET_TYPES,
   ASSET_TYPE_LABELS,
@@ -45,7 +47,12 @@ import {
 } from "@/types/investments";
 import type { InvestmentWithAccount } from "@/types/investments";
 import { Checkbox } from "@/components/ui/checkbox";
-import { AlertCircle, Search } from "lucide-react";
+import { Search } from "lucide-react";
+import {
+  QUANTITY_DECIMALS,
+  STORED_AMOUNT_DECIMALS,
+  UNIT_PRICE_DECIMALS,
+} from "./investment-format";
 
 interface InvestmentDialogProps {
   investment: InvestmentWithAccount | null;
@@ -97,6 +104,7 @@ export function InvestmentDialog({
   });
 
   const { data: accounts } = useAccounts();
+  const { data: currencies } = useCurrencies();
   const { data: accountNetWorth } = useAccountNetWorth(new Date().getFullYear());
   const createMutation = useCreateInvestment();
   const updateMutation = useUpdateInvestment();
@@ -147,20 +155,26 @@ export function InvestmentDialog({
     (isBroker || isCryptoAccount) &&
     selectedAccount.currency === watchCurrency;
   const isCrypto = watchAssetType === "crypto";
-  const maxDec = 7;
+  const currency = currencies?.find((c) => c.code === watchCurrency);
+  // Stored with 4 decimals in every currency (a fee of US$ 0,3517 is kept).
+  const moneyDecimals = STORED_AMOUNT_DECIMALS;
+  const currencyLabel = currency?.symbol ?? watchCurrency;
 
   const watchTotalCost = useWatch({ control: form.control, name: "total_cost" });
   const watchFees = useWatch({ control: form.control, name: "fees" });
   const watchTax = useWatch({ control: form.control, name: "tax" });
   const totalToDeduct = useMemo(() => {
-    const total = parseNumberInput(watchTotalCost) ?? 0;
-    const fees = parseNumberInput(watchFees) ?? 0;
-    const tax = parseNumberInput(watchTax) ?? 0;
+    const total = parseMoney(watchTotalCost) ?? 0;
+    const fees = parseMoney(watchFees) ?? 0;
+    const tax = parseMoney(watchTax) ?? 0;
     return total + fees + tax;
   }, [watchTotalCost, watchFees, watchTax]);
 
+  // Filled when the dialog opens, not when the accounts refetch: that would
+  // wipe what the user typed.
+  const formKey = open ? (investment?.id ?? "new") : null;
   useEffect(() => {
-    if (!open) return;
+    if (formKey === null) return;
     if (investment) {
       form.reset({
         account_id: investment.account_id,
@@ -168,9 +182,9 @@ export function InvestmentDialog({
         ticker: investment.ticker ?? "",
         isin: investment.isin ?? "",
         asset_type: investment.asset_type,
-        quantity: numberToInputString(investment.quantity),
-        price_per_unit: numberToInputString(investment.price_per_unit),
-        total_cost: numberToInputString(investment.total_cost),
+        quantity: toMoneyInput(investment.quantity, QUANTITY_DECIMALS),
+        price_per_unit: toMoneyInput(investment.price_per_unit, UNIT_PRICE_DECIMALS),
+        total_cost: toMoneyInput(investment.total_cost, STORED_AMOUNT_DECIMALS),
         fees: "",
         tax: "",
         currency: investment.currency,
@@ -180,7 +194,7 @@ export function InvestmentDialog({
       });
     } else {
       form.reset({
-        account_id: investmentAccounts[0]?.id ?? "",
+        account_id: "",
         asset_name: "",
         ticker: "",
         isin: "",
@@ -190,13 +204,23 @@ export function InvestmentDialog({
         total_cost: "",
         fees: "",
         tax: "",
-        currency: investmentAccounts[0]?.currency ?? "USD",
+        currency: "",
         purchase_date: format(new Date(), "yyyy-MM-dd"),
         notes: "",
         skip_deduction: false,
       });
     }
-  }, [investment, open, form, investmentAccounts]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formKey]);
+  // A new purchase's account defaults to the first investment account once
+  // they load, unless already chosen (its currency follows below).
+  useEffect(() => {
+    const first = investmentAccounts[0];
+    if (formKey === "new" && first && !form.getValues("account_id")) {
+      form.setValue("account_id", first.id);
+      form.setValue("currency", first.currency);
+    }
+  }, [formKey, investmentAccounts, form]);
 
   // Auto-set currency when account changes
   useEffect(() => {
@@ -205,28 +229,14 @@ export function InvestmentDialog({
     }
   }, [selectedAccount, form, isEditing]);
 
+  // The suggested total keeps the decimals the cost is stored with.
   const recalcTotal = useCallback((qtyStr: string, priceStr: string) => {
-    const qty = parseNumberInput(qtyStr);
-    const price = parseNumberInput(priceStr);
+    const qty = parseMoney(qtyStr);
+    const price = parseMoney(priceStr);
     if (qty && price && qty > 0 && price > 0) {
-      const decimals = 7;
-      const factor = Math.pow(10, decimals);
-      const total = Math.round(qty * price * factor) / factor;
-      form.setValue("total_cost", numberToInputString(total));
+      form.setValue("total_cost", toMoneyInput(qty * price, STORED_AMOUNT_DECIMALS));
     }
   }, [form]);
-
-  const handleQuantityChange = useCallback((val: string, decimals: number) => {
-    const formatted = formatNumberInput(val, decimals);
-    form.setValue("quantity", formatted);
-    recalcTotal(formatted, form.getValues("price_per_unit"));
-  }, [form, recalcTotal]);
-
-  const handlePriceChange = useCallback((val: string, decimals: number) => {
-    const formatted = formatNumberInput(val, decimals);
-    form.setValue("price_per_unit", formatted);
-    recalcTotal(form.getValues("quantity"), formatted);
-  }, [form, recalcTotal]);
 
   const handleLookupInstrument = useCallback(async () => {
     const ticker = form.getValues("ticker").trim();
@@ -249,7 +259,7 @@ export function InvestmentDialog({
         form.setValue("currency", result.currency);
       }
       if (result.price_per_unit != null && !form.getValues("price_per_unit").trim()) {
-        const priceString = numberToInputString(result.price_per_unit);
+        const priceString = toMoneyInput(result.price_per_unit, UNIT_PRICE_DECIMALS);
         form.setValue("price_per_unit", priceString);
         recalcTotal(form.getValues("quantity"), priceString);
       }
@@ -259,21 +269,21 @@ export function InvestmentDialog({
   }, [form, isCrypto, lookupInstrumentMutation, recalcTotal]);
 
   const onSubmit = async (values: InvestmentFormValues) => {
-    const quantity = parseNumberInput(values.quantity);
-    const pricePerUnit = parseNumberInput(values.price_per_unit);
-    const totalCost = parseNumberInput(values.total_cost);
-    const fees = parseNumberInput(values.fees) ?? 0;
-    const tax = parseNumberInput(values.tax) ?? 0;
+    const quantity = parseMoney(values.quantity);
+    const pricePerUnit = parseMoney(values.price_per_unit);
+    const totalCost = parseMoney(values.total_cost);
+    const fees = parseMoney(values.fees) ?? 0;
+    const tax = parseMoney(values.tax) ?? 0;
 
-    if (!quantity || isNaN(quantity) || quantity <= 0) {
+    if (quantity == null || quantity <= 0) {
       form.setError("quantity", { message: "Cantidad inválida" });
       return;
     }
-    if (!pricePerUnit || isNaN(pricePerUnit) || pricePerUnit <= 0) {
+    if (pricePerUnit == null || pricePerUnit <= 0) {
       form.setError("price_per_unit", { message: "Precio inválido" });
       return;
     }
-    if (!totalCost || isNaN(totalCost) || totalCost <= 0) {
+    if (totalCost == null || totalCost <= 0) {
       form.setError("total_cost", { message: "Costo total inválido" });
       return;
     }
@@ -358,7 +368,7 @@ export function InvestmentDialog({
               )}
             />
 
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid gap-4 sm:grid-cols-3">
               <FormField
                 control={form.control}
                 name="asset_name"
@@ -383,24 +393,25 @@ export function InvestmentDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Ticker</FormLabel>
-                    <FormControl>
-                      <div className="flex gap-2">
+                    <div className="flex gap-2">
+                      <FormControl>
                         <Input
                           placeholder="Ej: VOO"
                           disabled={isPending}
                           {...field}
                         />
+                      </FormControl>
                         <Button
                           type="button"
                           variant="outline"
                           size="icon"
+                          aria-label="Completar datos del activo"
                           onClick={handleLookupInstrument}
                           disabled={isPending || lookupInstrumentMutation.isPending}
                         >
-                          <Search className="size-4" />
+                          {lookupInstrumentMutation.isPending ? <Spinner /> : <Search className="size-4" />}
                         </Button>
-                      </div>
-                    </FormControl>
+                    </div>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -412,55 +423,56 @@ export function InvestmentDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>ISIN</FormLabel>
-                    <FormControl>
-                      <div className="flex gap-2">
+                    <div className="flex gap-2">
+                      <FormControl>
                         <Input
                           placeholder="Ej: IE00B3XXRP09"
                           disabled={isPending}
                           {...field}
                         />
+                      </FormControl>
                         <Button
                           type="button"
                           variant="outline"
                           size="icon"
+                          aria-label="Completar datos del activo"
                           onClick={handleLookupInstrument}
                           disabled={isPending || lookupInstrumentMutation.isPending}
                         >
-                          <Search className="size-4" />
+                          {lookupInstrumentMutation.isPending ? <Spinner /> : <Search className="size-4" />}
                         </Button>
-                      </div>
-                    </FormControl>
+                    </div>
                     <FormMessage />
                   </FormItem>
                 )}
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <FormField
                 control={form.control}
                 name="asset_type"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Tipo</FormLabel>
-                    <FormControl>
-                      <Select
-                        value={field.value}
-                        onValueChange={field.onChange}
-                        disabled={isPending}
-                      >
+                    <Select
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      disabled={isPending}
+                    >
+                      <FormControl>
                         <SelectTrigger className="w-full">
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent>
-                          {ASSET_TYPES.map((type) => (
-                            <SelectItem key={type} value={type}>
-                              {ASSET_TYPE_LABELS[type]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </FormControl>
+                      </FormControl>
+                      <SelectContent>
+                        {ASSET_TYPES.map((type) => (
+                          <SelectItem key={type} value={type}>
+                            {ASSET_TYPE_LABELS[type]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -481,7 +493,7 @@ export function InvestmentDialog({
               />
             </div>
 
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid gap-4 sm:grid-cols-3">
               <FormField
                 control={form.control}
                 name="quantity"
@@ -489,13 +501,18 @@ export function InvestmentDialog({
                   <FormItem>
                     <FormLabel>Cantidad</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
+                      <MoneyInput
+                        decimals={QUANTITY_DECIMALS}
                         placeholder="0"
                         disabled={isPending}
+                        name={field.name}
+                        ref={field.ref}
+                        onBlur={field.onBlur}
                         value={field.value}
-                        onChange={(e) => handleQuantityChange(e.target.value, maxDec)}
+                        onValueChange={(next) => {
+                          field.onChange(next);
+                          recalcTotal(next, form.getValues("price_per_unit"));
+                        }}
                       />
                     </FormControl>
                     <FormMessage />
@@ -510,13 +527,18 @@ export function InvestmentDialog({
                   <FormItem>
                     <FormLabel>Precio/unidad</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="0,00"
+                      <MoneyInput
+                        currency={currencyLabel}
+                        decimals={UNIT_PRICE_DECIMALS}
                         disabled={isPending}
+                        name={field.name}
+                        ref={field.ref}
+                        onBlur={field.onBlur}
                         value={field.value}
-                        onChange={(e) => handlePriceChange(e.target.value, maxDec)}
+                        onValueChange={(next) => {
+                          field.onChange(next);
+                          recalcTotal(form.getValues("quantity"), next);
+                        }}
                       />
                     </FormControl>
                     <FormMessage />
@@ -531,18 +553,11 @@ export function InvestmentDialog({
                   <FormItem>
                     <FormLabel>Costo total</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="0,00"
+                      <MoneyInput
+                        currency={currencyLabel}
+                        decimals={moneyDecimals}
                         disabled={isPending}
-                        value={field.value}
-                        onChange={(e) =>
-                          form.setValue(
-                            "total_cost",
-                            formatNumberInput(e.target.value, maxDec)
-                          )
-                        }
+                        {...field}
                       />
                     </FormControl>
                     <FormMessage />
@@ -552,7 +567,7 @@ export function InvestmentDialog({
             </div>
 
             {!isEditing && (
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <FormField
                   control={form.control}
                   name="fees"
@@ -560,18 +575,11 @@ export function InvestmentDialog({
                     <FormItem>
                       <FormLabel>Comisiones</FormLabel>
                       <FormControl>
-                        <Input
-                          type="text"
-                          inputMode="decimal"
-                          placeholder="0,00"
+                        <MoneyInput
+                          currency={currencyLabel}
+                          decimals={moneyDecimals}
                           disabled={isPending}
-                          value={field.value}
-                          onChange={(e) =>
-                            form.setValue(
-                              "fees",
-                              formatNumberInput(e.target.value, 4)
-                            )
-                          }
+                          {...field}
                         />
                       </FormControl>
                       <FormMessage />
@@ -586,18 +594,11 @@ export function InvestmentDialog({
                     <FormItem>
                       <FormLabel>Impuestos</FormLabel>
                       <FormControl>
-                        <Input
-                          type="text"
-                          inputMode="decimal"
-                          placeholder="0,00"
+                        <MoneyInput
+                          currency={currencyLabel}
+                          decimals={moneyDecimals}
                           disabled={isPending}
-                          value={field.value}
-                          onChange={(e) =>
-                            form.setValue(
-                              "tax",
-                              formatNumberInput(e.target.value, 4)
-                            )
-                          }
+                          {...field}
                         />
                       </FormControl>
                       <FormMessage />
@@ -628,17 +629,14 @@ export function InvestmentDialog({
                   )}
                 />
                 {!watchSkipDeduction && (
-                  <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-                    <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                    <span>
-                      Se descontará
-                      {totalToDeduct > 0
-                        ? ` ${formatAmount(totalToDeduct)} (costo + comisiones + impuestos)`
-                        : " el costo total (más comisiones e impuestos)"}{" "}
-                      del saldo de la cuenta automáticamente. Las comisiones e
-                      impuestos se suman al costo base del lote.
-                    </span>
-                  </div>
+                  <Callout>
+                    Se descontará
+                    {totalToDeduct > 0
+                      ? ` ${currencyLabel} ${formatAmount(totalToDeduct, moneyDecimals)} (costo + comisiones + impuestos)`
+                      : " el costo total (más comisiones e impuestos)"}{" "}
+                    del saldo de la cuenta. Las comisiones e impuestos se suman
+                    al costo del lote.
+                  </Callout>
                 )}
               </div>
             )}
@@ -663,11 +661,8 @@ export function InvestmentDialog({
 
             <DialogFooter>
               <Button type="submit" disabled={isPending}>
-                {isPending
-                  ? "Guardando..."
-                  : isEditing
-                    ? "Guardar cambios"
-                    : "Registrar compra"}
+                {!isPending ? null : <Spinner />}
+                {isEditing ? "Guardar cambios" : "Registrar compra"}
               </Button>
             </DialogFooter>
           </form>

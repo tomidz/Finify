@@ -22,12 +22,21 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
+import { Callout } from "@/components/callout";
+import { MoneyInput } from "@/components/money-input";
+import { Spinner } from "@/components/ui/spinner";
 import { useSellInvestment } from "@/hooks/useInvestments";
 import { useAccounts } from "@/hooks/useAccounts";
-import { formatAmount, amountTone } from "@/lib/format";
-import { formatNumberInput, parseNumberInput } from "@/lib/utils";
-import { AlertCircle } from "lucide-react";
-import type { HoldingPosition } from "@/types/investments";
+import { formatAmount, amountTone, parseMoney, toMoneyInput } from "@/lib/format";
+import { INVESTMENT_ACCOUNT_TYPES, type HoldingPosition } from "@/types/investments";
+import {
+  QUANTITY_DECIMALS,
+  UNIT_PRICE_DECIMALS,
+  exceedsQuantity,
+  formatExactQuantity,
+  formatUnitPrice,
+  STORED_AMOUNT_DECIMALS,
+} from "./investment-format";
 
 type FormValues = {
   quantity_sold: string;
@@ -71,14 +80,21 @@ export function SellInvestmentDialog({
     [accounts, holding?.account_id],
   );
 
-  const isBroker = account?.account_type === "investment_broker";
+  // Mirrors the server gate: the net is credited only in an investment
+  // account in the holding's currency.
+  const willAutoCredit =
+    !!account &&
+    INVESTMENT_ACCOUNT_TYPES.has(account.account_type) &&
+    account.currency === holding?.currency;
+  // Stored with 4 decimals in every currency (a fee of US$ 0,3517 is kept).
+  const moneyDecimals = STORED_AMOUNT_DECIMALS;
 
   useEffect(() => {
     if (!open || !holding) return;
     form.reset({
       quantity_sold: "",
       price_per_unit: holding.current_price
-        ? String(holding.current_price).replace(".", ",")
+        ? toMoneyInput(holding.current_price, UNIT_PRICE_DECIMALS)
         : "",
       fees: "",
       tax: "",
@@ -99,10 +115,10 @@ export function SellInvestmentDialog({
 
   const preview = useMemo(() => {
     if (!holding) return null;
-    const qty = parseNumberInput(watchedQty);
-    const price = parseNumberInput(watchedPrice);
-    const fees = parseNumberInput(watchedFees) ?? 0;
-    const tax = parseNumberInput(watchedTax) ?? 0;
+    const qty = parseMoney(watchedQty);
+    const price = parseMoney(watchedPrice);
+    const fees = parseMoney(watchedFees) ?? 0;
+    const tax = parseMoney(watchedTax) ?? 0;
     if (!qty || !price || qty <= 0 || price <= 0) return null;
 
     const grossProceeds = qty * price;
@@ -115,22 +131,22 @@ export function SellInvestmentDialog({
 
   const onSubmit = async (values: FormValues) => {
     if (!holding) return;
-    const quantity = parseNumberInput(values.quantity_sold);
-    const price = parseNumberInput(values.price_per_unit);
-    const fees = parseNumberInput(values.fees) ?? 0;
-    const tax = parseNumberInput(values.tax) ?? 0;
+    const quantity = parseMoney(values.quantity_sold);
+    const price = parseMoney(values.price_per_unit);
+    const fees = parseMoney(values.fees) ?? 0;
+    const tax = parseMoney(values.tax) ?? 0;
 
-    if (!quantity || quantity <= 0) {
+    if (quantity == null || quantity <= 0) {
       form.setError("quantity_sold", { message: "Cantidad inválida" });
       return;
     }
-    if (quantity > holding.total_quantity) {
+    if (exceedsQuantity(quantity, holding.total_quantity)) {
       form.setError("quantity_sold", {
-        message: `Máximo disponible: ${formatAmount(holding.total_quantity)}`,
+        message: `Máximo disponible: ${formatExactQuantity(holding.total_quantity)}`,
       });
       return;
     }
-    if (!price || price <= 0) {
+    if (price == null || price <= 0) {
       form.setError("price_per_unit", { message: "Precio inválido" });
       return;
     }
@@ -159,10 +175,8 @@ export function SellInvestmentDialog({
 
   const sellAll = () => {
     if (!holding) return;
-    form.setValue(
-      "quantity_sold",
-      formatNumberInput(String(holding.total_quantity).replace(".", ",")),
-    );
+    form.setValue("quantity_sold", toMoneyInput(holding.total_quantity, QUANTITY_DECIMALS));
+    form.clearErrors("quantity_sold");
   };
 
   if (!holding) return null;
@@ -175,8 +189,8 @@ export function SellInvestmentDialog({
         <DialogHeader>
           <DialogTitle>Vender {holding.asset_name}</DialogTitle>
           <DialogDescription>
-            Posición disponible: {formatAmount(holding.total_quantity)} unidades
-            • Costo prom: {sym} {formatAmount(holding.avg_cost_per_unit)}
+            Disponible: {formatExactQuantity(holding.total_quantity)} · Costo prom.{" "}
+            {sym} {formatUnitPrice(holding.avg_cost_per_unit)}
           </DialogDescription>
         </DialogHeader>
 
@@ -186,7 +200,7 @@ export function SellInvestmentDialog({
             className="space-y-4"
             noValidate
           >
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <FormField
                 control={form.control}
                 name="quantity_sold"
@@ -203,18 +217,11 @@ export function SellInvestmentDialog({
                       </button>
                     </FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
+                      <MoneyInput
+                        decimals={QUANTITY_DECIMALS}
                         placeholder="0"
                         disabled={isPending}
-                        value={field.value}
-                        onChange={(e) =>
-                          form.setValue(
-                            "quantity_sold",
-                            formatNumberInput(e.target.value, 7),
-                          )
-                        }
+                        {...field}
                       />
                     </FormControl>
                     <FormMessage />
@@ -229,18 +236,11 @@ export function SellInvestmentDialog({
                   <FormItem>
                     <FormLabel>Precio de venta</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="0,00"
+                      <MoneyInput
+                        currency={sym}
+                        decimals={UNIT_PRICE_DECIMALS}
                         disabled={isPending}
-                        value={field.value}
-                        onChange={(e) =>
-                          form.setValue(
-                            "price_per_unit",
-                            formatNumberInput(e.target.value, 7),
-                          )
-                        }
+                        {...field}
                       />
                     </FormControl>
                     <FormMessage />
@@ -249,7 +249,7 @@ export function SellInvestmentDialog({
               />
             </div>
 
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid gap-4 sm:grid-cols-3">
               <FormField
                 control={form.control}
                 name="fees"
@@ -257,18 +257,11 @@ export function SellInvestmentDialog({
                   <FormItem>
                     <FormLabel>Comisiones</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="0,00"
+                      <MoneyInput
+                        currency={sym}
+                        decimals={moneyDecimals}
                         disabled={isPending}
-                        value={field.value}
-                        onChange={(e) =>
-                          form.setValue(
-                            "fees",
-                            formatNumberInput(e.target.value, 4),
-                          )
-                        }
+                        {...field}
                       />
                     </FormControl>
                     <FormMessage />
@@ -283,18 +276,11 @@ export function SellInvestmentDialog({
                   <FormItem>
                     <FormLabel>Impuestos</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="0,00"
+                      <MoneyInput
+                        currency={sym}
+                        decimals={moneyDecimals}
                         disabled={isPending}
-                        value={field.value}
-                        onChange={(e) =>
-                          form.setValue(
-                            "tax",
-                            formatNumberInput(e.target.value, 4),
-                          )
-                        }
+                        {...field}
                       />
                     </FormControl>
                     <FormMessage />
@@ -318,7 +304,7 @@ export function SellInvestmentDialog({
             </div>
 
             {preview && (
-              <div className="rounded-md border bg-muted/30 p-3 text-sm space-y-1">
+              <div className="flex flex-col gap-1 rounded-md border bg-muted/30 p-3 text-xs tabular-nums">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">
                     Producido bruto
@@ -341,7 +327,7 @@ export function SellInvestmentDialog({
                     {sym} {formatAmount(preview.netProceeds)}
                   </span>
                 </div>
-                <div className="flex justify-between font-semibold border-t pt-1 mt-1">
+                <div className="mt-1 flex justify-between border-t pt-1 font-semibold">
                   <span>Ganancia / Pérdida</span>
                   <span className={amountTone(preview.realizedPnl)}>
                     {sym} {formatAmount(preview.realizedPnl)}
@@ -350,8 +336,8 @@ export function SellInvestmentDialog({
               </div>
             )}
 
-            {isBroker && (
-              <div className="space-y-3">
+            {willAutoCredit && (
+              <div className="flex flex-col gap-3">
                 <FormField
                   control={form.control}
                   name="skip_credit"
@@ -365,19 +351,15 @@ export function SellInvestmentDialog({
                         />
                       </FormControl>
                       <FormLabel className="text-sm font-normal cursor-pointer">
-                        No acreditar el producido en la cuenta del broker
+                        No acreditar el neto en la cuenta
                       </FormLabel>
                     </FormItem>
                   )}
                 />
-                {!watchedSkipCredit && (
-                  <div className="flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
-                    <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                    <span>
-                      El producido neto se acreditará en la cuenta del broker
-                      automáticamente.
-                    </span>
-                  </div>
+                {watchedSkipCredit ? null : preview && preview.netProceeds <= 0 ? (
+                  <Callout>Sin producido neto: no se acredita nada.</Callout>
+                ) : (
+                  <Callout>El producido neto se acreditará en la cuenta.</Callout>
                 )}
               </div>
             )}
@@ -410,7 +392,8 @@ export function SellInvestmentDialog({
                 Cancelar
               </Button>
               <Button type="submit" disabled={isPending}>
-                {isPending ? "Registrando..." : "Registrar venta"}
+                {!isPending ? null : <Spinner />}
+                Registrar venta
               </Button>
             </DialogFooter>
           </form>

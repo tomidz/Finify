@@ -36,7 +36,9 @@ import { AccountCombobox } from "@/components/account-combobox";
 import { useBudgetCategories } from "@/hooks/useBudget";
 import { useCreateRecurring, useUpdateRecurring } from "@/hooks/useRecurring";
 import { CategoryCombobox } from "@/components/category-combobox";
-import { formatMoneyInput, formatMoneyDisplay, parseMoneyInput } from "@/lib/format";
+import { parseMoney, toMoneyInput } from "@/lib/format";
+import { MoneyInput } from "@/components/money-input";
+import { Spinner } from "@/components/ui/spinner";
 import {
   RECURRENCE_LABELS,
   RECURRENCE_OPTIONS,
@@ -105,15 +107,19 @@ export function RecurringDialog({
 
   const isPending = createMutation.isPending || updateMutation.isPending;
 
+  // Filled when the dialog opens, not on every refetch of the accounts or
+  // the base currency: that would wipe what the user typed.
+  const formKey = open ? (recurring?.id ?? "new") : null;
   useEffect(() => {
-    if (!open) return;
+    if (formKey === null) return;
     if (recurring) {
       form.reset({
         description: recurring.description,
         type: recurring.type,
         category_id: recurring.category_id ?? "",
         account_id: recurring.account_id,
-        amount: formatMoneyDisplay(String(recurring.amount).replace(".", ",")),
+        // Up to 8 places: a prefill never rounds a stored amount.
+        amount: toMoneyInput(recurring.amount, 8),
         currency: recurring.currency,
         recurrence: recurring.recurrence,
         day_of_month: recurring.day_of_month?.toString() ?? "",
@@ -126,9 +132,9 @@ export function RecurringDialog({
         description: "",
         type: "expense",
         category_id: "",
-        account_id: accounts?.find((a) => a.is_active)?.id ?? "",
+        account_id: "",
         amount: "",
-        currency: baseCurrency ?? "USD",
+        currency: "",
         recurrence: "monthly",
         day_of_month: "",
         start_date: format(new Date(), "yyyy-MM-dd"),
@@ -136,7 +142,16 @@ export function RecurringDialog({
         notes: "",
       });
     }
-  }, [recurring, open, form, accounts, baseCurrency]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formKey]);
+  // A new template's account and currency default once they load, unless
+  // already chosen.
+  useEffect(() => {
+    if (formKey !== "new") return;
+    const firstActive = accounts?.find((a) => a.is_active);
+    if (firstActive && !form.getValues("account_id")) form.setValue("account_id", firstActive.id);
+    if (baseCurrency && !form.getValues("currency")) form.setValue("currency", baseCurrency);
+  }, [formKey, accounts, baseCurrency, form]);
 
   const onSubmit = async (values: RecurringFormValues) => {
     let hasError = false;
@@ -152,12 +167,15 @@ export function RecurringDialog({
       form.setError("start_date", { message: "La fecha de inicio es obligatoria" });
       hasError = true;
     }
-    const amount = parseMoneyInput(values.amount) ?? 0;
-    if (amount <= 0) {
+    const amount = parseMoney(values.amount);
+    if (amount == null) {
+      form.setError("amount", { message: "Ingresá el monto" });
+      hasError = true;
+    } else if (amount <= 0) {
       form.setError("amount", { message: "El monto debe ser mayor a 0" });
       hasError = true;
     }
-    if (hasError) return;
+    if (hasError || amount == null) return;
 
     const payload = {
       description: values.description.trim(),
@@ -165,7 +183,7 @@ export function RecurringDialog({
       category_id: values.category_id || null,
       account_id: values.account_id,
       amount,
-      currency: values.currency,
+      currency: accounts?.find((a) => a.id === values.account_id)?.currency ?? values.currency,
       recurrence: values.recurrence as "weekly" | "biweekly" | "monthly" | "quarterly" | "yearly",
       day_of_month: values.day_of_month ? parseInt(values.day_of_month, 10) : null,
       day_of_week: null,
@@ -206,6 +224,13 @@ export function RecurringDialog({
   );
 
   const watchType = useWatch({ control: form.control, name: "type" });
+  // A template is in its account's currency: that is what its transactions
+  // are recorded in.
+  const watchAccountId = useWatch({ control: form.control, name: "account_id" });
+  const accountCurrency = accounts?.find((a) => a.id === watchAccountId)?.currency;
+  const watchCurrency = useWatch({ control: form.control, name: "currency" });
+  const amountDecimals =
+    currencies?.find((c) => c.code === (accountCurrency ?? watchCurrency))?.decimals ?? 2;
   const relevantCategories =
     watchType === "income" ? incomeCategories : expenseCategories;
 
@@ -217,16 +242,14 @@ export function RecurringDialog({
             {isEditing ? "Editar recurrente" : "Nueva recurrente"}
           </DialogTitle>
           <DialogDescription>
-            {isEditing
-              ? "Modificá los datos de la transacción recurrente."
-              : "Creá una transacción que se repite periódicamente."}
+            {isEditing ? "Monto, cuenta y frecuencia." : "Un gasto o ingreso que se repite."}
           </DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
           <form
             onSubmit={form.handleSubmit(onSubmit)}
-            className="space-y-4"
+            className="flex flex-col gap-4"
             noValidate
           >
             <FormField
@@ -237,7 +260,7 @@ export function RecurringDialog({
                   <FormLabel>Descripción</FormLabel>
                   <FormControl>
                     <Input
-                      placeholder="Ej: Netflix, Alquiler, Sueldo..."
+                      placeholder="Ej: Netflix, alquiler, sueldo"
                       disabled={isPending}
                       {...field}
                     />
@@ -254,21 +277,21 @@ export function RecurringDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Tipo</FormLabel>
-                    <FormControl>
-                      <Select
-                        value={field.value}
-                        onValueChange={field.onChange}
-                        disabled={isPending}
-                      >
+                    <Select
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      disabled={isPending}
+                    >
+                      <FormControl>
                         <SelectTrigger className="w-full">
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="expense">Gasto</SelectItem>
-                          <SelectItem value="income">Ingreso</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </FormControl>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="expense">Gasto</SelectItem>
+                        <SelectItem value="income">Ingreso</SelectItem>
+                      </SelectContent>
+                    </Select>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -280,24 +303,24 @@ export function RecurringDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Frecuencia</FormLabel>
-                    <FormControl>
-                      <Select
-                        value={field.value}
-                        onValueChange={field.onChange}
-                        disabled={isPending}
-                      >
+                    <Select
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      disabled={isPending}
+                    >
+                      <FormControl>
                         <SelectTrigger className="w-full">
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent>
-                          {RECURRENCE_OPTIONS.map((r) => (
-                            <SelectItem key={r} value={r}>
-                              {RECURRENCE_LABELS[r]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </FormControl>
+                      </FormControl>
+                      <SelectContent>
+                        {RECURRENCE_OPTIONS.map((r) => (
+                          <SelectItem key={r} value={r}>
+                            {RECURRENCE_LABELS[r]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -312,18 +335,10 @@ export function RecurringDialog({
                   <FormItem>
                     <FormLabel>Monto</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="0,00"
+                      <MoneyInput
+                        {...field}
+                        decimals={amountDecimals}
                         disabled={isPending}
-                        value={field.value}
-                        onChange={(e) =>
-                          form.setValue(
-                            "amount",
-                            formatMoneyInput(e.target.value)
-                          )
-                        }
                       />
                     </FormControl>
                     <FormMessage />
@@ -337,39 +352,47 @@ export function RecurringDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Moneda</FormLabel>
-                    <FormControl>
-                      <Select
-                        value={field.value}
-                        onValueChange={field.onChange}
-                        disabled={isPending}
-                      >
+                    <Select
+                      value={accountCurrency ?? field.value}
+                      onValueChange={field.onChange}
+                      disabled
+                    >
+                      <FormControl>
                         <SelectTrigger className="w-full">
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent>
-                          {fiatCurrencies.length > 0 && (
-                            <SelectGroup>
-                              <SelectLabel>Fiat</SelectLabel>
-                              {fiatCurrencies.map((c) => (
-                                <SelectItem key={c.code} value={c.code}>
-                                  {c.symbol} {c.code}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          )}
-                          {cryptoCurrencies.length > 0 && (
-                            <SelectGroup>
-                              <SelectLabel>Crypto</SelectLabel>
-                              {cryptoCurrencies.map((c) => (
-                                <SelectItem key={c.code} value={c.code}>
-                                  {c.symbol} {c.code}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          )}
-                        </SelectContent>
-                      </Select>
-                    </FormControl>
+                      </FormControl>
+                      <SelectContent>
+                        {fiatCurrencies.length > 0 && (
+                          <SelectGroup>
+                            <SelectLabel>Fiat</SelectLabel>
+                            {fiatCurrencies.map((c) => (
+                              <SelectItem key={c.code} value={c.code}>
+                                {c.symbol} {c.code}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        )}
+                        {cryptoCurrencies.length > 0 && (
+                          <SelectGroup>
+                            <SelectLabel>Crypto</SelectLabel>
+                            {cryptoCurrencies.map((c) => (
+                              <SelectItem key={c.code} value={c.code}>
+                                {c.symbol} {c.code}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        )}
+                      </SelectContent>
+                    </Select>
+                    {isEditing &&
+                      accountCurrency &&
+                      recurring.currency !== accountCurrency && (
+                        <p className="text-muted-foreground text-xs">
+                          Estaba en {recurring.currency}: se guarda en {accountCurrency}, la
+                          moneda de la cuenta. Revisá el monto.
+                        </p>
+                      )}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -476,7 +499,7 @@ export function RecurringDialog({
                   <FormLabel>Notas (opcional)</FormLabel>
                   <FormControl>
                     <Input
-                      placeholder="Notas adicionales..."
+                      placeholder="Opcional"
                       disabled={isPending}
                       {...field}
                     />
@@ -487,11 +510,12 @@ export function RecurringDialog({
             />
 
             <DialogFooter>
-              <Button type="submit" disabled={isPending}>
+              <Button type="submit" size="sm" disabled={isPending}>
+                {isPending ? <Spinner className="size-3.5" /> : null}
                 {isPending
-                  ? "Guardando..."
+                  ? "Guardando…"
                   : isEditing
-                    ? "Guardar cambios"
+                    ? "Guardar"
                     : "Crear recurrente"}
               </Button>
             </DialogFooter>

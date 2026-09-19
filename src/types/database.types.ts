@@ -15,6 +15,9 @@ export type Database = {
           created_at: string
           currency: string
           id: string
+          initial_amount: number | null
+          initial_base_amount: number | null
+          initial_base_currency: string | null
           is_active: boolean
           name: string
           notes: string | null
@@ -26,6 +29,9 @@ export type Database = {
           created_at?: string
           currency: string
           id?: string
+          initial_amount?: number | null
+          initial_base_amount?: number | null
+          initial_base_currency?: string | null
           is_active?: boolean
           name: string
           notes?: string | null
@@ -37,6 +43,9 @@ export type Database = {
           created_at?: string
           currency?: string
           id?: string
+          initial_amount?: number | null
+          initial_base_amount?: number | null
+          initial_base_currency?: string | null
           is_active?: boolean
           name?: string
           notes?: string | null
@@ -51,10 +60,18 @@ export type Database = {
             referencedRelation: "currencies"
             referencedColumns: ["code"]
           },
+          {
+            foreignKeyName: "accounts_initial_base_currency_fkey"
+            columns: ["initial_base_currency"]
+            isOneToOne: false
+            referencedRelation: "currencies"
+            referencedColumns: ["code"]
+          },
         ]
       }
       ai_messages: {
         Row: {
+          client_message_id: string | null
           created_at: string
           id: string
           parts: Json
@@ -63,6 +80,7 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          client_message_id?: string | null
           created_at?: string
           id?: string
           parts: Json
@@ -71,6 +89,7 @@ export type Database = {
           user_id: string
         }
         Update: {
+          client_message_id?: string | null
           created_at?: string
           id?: string
           parts?: Json
@@ -138,6 +157,7 @@ export type Database = {
       }
       ai_usage: {
         Row: {
+          cache_write_tokens: number | null
           cached_input_tokens: number
           cost_usd: number
           created_at: string
@@ -150,6 +170,7 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          cache_write_tokens?: number | null
           cached_input_tokens?: number
           cost_usd?: number
           created_at?: string
@@ -162,6 +183,7 @@ export type Database = {
           user_id: string
         }
         Update: {
+          cache_write_tokens?: number | null
           cached_input_tokens?: number
           cost_usd?: number
           created_at?: string
@@ -399,6 +421,30 @@ export type Database = {
         }
         Relationships: []
       }
+      data_reclassification_backup: {
+        Row: {
+          column_name: string
+          previous_value: string
+          reclassified_at: string
+          row_id: string
+          table_name: string
+        }
+        Insert: {
+          column_name: string
+          previous_value: string
+          reclassified_at?: string
+          row_id: string
+          table_name: string
+        }
+        Update: {
+          column_name?: string
+          previous_value?: string
+          reclassified_at?: string
+          row_id?: string
+          table_name?: string
+        }
+        Relationships: []
+      }
       debt_activities: {
         Row: {
           activity_type: Database["public"]["Enums"]["debt_activity_type"]
@@ -409,6 +455,7 @@ export type Database = {
           description: string | null
           id: string
           nw_item_id: string
+          snapshot_changes: Json | null
           transaction_id: string | null
         }
         Insert: {
@@ -420,6 +467,7 @@ export type Database = {
           description?: string | null
           id?: string
           nw_item_id: string
+          snapshot_changes?: Json | null
           transaction_id?: string | null
         }
         Update: {
@@ -431,6 +479,7 @@ export type Database = {
           description?: string | null
           id?: string
           nw_item_id?: string
+          snapshot_changes?: Json | null
           transaction_id?: string | null
         }
         Relationships: [
@@ -549,6 +598,30 @@ export type Database = {
           },
         ]
       }
+      instrument_prices: {
+        Row: {
+          fetched_at: string
+          price: number
+          price_key: string
+          source: string
+          user_id: string
+        }
+        Insert: {
+          fetched_at?: string
+          price: number
+          price_key: string
+          source: string
+          user_id: string
+        }
+        Update: {
+          fetched_at?: string
+          price?: number
+          price_key?: string
+          source?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       investment_sales: {
         Row: {
           account_id: string
@@ -565,6 +638,7 @@ export type Database = {
           quantity_sold: number
           realized_pnl: number
           sale_date: string
+          swap_lot_id: string | null
           tax: number
           ticker: string | null
           total_proceeds: number
@@ -586,6 +660,7 @@ export type Database = {
           quantity_sold: number
           realized_pnl: number
           sale_date: string
+          swap_lot_id?: string | null
           tax?: number
           ticker?: string | null
           total_proceeds: number
@@ -607,6 +682,7 @@ export type Database = {
           quantity_sold?: number
           realized_pnl?: number
           sale_date?: string
+          swap_lot_id?: string | null
           tax?: number
           ticker?: string | null
           total_proceeds?: number
@@ -1135,6 +1211,8 @@ export type Database = {
           id: string
           month_id: string | null
           notes: string | null
+          occurrence_date: string | null
+          recurring_id: string | null
           source_investment_id: string | null
           source_investment_sale_id: string | null
           transaction_type: Database["public"]["Enums"]["transaction_type"]
@@ -1152,6 +1230,8 @@ export type Database = {
           id?: string
           month_id?: string | null
           notes?: string | null
+          occurrence_date?: string | null
+          recurring_id?: string | null
           source_investment_id?: string | null
           source_investment_sale_id?: string | null
           transaction_type: Database["public"]["Enums"]["transaction_type"]
@@ -1169,6 +1249,8 @@ export type Database = {
           id?: string
           month_id?: string | null
           notes?: string | null
+          occurrence_date?: string | null
+          recurring_id?: string | null
           source_investment_id?: string | null
           source_investment_sale_id?: string | null
           transaction_type?: Database["public"]["Enums"]["transaction_type"]
@@ -1195,6 +1277,13 @@ export type Database = {
             columns: ["month_id"]
             isOneToOne: false
             referencedRelation: "months"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "transactions_recurring_id_fkey"
+            columns: ["recurring_id"]
+            isOneToOne: false
+            referencedRelation: "recurring_transactions"
             referencedColumns: ["id"]
           },
           {
@@ -1250,6 +1339,25 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      account_balances: {
+        Args: { p_account_ids: string[] }
+        Returns: {
+          account_id: string
+          amount: number
+          base_amount: number
+        }[]
+      }
+      account_month_balances: {
+        Args: { p_account_id: string }
+        Returns: {
+          base_movements: number
+          month: number
+          movements: number
+          opening_amount: number
+          opening_base_amount: number
+          year: number
+        }[]
+      }
       account_net_worth_year: {
         Args: { p_base_currency?: string; p_year: number }
         Returns: {
@@ -1258,13 +1366,30 @@ export type Database = {
           account_type: string
           balance: number
           balance_base: number
+          balance_book_base: number
+          balance_fx_missing: boolean
+          balance_fx_rate_date: string
+          close_date: string
           currency: string
           currency_symbol: string
+          investment_fx_missing: boolean
+          investment_fx_rate_date: string
           investment_value: number
           investment_value_base: number
+          is_active: boolean
           month: number
           year: number
         }[]
+      }
+      app_today: { Args: never; Returns: string }
+      apply_debt_balance_change: {
+        Args: {
+          p_date: string
+          p_delta: number
+          p_nw_item_id: string
+          p_rate: number
+        }
+        Returns: Json
       }
       budget_summary_vs_actual: {
         Args: { p_base_currency?: string; p_month_id: string }
@@ -1292,6 +1417,32 @@ export type Database = {
           variance: number
         }[]
       }
+      create_investment: {
+        Args: { p_cash_rate?: number; p_lot: Json }
+        Returns: string
+      }
+      delete_investment: { Args: { p_id: string }; Returns: undefined }
+      delete_investment_sale: {
+        Args: { p_sale_id: string }
+        Returns: undefined
+      }
+      fx_max_age_days: {
+        Args: { p_from: string; p_to: string }
+        Returns: number
+      }
+      fx_rate_asof: {
+        Args: {
+          p_date: string
+          p_from: string
+          p_max_age_days?: number
+          p_to: string
+        }
+        Returns: {
+          rate: number
+          rate_date: string
+          source: string
+        }[]
+      }
       latest_fx_rate: {
         Args: {
           p_from_currency: string
@@ -1300,13 +1451,30 @@ export type Database = {
         }
         Returns: number
       }
+      ledger_drift: {
+        Args: never
+        Returns: {
+          account_id: string
+          account_name: string
+          derived_opening: number
+          derived_opening_base: number
+          month: number
+          month_id: string
+          stored_opening: number
+          stored_opening_base: number
+          year: number
+        }[]
+      }
       liabilities_year: {
         Args: { p_base_currency?: string; p_year: number }
         Returns: {
           amount: number
           amount_base: number
+          close_date: string
           currency: string
           currency_symbol: string
+          fx_missing: boolean
+          fx_rate_date: string
           item_id: string
           name: string
         }[]
@@ -1315,6 +1483,9 @@ export type Database = {
         Args: { p_base_currency?: string; p_year: number }
         Returns: {
           assets: number
+          cash_fx_missing: boolean
+          close_date: string
+          fx_missing: boolean
           liabilities: number
           month: number
           net_worth: number
@@ -1335,6 +1506,36 @@ export type Database = {
           opening_base_amount: number
         }[]
       }
+      rebuild_opening_balances: {
+        Args: { p_from_month_id?: string }
+        Returns: undefined
+      }
+      record_debt_adjustment: {
+        Args: {
+          p_activity_type: Database["public"]["Enums"]["debt_activity_type"]
+          p_amount: number
+          p_amount_base?: number
+          p_date: string
+          p_debt_rate: number
+          p_description?: string
+          p_nw_item_id: string
+        }
+        Returns: string
+      }
+      record_debt_payment: {
+        Args: {
+          p_debt_amount: number
+          p_debt_rate: number
+          p_header: Json
+          p_leg: Json
+          p_nw_item_id: string
+        }
+        Returns: string
+      }
+      record_investment_sale: {
+        Args: { p_cash_rate?: number; p_sale: Json }
+        Returns: string
+      }
       reduce_investment_lots: {
         Args: {
           p_account_id: string
@@ -1346,9 +1547,36 @@ export type Database = {
         }
         Returns: number
       }
+      register_recurring_occurrence: {
+        Args: { p_leg: Json; p_occurrence_date: string; p_recurring_id: string }
+        Returns: string
+      }
       resolve_base_currency: {
         Args: { p_base_currency?: string }
         Returns: string
+      }
+      reverse_debt_activity: {
+        Args: { p_activity_id: string }
+        Returns: undefined
+      }
+      save_ledger_transaction: {
+        Args: { p_header: Json; p_id?: string; p_legs: Json }
+        Returns: string
+      }
+      set_ledger_transaction_deleted: {
+        Args: { p_deleted: boolean; p_id: string }
+        Returns: undefined
+      }
+      swap_investment_lots: { Args: { p_swap: Json }; Returns: string }
+      sync_investment_cash: {
+        Args: {
+          p_amount?: number
+          p_in_place?: boolean
+          p_investment_id: string
+          p_rate: number
+          p_sale_id: string
+        }
+        Returns: undefined
       }
       transactions_feed: {
         Args: {
@@ -1393,6 +1621,14 @@ export type Database = {
         }
         Returns: undefined
       }
+      transfer_investment_position: {
+        Args: { p_fee_cash?: number; p_fee_rate?: number; p_move: Json }
+        Returns: undefined
+      }
+      update_investment: {
+        Args: { p_cash_rate?: number; p_changes: Json; p_id: string }
+        Returns: undefined
+      }
       usage_counts: {
         Args: never
         Returns: {
@@ -1401,6 +1637,7 @@ export type Database = {
           usage_count: number
         }[]
       }
+      user_valued_currencies: { Args: never; Returns: string[] }
     }
     Enums: {
       account_type:
@@ -1443,12 +1680,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -1472,11 +1709,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -1497,11 +1734,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -1522,11 +1759,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaEnumNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -1539,11 +1776,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
+    : never) = never,
 > = PublicCompositeTypeNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }

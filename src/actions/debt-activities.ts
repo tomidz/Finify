@@ -5,34 +5,20 @@ import {
   RecordDebtPaymentSchema,
   RecordDebtAdjustmentSchema,
 } from "@/lib/validations/debt-activity.schema";
-import { createTransaction } from "@/actions/transactions";
-import { getDebtCurrentBalance, upsertNwSnapshot } from "@/actions/net-worth";
-import { getOrFetchFxRate } from "@/actions/fx";
+import { getOrFetchFxRate } from "@/lib/server/fx";
+import { loadBaseCurrency } from "@/lib/server/context";
+import { ledgerRpcError } from "@/lib/server/ledger-rpc";
 import type { DebtActivity } from "@/types/net-worth";
+import type { ActionResult } from "@/lib/action-result";
+import { logError } from "@/lib/log";
+import { dbError } from "@/lib/server/db-errors";
 
-async function resolveBaseCurrency(supabase: Awaited<ReturnType<typeof createClient>>, userId: string): Promise<string> {
-  const { data } = await supabase
-    .from("user_preferences")
-    .select("base_currency")
-    .eq("user_id", userId)
-    .maybeSingle();
-  return data?.base_currency ?? "USD";
-}
-
-async function convertAmount(
-  amount: number,
-  from: string,
-  to: string,
-  date: string,
-): Promise<number | null> {
-  if (amount === 0) return 0;
-  if (from === to) return amount;
+async function fxRate(from: string, to: string, date: string): Promise<number | null> {
+  if (from === to) return 1;
   const fx = await getOrFetchFxRate({ date, from, to });
   if ("error" in fx) return null;
-  return amount * fx.data;
+  return fx.data;
 }
-
-type ActionResult<T> = { data: T } | { error: string };
 
 async function getUserId() {
   const supabase = await createClient();
@@ -48,7 +34,7 @@ async function getUserId() {
 
 export async function recordDebtPayment(
   input: unknown
-): Promise<ActionResult<DebtActivity>> {
+): Promise<ActionResult<{ id: string }>> {
   try {
     const parsed = RecordDebtPaymentSchema.safeParse(input);
     if (!parsed.success) {
@@ -84,125 +70,54 @@ export async function recordDebtPayment(
       .single();
     if (accError || !account) return { error: "Cuenta no encontrada" };
 
-    const baseCurrency = await resolveBaseCurrency(supabase, userId);
+    const baseCurrencyResult = await loadBaseCurrency({ supabase, userId });
+    if ("error" in baseCurrencyResult) return baseCurrencyResult;
+    const baseCurrency = baseCurrencyResult.data;
     const accountCurrency = account.currency as string;
     const liabilityCurrency = nwItem.currency as string;
 
-    // Compute base_amount server-side from the account currency (the money
-    // actually leaving the account). The caller-provided amount_base is ignored
-    // because the client may convert from the wrong currency.
-    const computedAmountBase = await convertAmount(
-      amount,
-      accountCurrency,
-      baseCurrency,
-      date,
-    );
-    if (computedAmountBase == null) {
+    // The expense is in the account's currency (the money actually leaving the
+    // account) and the balance change in the debt's. The caller-provided
+    // amount_base is ignored because the client may convert from the wrong
+    // currency.
+    const [accountRate, accountToDebtRate, debtRate] = await Promise.all([
+      fxRate(accountCurrency, baseCurrency, date),
+      fxRate(accountCurrency, liabilityCurrency, date),
+      fxRate(liabilityCurrency, baseCurrency, date),
+    ]);
+    if (accountRate == null) {
       return { error: "No se pudo obtener el tipo de cambio para la cuenta" };
     }
-    const exchangeRate =
-      amount !== 0 ? computedAmountBase / amount : 1;
+    if (accountToDebtRate == null || debtRate == null) {
+      return { error: "No se pudo obtener el tipo de cambio para la deuda" };
+    }
 
-    // Create expense transaction for the payment
-    const txResult = await createTransaction({
-      date,
-      transaction_type: "expense",
-      category_id,
-      description,
-      amounts: [
-        {
-          account_id,
-          amount,
-          exchange_rate: exchangeRate,
-          base_amount: computedAmountBase,
-        },
-      ],
-    });
-
-    if ("error" in txResult) return { error: txResult.error };
-
-    // Insert debt activity
-    const { data: activity, error: activityError } = await supabase
-      .from("debt_activities")
-      .insert({
-        nw_item_id,
-        transaction_id: txResult.data.id,
-        activity_type: "payment",
+    const { data, error } = await supabase.rpc("record_debt_payment", {
+      p_nw_item_id: nw_item_id,
+      p_header: {
+        transaction_type: "expense",
         date,
-        amount,
-        amount_base: computedAmountBase,
         description,
-      })
-      .select()
-      .single();
-
-    if (activityError) return { error: activityError.message };
-
-    // Update debt balance snapshot. currentBalance is in the liability's currency,
-    // so we must convert the payment from account currency -> liability currency.
-    const parsedDate = new Date(`${date}T00:00:00`);
-    const year = parsedDate.getFullYear();
-    const month = parsedDate.getMonth() + 1;
-
-    const currentBalance = await getDebtCurrentBalance(nw_item_id, year, month);
-    const amountInLiabilityCurrency = await convertAmount(
-      amount,
-      accountCurrency,
-      liabilityCurrency,
-      date,
-    );
-    if (amountInLiabilityCurrency == null) {
-      // Subtracting raw foreign units (the old `?? amount` fallback) could
-      // wipe a USD debt with an ARS payment amount. The expense and activity
-      // are already recorded; the snapshot must not be corrupted.
-      return {
-        error:
-          "Pago registrado, pero no se pudo convertir a la moneda de la deuda; actualizá el saldo manualmente",
-      };
-    }
-    const newBalance = Math.max(0, currentBalance - amountInLiabilityCurrency);
-
-    // newAmountBase = newBalance in user's base currency
-    const newAmountBase =
-      liabilityCurrency === baseCurrency
-        ? newBalance
-        : await convertAmount(newBalance, liabilityCurrency, baseCurrency, date);
-
-    await upsertNwSnapshot({
-      nw_item_id,
-      year,
-      month,
-      amount: newBalance,
-      amount_base: newAmountBase,
+        category_id,
+        notes: null,
+        fee: 0,
+      },
+      p_leg: {
+        account_id,
+        amount: -amount,
+        exchange_rate: accountRate,
+        base_amount: -amount * accountRate,
+      },
+      p_debt_amount: amount * accountToDebtRate,
+      p_debt_rate: debtRate,
     });
-
-    // Propagate to snapshots AFTER the payment month: a backdated payment
-    // only wrote its own month, so the carry-forward read (latest snapshot)
-    // never saw it and the reported balance didn't move.
-    const payCode = year * 100 + month;
-    const { data: laterSnaps } = await supabase
-      .from("nw_snapshots")
-      .select("id, year, month, amount, amount_base")
-      .eq("nw_item_id", nw_item_id);
-    for (const snap of laterSnaps ?? []) {
-      const snapCode = Number(snap.year) * 100 + Number(snap.month);
-      if (snapCode <= payCode) continue;
-      const oldAmount = Number(snap.amount);
-      const nextAmount = Math.max(0, oldAmount - amountInLiabilityCurrency);
-      const oldBase = snap.amount_base != null ? Number(snap.amount_base) : null;
-      const nextBase =
-        oldBase != null && oldAmount > 0
-          ? Number(((oldBase * nextAmount) / oldAmount).toFixed(4))
-          : oldBase;
-      await supabase
-        .from("nw_snapshots")
-        .update({ amount: nextAmount, amount_base: nextBase })
-        .eq("id", snap.id);
+    if (error) {
+      return ledgerRpcError("record_debt_payment", error, "Error al registrar el pago");
     }
 
-    return { data: activity as DebtActivity };
+    return { data: { id: data } };
   } catch (e) {
-    console.error("recordDebtPayment:", e);
+    logError("recordDebtPayment", e);
     return { error: "Error al registrar el pago" };
   }
 }
@@ -213,7 +128,7 @@ export async function recordDebtPayment(
 
 export async function recordDebtAdjustment(
   input: unknown
-): Promise<ActionResult<DebtActivity>> {
+): Promise<ActionResult<{ id: string }>> {
   try {
     const parsed = RecordDebtAdjustmentSchema.safeParse(input);
     if (!parsed.success) {
@@ -240,53 +155,58 @@ export async function recordDebtAdjustment(
 
     if (nwError || !nwItem) return { error: "Deuda no encontrada" };
 
-    const baseCurrency = await resolveBaseCurrency(supabase, userId);
-    const liabilityCurrency = nwItem.currency as string;
+    const baseCurrencyResult = await loadBaseCurrency({ supabase, userId });
+    if ("error" in baseCurrencyResult) return baseCurrencyResult;
+    const baseCurrency = baseCurrencyResult.data;
     // For adjustments/interest, `amount` is already in the liability currency.
-    const computedAmountBase =
-      amount_base ?? (await convertAmount(amount, liabilityCurrency, baseCurrency, date));
+    const debtRate = await fxRate(nwItem.currency as string, baseCurrency, date);
+    if (debtRate == null) {
+      return { error: "No se pudo obtener el tipo de cambio para la deuda" };
+    }
 
-    // Insert debt activity (no transaction - interest/adjustments don't move bank money)
-    const { data: activity, error: activityError } = await supabase
-      .from("debt_activities")
-      .insert({
-        nw_item_id,
-        transaction_id: null,
-        activity_type,
-        date,
-        amount,
-        amount_base: computedAmountBase,
-        description: description || null,
-      })
-      .select()
-      .single();
-
-    if (activityError) return { error: activityError.message };
-
-    // Update debt balance snapshot (interest increases the balance)
-    const parsedDate = new Date(`${date}T00:00:00`);
-    const year = parsedDate.getFullYear();
-    const month = parsedDate.getMonth() + 1;
-
-    const currentBalance = await getDebtCurrentBalance(nw_item_id, year, month);
-    const newBalance = currentBalance + amount;
-    const newAmountBase =
-      liabilityCurrency === baseCurrency
-        ? newBalance
-        : await convertAmount(newBalance, liabilityCurrency, baseCurrency, date);
-
-    await upsertNwSnapshot({
-      nw_item_id,
-      year,
-      month,
-      amount: newBalance,
-      amount_base: newAmountBase,
+    // No transaction: interest and adjustments don't move bank money.
+    const { data, error } = await supabase.rpc("record_debt_adjustment", {
+      p_nw_item_id: nw_item_id,
+      p_activity_type: activity_type,
+      p_date: date,
+      p_amount: amount,
+      p_debt_rate: debtRate,
+      p_amount_base: amount_base ?? undefined,
+      p_description: description || undefined,
     });
+    if (error) {
+      return ledgerRpcError("record_debt_adjustment", error, "Error al registrar el ajuste");
+    }
 
-    return { data: activity as DebtActivity };
+    return { data: { id: data } };
   } catch (e) {
-    console.error("recordDebtAdjustment:", e);
+    logError("recordDebtAdjustment", e);
     return { error: "Error al registrar el ajuste" };
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Reverse a payment, interest charge or adjustment                    */
+/* ------------------------------------------------------------------ */
+
+export async function reverseDebtActivity(
+  activityId: string
+): Promise<ActionResult<null>> {
+  try {
+    const userId = await getUserId();
+    if (!userId) return { error: "No autenticado" };
+
+    const supabase = await createClient();
+    const { error } = await supabase.rpc("reverse_debt_activity", {
+      p_activity_id: activityId,
+    });
+    if (error) {
+      return ledgerRpcError("reverse_debt_activity", error, "Error al revertir el movimiento");
+    }
+    return { data: null };
+  } catch (e) {
+    logError("reverseDebtActivity", e);
+    return { error: "Error al revertir el movimiento" };
   }
 }
 
@@ -320,7 +240,7 @@ export async function getDebtActivities(
       .order("date", { ascending: false })
       .order("created_at", { ascending: false });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getDebtActivities", error, "Error al obtener historial");
 
     const mapped: DebtActivity[] = (activities ?? []).map((a) => ({
       id: a.id,
@@ -336,7 +256,7 @@ export async function getDebtActivities(
 
     return { data: mapped };
   } catch (e) {
-    console.error("getDebtActivities:", e);
+    logError("getDebtActivities", e);
     return { error: "Error al obtener historial" };
   }
 }

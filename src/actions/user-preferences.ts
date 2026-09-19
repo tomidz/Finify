@@ -3,16 +3,44 @@
 import { createClient } from "@/lib/supabase/server";
 import { z } from "zod";
 
+import { dbError } from "@/lib/server/db-errors";
+import { logError } from "@/lib/log";
+import type { ActionResult } from "@/lib/action-result";
+
 export interface UserPreferences {
   base_currency: string;
-  fx_source: string;
+  /** Accounts or budgets already hold amounts in the base currency. */
+  base_currency_locked: boolean;
 }
 
-type ActionResult<T> = { data: T } | { error: string };
+type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
+
+const BASE_CURRENCY_LOCKED =
+  "La moneda base no se puede cambiar cuando ya hay cuentas o presupuestos: los montos guardados quedarían en la moneda anterior.";
+
+/**
+ * Base amounts are stored, not derived: transaction legs, opening balances,
+ * recurring templates and budget plans all carry them. Every one of those
+ * hangs off an account or a budget line.
+ */
+async function hasBaseCurrencyData(
+  supabase: SupabaseServerClient,
+  userId: string,
+): Promise<ActionResult<boolean>> {
+  const countOnly = { count: "exact", head: true } as const;
+  const [accounts, budgetLines] = await Promise.all([
+    supabase.from("accounts").select("id", countOnly).eq("user_id", userId),
+    supabase.from("budget_lines").select("id", countOnly).eq("user_id", userId),
+  ]);
+  const failed = accounts.error ?? budgetLines.error;
+  if (failed) {
+    return dbError("hasBaseCurrencyData", failed, "No se pudo verificar si ya hay cuentas o presupuestos");
+  }
+  return { data: (accounts.count ?? 0) + (budgetLines.count ?? 0) > 0 };
+}
 
 const UpdateUserPreferencesSchema = z.object({
   base_currency: z.string().min(1).optional(),
-  fx_source: z.string().min(1).optional(),
 });
 
 export async function getUserPreferences(): Promise<
@@ -25,20 +53,25 @@ export async function getUserPreferences(): Promise<
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    const { data, error } = await supabase
-      .from("user_preferences")
-      .select("base_currency, fx_source")
-      .eq("user_id", user.id)
-      .maybeSingle();
+    const [{ data, error }, locked] = await Promise.all([
+      supabase
+        .from("user_preferences")
+        .select("base_currency")
+        .eq("user_id", user.id)
+        .maybeSingle(),
+      hasBaseCurrencyData(supabase, user.id),
+    ]);
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getUserPreferences", error, "Error al obtener preferencias");
+    if ("error" in locked) return locked;
     return {
       data: {
         base_currency: data?.base_currency ?? "USD",
-        fx_source: data?.fx_source ?? "frankfurter",
+        base_currency_locked: locked.data,
       },
     };
-  } catch {
+  } catch (e) {
+    logError("getUserPreferences", e);
     return { error: "Error al obtener preferencias" };
   }
 }
@@ -62,46 +95,60 @@ export async function updateUserPreferences(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    if (parsed.data.base_currency == null && parsed.data.fx_source == null) {
+    if (parsed.data.base_currency == null) {
       return getUserPreferences();
     }
 
-    // base_currency is NOT NULL: when only fx_source changes, carry the
-    // current value (or the default) so the upsert's insert arm is valid.
-    let baseCurrency = parsed.data.base_currency;
-    if (baseCurrency == null) {
-      const { data: current } = await supabase
-        .from("user_preferences")
-        .select("base_currency")
-        .eq("user_id", user.id)
+    const { data: current, error: currentError } = await supabase
+      .from("user_preferences")
+      .select("base_currency")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (currentError) {
+      return dbError("updateUserPreferences", currentError, "Error al obtener preferencias");
+    }
+    const currentBase = current?.base_currency ?? "USD";
+
+    const baseCurrency = parsed.data.base_currency;
+
+    const hasData = await hasBaseCurrencyData(supabase, user.id);
+    if ("error" in hasData) return hasData;
+    if (baseCurrency !== currentBase && hasData.data) return { error: BASE_CURRENCY_LOCKED };
+
+    if (baseCurrency !== currentBase) {
+      // Exchange rates only exist between fiat currencies.
+      const { data: currency, error: currencyError } = await supabase
+        .from("currencies")
+        .select("currency_type")
+        .eq("code", baseCurrency)
         .maybeSingle();
-      baseCurrency = current?.base_currency ?? "USD";
+      if (currencyError) {
+        return dbError("updateUserPreferences", currencyError, "No se pudo verificar la moneda");
+      }
+      if (currency?.currency_type !== "fiat") {
+        return { error: "La moneda base tiene que ser una moneda fiat." };
+      }
     }
 
     const { data, error } = await supabase
       .from("user_preferences")
       .upsert(
-        {
-          user_id: user.id,
-          base_currency: baseCurrency,
-          ...(parsed.data.fx_source != null
-            ? { fx_source: parsed.data.fx_source }
-            : {}),
-        },
+        { user_id: user.id, base_currency: baseCurrency },
         { onConflict: "user_id" },
       )
       .eq("user_id", user.id)
-      .select("base_currency, fx_source")
+      .select("base_currency")
       .single();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("updateUserPreferences", error, "Error al actualizar preferencias");
     return {
       data: {
         base_currency: data.base_currency,
-        fx_source: data.fx_source,
+        base_currency_locked: hasData.data,
       },
     };
-  } catch {
+  } catch (e) {
+    logError("updateUserPreferences", e);
     return { error: "Error al actualizar preferencias" };
   }
 }

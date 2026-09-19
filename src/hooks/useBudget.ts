@@ -12,7 +12,6 @@ import {
   getBudgetYears,
   getBudgetLines,
   getBudgetSummaryVsActual,
-  getBudgetSummaryVsActualForRange,
   getOrCreateBudgetYear,
   ensureBudgetSeed,
   getBudgetCategories,
@@ -36,25 +35,22 @@ import type {
   UpdateBudgetLineInput,
   UpdateCategoryInput,
 } from "@/lib/validations/budget.schema";
+import { invalidateBudgetPlan, invalidateLedger } from "@/lib/query-keys";
 import { toast } from "sonner";
+import { ActionError, errorMessage, unwrapResult } from "@/lib/action-result";
+import { budgetTotalsByGroup } from "@/lib/finance/budget-status";
 
 export const BUDGET_KEYS = {
   years: ["budget", "years"] as const,
   categories: ["budget", "categories"] as const,
   lines: (monthId: string) => ["budget", "lines", monthId] as const,
   summary: (monthId: string) => ["budget", "summary", monthId] as const,
-  summaryRange: (startMonthId: string, endMonthId: string) =>
-    ["budget", "summary-range", startMonthId, endMonthId] as const,
 };
 
 export function useBudgetYears() {
   return useQuery({
     queryKey: BUDGET_KEYS.years,
-    queryFn: async () => {
-      const result = await getBudgetYears();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getBudgetYears()),
     staleTime: 10 * 60_000,
   });
 }
@@ -64,10 +60,8 @@ export function useOrCreateBudgetYear(year: number | null) {
   return useMutation({
     mutationFn: async (y?: number) => {
       const yr = y ?? year;
-      if (yr == null) throw new Error("Año requerido");
-      const result = await getOrCreateBudgetYear(yr);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
+      if (yr == null) throw new ActionError("Año requerido");
+      return unwrapResult(await getOrCreateBudgetYear(yr));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.years });
@@ -79,11 +73,7 @@ export function useOrCreateBudgetYear(year: number | null) {
 export function useEnsureBudgetSeed() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async () => {
-      const result = await ensureBudgetSeed();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async () => unwrapResult(await ensureBudgetSeed()),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.categories });
     },
@@ -93,11 +83,7 @@ export function useEnsureBudgetSeed() {
 export function useBudgetCategories() {
   return useQuery({
     queryKey: BUDGET_KEYS.categories,
-    queryFn: async () => {
-      const result = await getBudgetCategories();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getBudgetCategories()),
     staleTime: Infinity,
   });
 }
@@ -105,11 +91,7 @@ export function useBudgetCategories() {
 export function useSuspenseBudgetCategories() {
   return useSuspenseQuery({
     queryKey: BUDGET_KEYS.categories,
-    queryFn: async () => {
-      const result = await getBudgetCategories();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getBudgetCategories()),
     staleTime: Infinity,
   });
 }
@@ -117,11 +99,7 @@ export function useSuspenseBudgetCategories() {
 export function useCreateCategory() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: CreateCategoryInput) => {
-      const result = await createCategory(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: CreateCategoryInput) => unwrapResult(await createCategory(input)),
     onMutate: async (newCat) => {
       await queryClient.cancelQueries({ queryKey: BUDGET_KEYS.categories });
       const previous = queryClient.getQueryData<BudgetCategory[]>(
@@ -145,11 +123,11 @@ export function useCreateCategory() {
       );
       return { previous };
     },
-    onError: (_err, _input, context) => {
+    onError: (err, _input, context) => {
       if (context?.previous) {
         queryClient.setQueryData(BUDGET_KEYS.categories, context.previous);
       }
-      toast.error(_err.message);
+      toast.error(errorMessage(err));
     },
     onSuccess: () => {
       toast.success("Categoría creada");
@@ -163,11 +141,7 @@ export function useCreateCategory() {
 export function useUpdateCategory() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: UpdateCategoryInput) => {
-      const result = await updateCategory(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: UpdateCategoryInput) => unwrapResult(await updateCategory(input)),
     onMutate: async (updatedCat) => {
       await queryClient.cancelQueries({ queryKey: BUDGET_KEYS.categories });
       const previous = queryClient.getQueryData<BudgetCategory[]>(
@@ -184,17 +158,18 @@ export function useUpdateCategory() {
       );
       return { previous };
     },
-    onError: (_err, _input, context) => {
+    onError: (err, _input, context) => {
       if (context?.previous) {
         queryClient.setQueryData(BUDGET_KEYS.categories, context.previous);
       }
-      toast.error(_err.message);
+      toast.error(errorMessage(err));
     },
     onSuccess: () => {
       toast.success("Categoría actualizada");
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.categories });
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -202,11 +177,7 @@ export function useUpdateCategory() {
 export function useDeleteCategory() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      const result = await deleteCategory(id);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (id: string) => unwrapResult(await deleteCategory(id)),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: BUDGET_KEYS.categories });
       const previous = queryClient.getQueryData<BudgetCategory[]>(
@@ -218,17 +189,18 @@ export function useDeleteCategory() {
       );
       return { previous };
     },
-    onError: (_err, _id, context) => {
+    onError: (err, _id, context) => {
       if (context?.previous) {
         queryClient.setQueryData(BUDGET_KEYS.categories, context.previous);
       }
-      toast.error(_err.message);
+      toast.error(errorMessage(err));
     },
     onSuccess: () => {
       toast.success("Categoría eliminada");
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.categories });
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -239,9 +211,7 @@ export function useBudgetLines(monthId: string | null) {
     enabled: !!monthId,
     queryFn: async () => {
       if (!monthId) return [];
-      const result = await getBudgetLines(monthId);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
+      return unwrapResult(await getBudgetLines(monthId));
     },
     staleTime: 5 * 60_000,
   });
@@ -250,11 +220,7 @@ export function useBudgetLines(monthId: string | null) {
 export function useSuspenseBudgetLines(monthId: string) {
   return useSuspenseQuery<BudgetLineWithPlan[]>({
     queryKey: BUDGET_KEYS.lines(monthId),
-    queryFn: async () => {
-      const result = await getBudgetLines(monthId);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getBudgetLines(monthId)),
     staleTime: 5 * 60_000,
   });
 }
@@ -262,11 +228,7 @@ export function useSuspenseBudgetLines(monthId: string) {
 export function useCreateBudgetLine(monthId: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: CreateBudgetLineInput) => {
-      const result = await createBudgetLine(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: CreateBudgetLineInput) => unwrapResult(await createBudgetLine(input)),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: BUDGET_KEYS.categories });
       if (monthId) {
@@ -275,20 +237,13 @@ export function useCreateBudgetLine(monthId: string | null) {
         });
       }
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err) => toast.error(errorMessage(err)),
     onSuccess: () => {
       toast.success("Línea creada");
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.categories });
-      if (monthId) {
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.lines(monthId),
-        });
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.summary(monthId),
-        });
-      }
+      invalidateBudgetPlan(queryClient);
     },
   });
 }
@@ -296,11 +251,7 @@ export function useCreateBudgetLine(monthId: string | null) {
 export function useUpdateBudgetLine(monthId: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: UpdateBudgetLineInput) => {
-      const result = await updateBudgetLine(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: UpdateBudgetLineInput) => unwrapResult(await updateBudgetLine(input)),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: BUDGET_KEYS.categories });
       if (monthId) {
@@ -309,20 +260,13 @@ export function useUpdateBudgetLine(monthId: string | null) {
         });
       }
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err) => toast.error(errorMessage(err)),
     onSuccess: () => {
       toast.success("Línea actualizada");
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.categories });
-      if (monthId) {
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.lines(monthId),
-        });
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.summary(monthId),
-        });
-      }
+      invalidateBudgetPlan(queryClient);
     },
   });
 }
@@ -330,11 +274,7 @@ export function useUpdateBudgetLine(monthId: string | null) {
 export function useDeleteBudgetLine(monthId: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      const result = await deleteBudgetLine(id);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (id: string) => unwrapResult(await deleteBudgetLine(id)),
     onMutate: async (id) => {
       if (monthId) {
         await queryClient.cancelQueries({
@@ -350,36 +290,25 @@ export function useDeleteBudgetLine(monthId: string | null) {
         return { previous };
       }
     },
-    onError: (_err, _id, context) => {
+    onError: (err, _id, context) => {
       if (context?.previous && monthId) {
         queryClient.setQueryData(BUDGET_KEYS.lines(monthId), context.previous);
       }
-      toast.error(_err.message);
+      toast.error(errorMessage(err));
     },
     onSuccess: () => {
       toast.success("Línea eliminada");
     },
     onSettled: () => {
-      if (monthId) {
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.lines(monthId),
-        });
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.summary(monthId),
-        });
-      }
+      invalidateBudgetPlan(queryClient);
     },
   });
 }
 
-export function useUpsertBudgetMonthPlan(monthId: string | null) {
+export function useUpsertBudgetMonthPlan() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: UpsertBudgetMonthPlanInput) => {
-      const result = await upsertBudgetMonthPlan(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: UpsertBudgetMonthPlanInput) => unwrapResult(await upsertBudgetMonthPlan(input)),
     onMutate: async (input) => {
       const targetMonthId = input.month_id;
 
@@ -421,22 +350,16 @@ export function useUpsertBudgetMonthPlan(monthId: string | null) {
             BUDGET_KEYS.summary(targetMonthId),
             (old) => {
               if (!old) return old;
-              return {
-                totals: {
-                  ...old.totals,
-                  planned: old.totals.planned + diff,
-                  variance: old.totals.variance + diff,
-                },
-                categories: old.categories.map((cat) =>
-                  cat.category_id === updatedLine.category_id
-                    ? {
-                        ...cat,
-                        planned_amount: cat.planned_amount + diff,
-                        variance: cat.variance + diff,
-                      }
-                    : cat
-                ),
-              };
+              const categories = old.categories.map((cat) =>
+                cat.category_id === updatedLine.category_id
+                  ? {
+                      ...cat,
+                      planned_amount: cat.planned_amount + diff,
+                      variance: cat.variance + diff,
+                    }
+                  : cat
+              );
+              return { totals: budgetTotalsByGroup(categories), categories };
             }
           );
         }
@@ -444,7 +367,7 @@ export function useUpsertBudgetMonthPlan(monthId: string | null) {
 
       return { previousLines, previousSummary, targetMonthId };
     },
-    onError: (_err, _input, context) => {
+    onError: (err, _input, context) => {
       if (context?.targetMonthId) {
         if (context.previousLines) {
           queryClient.setQueryData(
@@ -459,26 +382,13 @@ export function useUpsertBudgetMonthPlan(monthId: string | null) {
           );
         }
       }
-      toast.error(_err.message);
+      toast.error(errorMessage(err));
     },
     onSuccess: () => {
       toast.success("Plan mensual actualizado");
     },
-    onSettled: (_, __, vars) => {
-      queryClient.invalidateQueries({
-        queryKey: BUDGET_KEYS.lines(vars.month_id),
-      });
-      queryClient.invalidateQueries({
-        queryKey: BUDGET_KEYS.summary(vars.month_id),
-      });
-      if (monthId && monthId !== vars.month_id) {
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.lines(monthId),
-        });
-        queryClient.invalidateQueries({
-          queryKey: BUDGET_KEYS.summary(monthId),
-        });
-      }
+    onSettled: () => {
+      invalidateBudgetPlan(queryClient);
     },
   });
 }
@@ -487,27 +397,20 @@ export function useCreateBudgetNextMonthFromSource(monthId: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (entries: CreateBudgetNextMonthFromSourceInput["entries"]) => {
-      if (!monthId) throw new Error("Mes requerido");
-      const result = await createBudgetNextMonthFromSource({
+      if (!monthId) throw new ActionError("Mes requerido");
+      return unwrapResult(await createBudgetNextMonthFromSource({
         source_month_id: monthId,
         entries,
-      });
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
+      }));
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["months"] });
-      if (monthId) {
-        queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.lines(monthId) });
-        queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.summary(monthId) });
-      }
-      queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.lines(data.month_id) });
-      queryClient.invalidateQueries({ queryKey: BUDGET_KEYS.summary(data.month_id) });
+      // Creates the month itself: balances carry over as well as the plan.
+      invalidateLedger(queryClient);
       toast.success(
         `Presupuesto ${data.month}/${data.year} creado desde el mes actual`
       );
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err) => toast.error(errorMessage(err)),
   });
 }
 
@@ -517,14 +420,9 @@ export function useBudgetSummary(monthId: string | null) {
     enabled: !!monthId,
     queryFn: async () => {
       if (!monthId) {
-        return {
-          totals: { planned: 0, actual: 0, variance: 0 },
-          categories: [],
-        };
+        return { totals: budgetTotalsByGroup([]), categories: [] };
       }
-      const result = await getBudgetSummaryVsActual(monthId);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
+      return unwrapResult(await getBudgetSummaryVsActual(monthId));
     },
     staleTime: 60_000,
     gcTime: 10 * 60_000,
@@ -534,38 +432,9 @@ export function useBudgetSummary(monthId: string | null) {
 export function useSuspenseBudgetSummary(monthId: string) {
   return useSuspenseQuery<BudgetSummaryVsActual>({
     queryKey: BUDGET_KEYS.summary(monthId),
-    queryFn: async () => {
-      const result = await getBudgetSummaryVsActual(monthId);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getBudgetSummaryVsActual(monthId)),
     staleTime: 60_000,
     gcTime: 10 * 60_000,
   });
 }
 
-export function useBudgetSummaryForRange(
-  startMonthId: string | null,
-  endMonthId: string | null
-) {
-  return useQuery<BudgetSummaryVsActual>({
-    queryKey: BUDGET_KEYS.summaryRange(startMonthId ?? "", endMonthId ?? ""),
-    enabled: !!startMonthId && !!endMonthId,
-    queryFn: async () => {
-      if (!startMonthId || !endMonthId) {
-        return {
-          totals: { planned: 0, actual: 0, variance: 0 },
-          categories: [],
-        };
-      }
-      const result = await getBudgetSummaryVsActualForRange(
-        startMonthId,
-        endMonthId,
-      );
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
-    staleTime: 60_000,
-    gcTime: 10 * 60_000,
-  });
-}

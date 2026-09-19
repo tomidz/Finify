@@ -50,9 +50,14 @@ export interface TransactionAmountWithRelations extends TransactionAmount {
   // Monto convertido dinámicamente a la moneda base actual usando FX histórico.
   // Cuando no se calcule, los consumidores pueden hacer fallback a base_amount.
   current_base_amount?: number;
+  /** Fecha de la cotización de current_base_amount; puede ser anterior a la del movimiento. */
+  current_rate_date?: string;
 }
 
 export interface TransactionWithRelations extends Transaction {
+  /** The recurring template and date it was registered from (0049). */
+  recurring_id?: string | null;
+  occurrence_date?: string | null;
   category_name: string | null;
   category_type: BudgetCategoryType | null;
   amounts: TransactionAmountWithRelations[];

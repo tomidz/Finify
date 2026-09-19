@@ -23,4 +23,6 @@ next-env.d.ts
 /supabase/.branches
 /supabase/.temp
 
-.claude/
+# Claude Code: skills and shared settings are versioned; local overrides are not.
+.claude/settings.local.json
+.claude/worktrees/

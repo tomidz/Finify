@@ -9,8 +9,9 @@ import type {
   TransactionRuleWithCategory,
   RuleMatch,
 } from "@/types/transaction-rules";
-
-type ActionResult<T> = { data: T } | { error: string };
+import { dbError } from "@/lib/server/db-errors";
+import { logError } from "@/lib/log";
+import type { ActionResult } from "@/lib/action-result";
 
 // --- GET ALL RULES ---
 export async function getTransactionRules(): Promise<
@@ -36,7 +37,7 @@ export async function getTransactionRules(): Promise<
       .order("priority", { ascending: false })
       .order("name", { ascending: true });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getTransactionRules", error, "Error al obtener las reglas");
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const mapped = (data ?? []).map((row: any) => ({
@@ -49,7 +50,7 @@ export async function getTransactionRules(): Promise<
 
     return { data: mapped as TransactionRuleWithCategory[] };
   } catch (e) {
-    console.error("getTransactionRules:", e);
+    logError("getTransactionRules", e);
     return { error: "Error al obtener las reglas" };
   }
 }
@@ -84,7 +85,7 @@ export async function createTransactionRule(
       )
       .single();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("createTransactionRule", error, "Error al crear la regla");
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const row = data as any;
@@ -96,7 +97,7 @@ export async function createTransactionRule(
       } as TransactionRuleWithCategory,
     };
   } catch (e) {
-    console.error("createTransactionRule:", e);
+    logError("createTransactionRule", e);
     return { error: "Error al crear la regla" };
   }
 }
@@ -135,7 +136,7 @@ export async function updateTransactionRule(
       )
       .single();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("updateTransactionRule", error, "Error al actualizar la regla");
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const row = data as any;
@@ -147,7 +148,7 @@ export async function updateTransactionRule(
       } as TransactionRuleWithCategory,
     };
   } catch (e) {
-    console.error("updateTransactionRule:", e);
+    logError("updateTransactionRule", e);
     return { error: "Error al actualizar la regla" };
   }
 }
@@ -169,10 +170,10 @@ export async function deleteTransactionRule(
       .eq("id", id)
       .eq("user_id", user.id);
 
-    if (error) return { error: error.message };
+    if (error) return dbError("deleteTransactionRule", error, "Error al eliminar la regla");
     return { data: null };
   } catch (e) {
-    console.error("deleteTransactionRule:", e);
+    logError("deleteTransactionRule", e);
     return { error: "Error al eliminar la regla" };
   }
 }
@@ -203,7 +204,7 @@ export async function matchTransactionRules(
       .eq("is_active", true)
       .order("priority", { ascending: false });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("matchTransactionRules", error, "Error al buscar reglas");
     if (!rules || rules.length === 0) return { data: null };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -244,7 +245,7 @@ export async function matchTransactionRules(
 
     return { data: null };
   } catch (e) {
-    console.error("matchTransactionRules:", e);
+    logError("matchTransactionRules", e);
     return { error: "Error al buscar reglas" };
   }
 }

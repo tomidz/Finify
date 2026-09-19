@@ -1,6 +1,5 @@
 "use client";
 
-import { format } from "date-fns";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import {
@@ -13,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/money-input";
 import {
   Form,
   FormField,
@@ -28,10 +28,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useCurrencies } from "@/hooks/useAccounts";
 import { useRecordDebtAdjustment } from "@/hooks/useNetWorth";
 import { useBaseCurrency } from "@/hooks/useTransactions";
-import { formatMoneyInput, parseMoneyInput, formatAmount } from "@/lib/format";
+import { formatAmount, parseMoney } from "@/lib/format";
+import { today } from "@/lib/dates";
 import { fetchExchangeRate } from "@/lib/frankfurter";
+import { uiScale } from "@/lib/ui-scale";
 import type { NwItemWithRelations } from "@/types/net-worth";
 
 interface DebtAdjustmentDialogProps {
@@ -55,20 +58,24 @@ export function DebtAdjustmentDialog({
   const form = useForm<AdjustmentFormValues>({
     defaultValues: {
       activity_type: "interest",
-      date: format(new Date(), "yyyy-MM-dd"),
+      date: today(),
       amount: "",
       description: "",
     },
   });
 
   const { data: baseCurrency } = useBaseCurrency();
+  const { data: currencies } = useCurrencies();
   const recordAdjustment = useRecordDebtAdjustment();
+  // Interest and adjustments are in the debt's currency and only raise it.
+  // Stored with 4 decimals.
+  const debtDecimals = Math.min(currencies?.find((c) => c.code === debt?.currency)?.decimals ?? 2, 4);
 
   useEffect(() => {
     if (!open) return;
     form.reset({
       activity_type: "interest",
-      date: format(new Date(), "yyyy-MM-dd"),
+      date: today(),
       amount: "",
       description: "",
     });
@@ -77,8 +84,8 @@ export function DebtAdjustmentDialog({
   const onSubmit = async (values: AdjustmentFormValues) => {
     if (!debt) return;
 
-    const amount = parseMoneyInput(values.amount);
-    if (!amount || amount <= 0) {
+    const amount = parseMoney(values.amount);
+    if (amount == null || amount <= 0) {
       form.setError("amount", { message: "Ingresá un monto válido" });
       return;
     }
@@ -123,7 +130,7 @@ export function DebtAdjustmentDialog({
                 {" "}
                 Saldo actual:{" "}
                 <span className="font-semibold">
-                  {debt.currency_symbol} {formatAmount(debt.currentAmount)}
+                  {debt.currency_symbol} {formatAmount(debt.currentAmount, debtDecimals)}
                 </span>
               </>
             )}
@@ -142,21 +149,21 @@ export function DebtAdjustmentDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Tipo</FormLabel>
-                  <FormControl>
-                    <Select
-                      value={field.value}
-                      onValueChange={field.onChange}
-                      disabled={recordAdjustment.isPending}
-                    >
-                      <SelectTrigger className="w-full">
+                  <Select
+                    value={field.value}
+                    onValueChange={field.onChange}
+                    disabled={recordAdjustment.isPending}
+                  >
+                    <FormControl>
+                      <SelectTrigger className={`w-full ${uiScale.trigger}`}>
                         <SelectValue />
                       </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="interest">Intereses</SelectItem>
-                        <SelectItem value="adjustment">Ajuste</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </FormControl>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="interest">Intereses</SelectItem>
+                      <SelectItem value="adjustment">Ajuste</SelectItem>
+                    </SelectContent>
+                  </Select>
                   <FormMessage />
                 </FormItem>
               )}
@@ -173,6 +180,7 @@ export function DebtAdjustmentDialog({
                       <Input
                         type="date"
                         disabled={recordAdjustment.isPending}
+                        className={uiScale.field}
                         {...field}
                       />
                     </FormControl>
@@ -188,18 +196,12 @@ export function DebtAdjustmentDialog({
                   <FormItem>
                     <FormLabel>Monto</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="0,00"
+                      <MoneyInput
+                        {...field}
+                        currency={debt?.currency_symbol}
+                        decimals={debtDecimals}
                         disabled={recordAdjustment.isPending}
-                        value={field.value}
-                        onChange={(e) =>
-                          form.setValue(
-                            "amount",
-                            formatMoneyInput(e.target.value)
-                          )
-                        }
+                        className={uiScale.field}
                       />
                     </FormControl>
                     <FormMessage />
@@ -218,6 +220,7 @@ export function DebtAdjustmentDialog({
                     <Input
                       placeholder="Ej: Intereses de abril"
                       disabled={recordAdjustment.isPending}
+                      className={uiScale.field}
                       {...field}
                     />
                   </FormControl>
@@ -227,7 +230,7 @@ export function DebtAdjustmentDialog({
             />
 
             <DialogFooter>
-              <Button type="submit" disabled={recordAdjustment.isPending}>
+              <Button type="submit" size="sm" className={uiScale.button} disabled={recordAdjustment.isPending}>
                 {recordAdjustment.isPending
                   ? "Registrando..."
                   : "Registrar ajuste"}

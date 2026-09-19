@@ -1,4 +1,19 @@
 import "server-only";
+
+import { forEachLimited } from "@/lib/concurrency";
+import { logError } from "@/lib/log";
+import {
+  combineFailures,
+  failureForStatus,
+  fetchJson,
+  providerFailure,
+  type ProviderFailure,
+  type ProviderResult,
+} from "@/lib/providers/fetch-json";
+
+const TWELVEDATA_CONCURRENCY = 4;
+const TWELVEDATA_API = "https://api.twelvedata.com";
+
 type TwelveDataQuote = {
   symbol?: string;
   name?: string;
@@ -34,11 +49,24 @@ export type TwelveDataPriceResult = Record<
   { price: number; currency: string | null }
 >;
 
+export type TwelveDataPrices = {
+  prices: TwelveDataPriceResult;
+  /** Why each request key left out has no price. */
+  failed: Record<string, ProviderFailure>;
+};
+
 export type TwelveDataInstrument = {
   symbol: string | null;
   name: string | null;
   currency: string | null;
   price: number | null;
+};
+
+type Quote = {
+  symbol: string | null;
+  name: string | null;
+  currency: string | null;
+  price: number;
 };
 
 type ResolvedSymbol = {
@@ -65,88 +93,79 @@ const MIC_TO_YAHOO_SUFFIX: Record<string, string> = {
   XWBO: ".VI",
 };
 
-async function fetchQuote(query: string): Promise<{ price: number; currency: string | null } | null> {
-  const apiKey = process.env.TWELVEDATA_API_KEY;
-  if (!apiKey || !query) return null;
-
-  const url = new URL("https://api.twelvedata.com/quote");
-  url.searchParams.set("symbol", query);
-  url.searchParams.set("apikey", apiKey);
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
-
-  try {
-    const response = await fetch(url.toString(), { signal: controller.signal });
-    if (!response.ok) return null;
-
-    const data = (await response.json()) as TwelveDataQuote;
-    if (data.code && data.code >= 400) return null;
-
-    const rawPrice = data.close ?? data.price;
-    const price = rawPrice != null ? Number(rawPrice) : null;
-
-    if (price == null || Number.isNaN(price) || price <= 0) return null;
-
-    return {
-      price,
-      currency: data.currency ?? null,
-    };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
+/**
+ * GETs a TwelveData endpoint with the key in a header, never in the URL. It
+ * also reports failures (a rate limit, an unknown symbol) as a 200 with an
+ * error code in the body.
+ */
+async function requestTwelveData<T extends { code?: number }>(
+  tag: string,
+  path: string,
+  params: Record<string, string>,
+  apiKey: string,
+  headers: Record<string, string> = {},
+): Promise<ProviderResult<T>> {
+  const url = new URL(`${TWELVEDATA_API}/${path}`);
+  for (const [name, value] of Object.entries(params)) url.searchParams.set(name, value);
+  const result = await fetchJson<T | null>(tag, url.toString(), {
+    headers: { ...headers, Authorization: `apikey ${apiKey}` },
+  });
+  if (!result.ok) return result;
+  if (!result.data) return providerFailure(tag, "bad_response");
+  const code = result.data.code;
+  if (code && code >= 400) return providerFailure(tag, failureForStatus(code));
+  return { ok: true, data: result.data };
 }
 
-async function searchSymbol(query: string): Promise<ResolvedSymbol | null> {
-  const apiKey = process.env.TWELVEDATA_API_KEY;
-  if (!apiKey || !query) return null;
+async function fetchQuote(symbol: string, apiKey: string): Promise<ProviderResult<Quote>> {
+  const result = await requestTwelveData<TwelveDataQuote>("twelvedata.quote", "quote", { symbol }, apiKey);
+  if (!result.ok) return result;
+  const data = result.data;
 
-  const url = new URL("https://api.twelvedata.com/symbol_search");
-  url.searchParams.set("symbol", query);
-  url.searchParams.set("apikey", apiKey);
-  url.searchParams.set("outputsize", "30");
+  const rawPrice = data.close ?? data.price;
+  const price = rawPrice != null ? Number(rawPrice) : null;
+  if (price == null || Number.isNaN(price) || price <= 0) return providerFailure("twelvedata.quote", "not_found");
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  return {
+    ok: true,
+    data: {
+      symbol: data.symbol ?? null,
+      name: data.name ?? null,
+      currency: data.currency ?? null,
+      price,
+    },
+  };
+}
 
-  try {
-    const response = await fetch(url.toString(), {
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "Finify/1.0",
-        Accept: "application/json",
-      },
-    });
-    if (!response.ok) return null;
+async function searchSymbol(query: string, apiKey: string): Promise<ProviderResult<ResolvedSymbol>> {
+  const result = await requestTwelveData<TwelveDataSearchResponse>(
+    "twelvedata.search",
+    "symbol_search",
+    { symbol: query, outputsize: "30" },
+    apiKey,
+    { "User-Agent": "Finify/1.0", Accept: "application/json" },
+  );
+  if (!result.ok) return result;
 
-    const data = (await response.json()) as TwelveDataSearchResponse;
-    if (data.code && data.code >= 400) return null;
+  const results = result.data.data ?? [];
+  const normalized = query.trim().toUpperCase();
+  const preferred =
+    results.find((item) => item.symbol?.toUpperCase() === normalized) ??
+    results.find((item) => item.mic_code === "XETRA") ??
+    results.find((item) => item.country === "Germany") ??
+    results[0];
 
-    const results = data.data ?? [];
-    if (results.length === 0) return null;
+  if (!preferred?.symbol) return providerFailure("twelvedata.search", "not_found");
 
-    const normalized = query.trim().toUpperCase();
-    const preferred =
-      results.find((item) => item.symbol?.toUpperCase() === normalized) ??
-      results.find((item) => item.mic_code === "XETRA") ??
-      results.find((item) => item.country === "Germany") ??
-      results[0];
-
-    if (!preferred?.symbol) return null;
-
-    return {
+  return {
+    ok: true,
+    data: {
       symbol: preferred.symbol,
       name: preferred.instrument_name ?? null,
       currency: preferred.currency ?? null,
       micCode: preferred.mic_code ?? null,
-    };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
+    },
+  };
 }
 
 async function fetchYahooQuote(
@@ -174,93 +193,99 @@ async function fetchYahooQuote(
             currency: typeof quote.currency === "string" ? quote.currency : null,
           };
         }
-      } catch {
+      } catch (e) {
         // try next candidate
+        logError("yahoo.quote", e);
       }
     }
-  } catch {
+  } catch (e) {
+    logError("yahoo.quote", e);
     return null;
   }
 
   return null;
 }
 
+/** The instrument a ticker or ISIN names, or why it could not be looked up. */
 export async function fetchTwelveDataInstrument(
   query: string,
-): Promise<TwelveDataInstrument | null> {
+): Promise<ProviderResult<TwelveDataInstrument>> {
   const apiKey = process.env.TWELVEDATA_API_KEY;
-  if (!apiKey || !query) return null;
+  if (!apiKey) return { ok: false, reason: "unavailable" };
+  if (!query) return { ok: false, reason: "not_found" };
 
-  const resolved = await searchSymbol(query);
-  if (resolved) {
-    const yahooQuote = await fetchYahooQuote(resolved.symbol, resolved.micCode);
+  const resolved = await searchSymbol(query, apiKey);
+  if (resolved.ok) {
+    const yahooQuote = await fetchYahooQuote(resolved.data.symbol, resolved.data.micCode);
     if (yahooQuote) {
       return {
-        symbol: resolved.symbol,
-        name: resolved.name,
-        currency: yahooQuote.currency ?? resolved.currency,
-        price: yahooQuote.price,
+        ok: true,
+        data: {
+          symbol: resolved.data.symbol,
+          name: resolved.data.name,
+          currency: yahooQuote.currency ?? resolved.data.currency,
+          price: yahooQuote.price,
+        },
       };
     }
   }
 
-  const symbol = resolved?.symbol ?? query;
-
-  const url = new URL("https://api.twelvedata.com/quote");
-  url.searchParams.set("symbol", symbol);
-  url.searchParams.set("apikey", apiKey);
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
-
-  try {
-    const response = await fetch(url.toString(), { signal: controller.signal });
-    if (!response.ok) return null;
-
-    const data = (await response.json()) as TwelveDataQuote;
-    if (data.code && data.code >= 400) return null;
-
-    const rawPrice = data.close ?? data.price;
-    const price = rawPrice != null ? Number(rawPrice) : null;
-
-    if (price != null && !Number.isNaN(price) && price > 0) {
-      return {
-        symbol: data.symbol ?? resolved?.symbol ?? null,
-        name: data.name ?? resolved?.name ?? null,
-        currency: data.currency ?? resolved?.currency ?? null,
-        price,
-      };
-    }
-  } catch {
-    // fall through to Yahoo fallback
-  } finally {
-    clearTimeout(timeout);
+  const found = resolved.ok ? resolved.data : null;
+  const quote = await fetchQuote(found?.symbol ?? query, apiKey);
+  if (!quote.ok) {
+    return { ok: false, reason: combineFailures(resolved.ok ? [quote.reason] : [resolved.reason, quote.reason]) };
   }
 
-  return null;
+  return {
+    ok: true,
+    data: {
+      symbol: quote.data.symbol ?? found?.symbol ?? null,
+      name: quote.data.name ?? found?.name ?? null,
+      currency: quote.data.currency ?? found?.currency ?? null,
+      price: quote.data.price,
+    },
+  };
 }
 
+/**
+ * Prices by request key, and why each request left out has none. Without an
+ * API key nothing is asked (the missing key is logged at startup).
+ */
 export async function fetchTwelveDataPrices(
   requests: TwelveDataRequest[],
-): Promise<TwelveDataPriceResult> {
-  const results: TwelveDataPriceResult = {};
+): Promise<TwelveDataPrices> {
+  const prices: TwelveDataPriceResult = {};
+  const failed: Record<string, ProviderFailure> = {};
+  const apiKey = process.env.TWELVEDATA_API_KEY;
 
-  for (const request of requests) {
-    const attempts = [request.symbol?.trim(), request.isin?.trim()].filter(Boolean) as string[];
-    for (const attempt of attempts) {
-      const resolved = await searchSymbol(attempt);
-      let quote = resolved
-        ? await fetchYahooQuote(resolved.symbol, resolved.micCode)
-        : null;
-      if (!quote) {
-        quote = await fetchQuote(resolved?.symbol ?? attempt);
-      }
-      if (quote) {
-        results[request.key] = quote;
-        break;
-      }
+  // Instruments are independent: resolve them in parallel (capped, the free
+  // tier is rate limited) instead of one after another.
+  await forEachLimited(requests, TWELVEDATA_CONCURRENCY, async (request) => {
+    if (!apiKey) {
+      failed[request.key] = "unavailable";
+      return;
     }
-  }
+    const attempts = [request.symbol?.trim(), request.isin?.trim()].filter(Boolean) as string[];
+    const reasons: ProviderFailure[] = [];
+    for (const attempt of attempts) {
+      const resolved = await searchSymbol(attempt, apiKey);
+      if (!resolved.ok) reasons.push(resolved.reason);
+      const yahooQuote = resolved.ok
+        ? await fetchYahooQuote(resolved.data.symbol, resolved.data.micCode)
+        : null;
+      if (yahooQuote) {
+        prices[request.key] = yahooQuote;
+        return;
+      }
+      const quote = await fetchQuote(resolved.ok ? resolved.data.symbol : attempt, apiKey);
+      if (quote.ok) {
+        prices[request.key] = { price: quote.data.price, currency: quote.data.currency };
+        return;
+      }
+      reasons.push(quote.reason);
+    }
+    failed[request.key] = combineFailures(reasons);
+  });
 
-  return results;
+  return { prices, failed };
 }

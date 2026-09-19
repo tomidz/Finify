@@ -6,6 +6,7 @@ import {
   updateUserPreferences,
 } from "@/actions/user-preferences";
 import { toast } from "sonner";
+import { errorMessage, unwrapResult } from "@/lib/action-result";
 
 const PREF_KEYS = {
   all: ["user-preferences"] as const,
@@ -17,11 +18,7 @@ const PREF_KEYS = {
 export function useUserPreferences() {
   return useQuery({
     queryKey: PREF_KEYS.all,
-    queryFn: async () => {
-      const result = await getUserPreferences();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getUserPreferences()),
     staleTime: Infinity,
   });
 }
@@ -29,20 +26,14 @@ export function useUserPreferences() {
 export function useUpdateUserPreferences() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: {
-      base_currency?: string;
-      fx_source?: string;
-    }) => {
-      const result = await updateUserPreferences(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: { base_currency?: string }) =>
+      unwrapResult(await updateUserPreferences(input)),
     onSuccess: () => {
       // Base currency feeds every stored-base computation; refresh everything
       // financial, not just the preference queries.
       queryClient.invalidateQueries();
       toast.success("Preferencias guardadas");
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err: Error) => toast.error(errorMessage(err)),
   });
 }

@@ -5,9 +5,18 @@ import {
   CreateAccountSchema,
   UpdateAccountSchema,
 } from "@/lib/validations/account.schema";
-import { getOrFetchFxRate } from "@/actions/fx";
-import { createMonth, recalculateOpeningBalances } from "@/actions/months";
+import { getOrFetchFxRate } from "@/lib/server/fx";
+import { monthCloseDate, today } from "@/lib/dates";
+import { getServerContext, loadBaseCurrency, type ServerContext } from "@/lib/server/context";
+import { resolveFxRates } from "@/lib/server/fx-range";
+import {
+  RECALCULATION_FAILED,
+  recalculateOpeningBalances,
+} from "@/lib/server/opening-balances";
 import type { Account, Currency } from "@/types/accounts";
+import type { ActionResult } from "@/lib/action-result";
+import { logError } from "@/lib/log";
+import { dbError } from "@/lib/server/db-errors";
 
 /** Devuelve el opening_base_amount correcto usando FX si es necesario. */
 async function resolveOpeningBase(
@@ -16,23 +25,47 @@ async function resolveOpeningBase(
   baseCurrency: string,
   providedBase: number | undefined,
   providedRate: number | undefined,
-): Promise<number> {
-  if (openingAmount === 0) return 0;
-  if (accountCurrency === baseCurrency) return openingAmount;
+): Promise<ActionResult<number>> {
+  if (openingAmount === 0) return { data: 0 };
+  if (accountCurrency === baseCurrency) return { data: openingAmount };
   // Si el usuario ingresó explícitamente el monto base, respetarlo
-  if (providedBase !== undefined && providedBase > 0) return providedBase;
+  if (providedBase !== undefined && providedBase > 0) return { data: providedBase };
   // Si hay un TC válido distinto de 1 ingresado por el usuario, usarlo
   if (providedRate !== undefined && providedRate > 0 && providedRate !== 1) {
-    return Math.round(openingAmount * providedRate * 100) / 100;
+    return { data: Math.round(openingAmount * providedRate * 100) / 100 };
   }
   // Obtener TC actual del servidor (con caché en DB)
-  const today = new Date().toISOString().slice(0, 10);
-  const result = await getOrFetchFxRate({ date: today, from: accountCurrency, to: baseCurrency });
-  if ("error" in result) return 0; // crypto u otras monedas no soportadas
-  return Math.round(openingAmount * result.data * 100) / 100;
+  const result = await getOrFetchFxRate({ date: today(), from: accountCurrency, to: baseCurrency });
+  if ("error" in result) {
+    return {
+      error: `No hay cotización de ${accountCurrency} a ${baseCurrency}: ingresá el tipo de cambio del saldo inicial.`,
+    };
+  }
+  return { data: Math.round(openingAmount * result.data * 100) / 100 };
 }
 
-type ActionResult<T> = { data: T } | { error: string };
+type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
+
+/**
+ * Whether anything is already denominated in the account's currency: legs,
+ * lots, sales or recurring templates. (A non-zero initial balance is on the
+ * account row itself.)
+ */
+async function accountHasHistory(
+  supabase: SupabaseServerClient,
+  accountId: string,
+): Promise<ActionResult<boolean>> {
+  const countOnly = { count: "exact", head: true } as const;
+  const results = await Promise.all([
+    supabase.from("transaction_amounts").select("id", countOnly).eq("account_id", accountId),
+    supabase.from("investments").select("id", countOnly).eq("account_id", accountId),
+    supabase.from("investment_sales").select("id", countOnly).eq("account_id", accountId),
+    supabase.from("recurring_transactions").select("id", countOnly).eq("account_id", accountId),
+  ]);
+  const failed = results.find((result) => result.error);
+  if (failed?.error) return dbError("accountHasHistory", failed.error, "Error al revisar los movimientos de la cuenta");
+  return { data: results.some((result) => (result.count ?? 0) > 0) };
+}
 
 // --- GET ACCOUNTS ---
 export async function getAccounts(): Promise<ActionResult<Account[]>> {
@@ -49,9 +82,10 @@ export async function getAccounts(): Promise<ActionResult<Account[]>> {
       .eq("user_id", user.id)
       .order("name", { ascending: true });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getAccounts", error, "Error al obtener las cuentas");
     return { data: (data ?? []) as Account[] };
-  } catch {
+  } catch (e) {
+    logError("getAccounts", e);
     return { error: "Error al obtener las cuentas" };
   }
 }
@@ -65,9 +99,10 @@ export async function getCurrencies(): Promise<ActionResult<Currency[]>> {
       .select("*")
       .order("code", { ascending: true });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getCurrencies", error, "Error al obtener las monedas");
     return { data: (data ?? []) as Currency[] };
-  } catch {
+  } catch (e) {
+    logError("getCurrencies", e);
     return { error: "Error al obtener las monedas" };
   }
 }
@@ -90,12 +125,24 @@ export async function getAccountById(
       .eq("user_id", user.id)
       .maybeSingle();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getAccountById", error, "Error al obtener la cuenta");
     if (!data) return { error: "Cuenta no encontrada" };
     return { data: data as Account };
-  } catch {
+  } catch (e) {
+    logError("getAccountById", e);
     return { error: "Error al obtener la cuenta" };
   }
+}
+
+/** Only fiat currencies have a provider: asking for any other rate only waits for a failure. */
+async function hasProvider(supabase: ServerContext["supabase"], currency: string): Promise<boolean> {
+  const { data, error } = await supabase.from("currencies").select("currency_type").eq("code", currency).maybeSingle();
+  // Unknown: better to ask a provider than to show a fiat balance unquoted.
+  if (error) {
+    logError("hasProvider", error);
+    return true;
+  }
+  return data?.currency_type === "fiat";
 }
 
 // --- GET ACCOUNT BALANCE HISTORY (per month, latest first) ---
@@ -107,85 +154,78 @@ export interface AccountMonthBalance {
   month_movements: number;
   month_base_movements: number;
   closing_amount: number;
+  /** At the month's close rate; without one, the stored base amounts. */
   closing_base_amount: number;
+  closing_rate_missing: boolean;
 }
 
 export async function getAccountBalanceHistory(
   accountId: string,
 ): Promise<ActionResult<AccountMonthBalance[]>> {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return { error: "No autenticado" };
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
 
-    const { data: months } = await supabase
-      .from("months")
-      .select("id, year, month")
-      .eq("user_id", user.id)
-      .order("year", { ascending: true })
-      .order("month", { ascending: true });
-    if (!months || months.length === 0) return { data: [] };
+    const [{ data, error }, account, baseCurrency] = await Promise.all([
+      ctx.supabase.rpc("account_month_balances", { p_account_id: accountId }),
+      ctx.supabase
+        .from("accounts")
+        .select("currency")
+        .eq("id", accountId)
+        .eq("user_id", ctx.userId)
+        .maybeSingle(),
+      loadBaseCurrency(ctx),
+    ]);
+    if (error) return dbError("getAccountBalanceHistory", error, "Error al obtener el historial");
+    if (account.error) return dbError("getAccountBalanceHistory", account.error, "Error al obtener el historial");
+    if (!account.data) return { error: "Cuenta no encontrada" };
+    if ("error" in baseCurrency) return baseCurrency;
 
-    const monthIds = months.map((m) => m.id);
-
-    const { data: openings } = await supabase
-      .from("opening_balances")
-      .select("month_id, opening_amount, opening_base_amount")
-      .eq("account_id", accountId)
-      .in("month_id", monthIds);
-
-    const openingByMonth = new Map<
-      string,
-      { amount: number; base: number }
-    >();
-    for (const o of openings ?? []) {
-      openingByMonth.set(o.month_id as string, {
-        amount: Number(o.opening_amount),
-        base: Number(o.opening_base_amount),
-      });
-    }
-
-    const { data: movements } = await supabase
-      .from("transaction_amounts")
-      .select(
-        "amount, base_amount, transactions!inner(month_id, user_id, deleted_at)",
-      )
-      .eq("account_id", accountId)
-      .eq("transactions.user_id", user.id)
-      .is("transactions.deleted_at", null);
-
-    const movementsByMonth = new Map<string, { amount: number; base: number }>();
-    for (const m of movements ?? []) {
-      const t = Array.isArray(m.transactions) ? m.transactions[0] : m.transactions;
-      const monthId = (t as { month_id: string })?.month_id;
-      if (!monthId) continue;
-      const current = movementsByMonth.get(monthId) ?? { amount: 0, base: 0 };
-      current.amount += Number(m.amount);
-      current.base += Number(m.base_amount);
-      movementsByMonth.set(monthId, current);
-    }
+    const currency = account.data.currency;
+    const rows = ((data ?? []) as Array<{
+      year: number;
+      month: number;
+      opening_amount: number | string;
+      opening_base_amount: number | string;
+      movements: number | string;
+      base_movements: number | string;
+    }>).map((row) => ({
+      year: row.year,
+      month: row.month,
+      opening_amount: Number(row.opening_amount),
+      opening_base_amount: Number(row.opening_base_amount),
+      month_movements: Number(row.movements),
+      month_base_movements: Number(row.base_movements),
+      closing_amount: Number(row.opening_amount) + Number(row.movements),
+    }));
+    // Every balance is valued at the rate of its month's close.
+    const rateAt = (await hasProvider(ctx.supabase, currency))
+      ? await resolveFxRates(
+          ctx.supabase,
+          rows.map((row) => ({ date: monthCloseDate(row.year, row.month), from: currency })),
+          baseCurrency.data,
+        )
+      : null;
 
     return {
-      data: months
-        .map((m) => {
-          const opening = openingByMonth.get(m.id) ?? { amount: 0, base: 0 };
-          const movement = movementsByMonth.get(m.id) ?? { amount: 0, base: 0 };
-          return {
-            year: m.year,
-            month: m.month,
-            opening_amount: opening.amount,
-            opening_base_amount: opening.base,
-            month_movements: movement.amount,
-            month_base_movements: movement.base,
-            closing_amount: opening.amount + movement.amount,
-            closing_base_amount: opening.base + movement.base,
-          };
-        })
-        .reverse(),
+      data: rows.map((row) => {
+        const rate =
+          currency === baseCurrency.data ? 1 : (rateAt?.(monthCloseDate(row.year, row.month), currency) ?? null);
+        const missing = row.closing_amount !== 0 && rate == null;
+        return {
+          ...row,
+          closing_base_amount:
+            row.closing_amount === 0
+              ? 0
+              : rate != null
+                ? row.closing_amount * rate
+                : row.opening_base_amount + row.month_base_movements,
+          closing_rate_missing: missing,
+        };
+      }),
     };
-  } catch {
+  } catch (e) {
+    logError("getAccountBalanceHistory", e);
     return { error: "Error al obtener el historial" };
   }
 }
@@ -201,97 +241,91 @@ export async function getAccountInitialBalance(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    const { data: earliestMonth } = await supabase
-      .from("months")
-      .select("id")
-      .eq("user_id", user.id)
-      .order("year", { ascending: true })
-      .order("month", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-
-    if (!earliestMonth) {
-      return { data: { opening_amount: 0, opening_base_amount: 0 } };
-    }
-
     const { data, error } = await supabase
-      .from("opening_balances")
-      .select("opening_amount, opening_base_amount")
-      .eq("month_id", earliestMonth.id)
-      .eq("account_id", accountId)
+      .from("accounts")
+      .select("initial_amount, initial_base_amount")
+      .eq("id", accountId)
+      .eq("user_id", user.id)
       .maybeSingle();
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getAccountInitialBalance", error, "Error al obtener el saldo inicial");
+    if (!data) return { error: "Cuenta no encontrada" };
 
     return {
       data: {
-        opening_amount: Number(data?.opening_amount ?? 0),
-        opening_base_amount: Number(data?.opening_base_amount ?? 0),
+        opening_amount: Number(data.initial_amount ?? 0),
+        opening_base_amount: Number(data.initial_base_amount ?? 0),
       },
     };
-  } catch {
+  } catch (e) {
+    logError("getAccountInitialBalance", e);
     return { error: "Error al obtener el saldo inicial" };
   }
 }
 
-// --- GET ACCOUNT CURRENT BALANCE (closing as of now, account currency) ---
+// --- GET ACCOUNT CURRENT AMOUNT (closing as of now, account currency) ---
+export async function getAccountCurrentAmount(accountId: string): Promise<ActionResult<{ amount: number }>> {
+  try {
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
+    const { data, error } = await ctx.supabase.rpc("account_balances", { p_account_ids: [accountId] });
+    if (error) return dbError("getAccountCurrentAmount", error, "Error al obtener el saldo actual");
+    const balance = data?.[0];
+    if (!balance) return { error: "Cuenta no encontrada" };
+    // Not rounded: a crypto balance keeps its 8 decimals.
+    return { data: { amount: Number(balance.amount) } };
+  } catch (e) {
+    logError("getAccountCurrentAmount", e);
+    return { error: "Error al obtener el saldo actual" };
+  }
+}
+
+// --- GET ACCOUNT CURRENT BALANCE (also in the base currency, at today's rate) ---
 export async function getAccountCurrentBalance(
   accountId: string,
-): Promise<ActionResult<{ amount: number; base_amount: number }>> {
+): Promise<ActionResult<{ amount: number; base_amount: number; rate_missing: boolean }>> {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return { error: "No autenticado" };
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
 
-    const { data: earliestMonth } = await supabase
-      .from("months")
-      .select("id")
-      .eq("user_id", user.id)
-      .order("year", { ascending: true })
-      .order("month", { ascending: true })
-      .limit(1)
-      .maybeSingle();
+    const [{ data, error }, account, baseCurrency] = await Promise.all([
+      ctx.supabase.rpc("account_balances", { p_account_ids: [accountId] }),
+      ctx.supabase
+        .from("accounts")
+        .select("currency")
+        .eq("id", accountId)
+        .eq("user_id", ctx.userId)
+        .maybeSingle(),
+      loadBaseCurrency(ctx),
+    ]);
+    if (error) return dbError("getAccountCurrentBalance", error, "Error al obtener el saldo actual");
+    if (account.error) return dbError("getAccountCurrentBalance", account.error, "Error al obtener el saldo actual");
+    if (!account.data) return { error: "Cuenta no encontrada" };
+    if ("error" in baseCurrency) return baseCurrency;
+    const balance = data?.[0];
+    if (!balance) return { error: "Cuenta no encontrada" };
 
-    let openingAmount = 0;
-    let openingBase = 0;
-    if (earliestMonth) {
-      const { data: opening } = await supabase
-        .from("opening_balances")
-        .select("opening_amount, opening_base_amount")
-        .eq("month_id", earliestMonth.id)
-        .eq("account_id", accountId)
-        .maybeSingle();
-      openingAmount = Number(opening?.opening_amount ?? 0);
-      openingBase = Number(opening?.opening_base_amount ?? 0);
-    }
+    // The balance is valued at today's rate, like every other balance.
+    const amount = Number(balance.amount);
+    const rate =
+      amount === 0 || account.data.currency === baseCurrency.data
+        ? 1
+        : !(await hasProvider(ctx.supabase, account.data.currency))
+          ? null
+          : await getOrFetchFxRate({ date: today(), from: account.data.currency, to: baseCurrency.data }).then(
+            (result) => ("error" in result ? null : result.data),
+          );
 
-    const { data: movements, error } = await supabase
-      .from("transaction_amounts")
-      .select(
-        "amount, base_amount, transactions!inner(user_id, deleted_at)",
-      )
-      .eq("account_id", accountId)
-      .eq("transactions.user_id", user.id)
-      .is("transactions.deleted_at", null);
-
-    if (error) return { error: error.message };
-
-    let amount = openingAmount;
-    let baseAmount = openingBase;
-    for (const m of movements ?? []) {
-      amount += Number(m.amount);
-      baseAmount += Number(m.base_amount);
-    }
-
+    // Without a rate, the base amounts stored with its movements.
     return {
       data: {
-        amount: Math.round(amount * 100) / 100,
-        base_amount: Math.round(baseAmount * 100) / 100,
+        amount,
+        base_amount: rate != null ? amount * rate : Number(balance.base_amount),
+        rate_missing: rate == null,
       },
     };
-  } catch {
+  } catch (e) {
+    logError("getAccountCurrentBalance", e);
     return { error: "Error al obtener el saldo actual" };
   }
 }
@@ -317,9 +351,28 @@ export async function createAccount(
     const { initial_amount, exchange_rate, base_amount, ...accountFields } = parsed.data;
     const openingAmount = initial_amount ?? 0;
 
+    const baseCurrencyResult = await loadBaseCurrency({ supabase, userId: user.id });
+    if ("error" in baseCurrencyResult) return baseCurrencyResult;
+    const baseCurrency = baseCurrencyResult.data;
+
+    const openingBase = await resolveOpeningBase(
+      openingAmount,
+      accountFields.currency,
+      baseCurrency,
+      base_amount,
+      exchange_rate,
+    );
+    if ("error" in openingBase) return openingBase;
+
     const { data, error } = await supabase
       .from("accounts")
-      .insert({ ...accountFields, user_id: user.id })
+      .insert({
+        ...accountFields,
+        user_id: user.id,
+        initial_amount: openingAmount,
+        initial_base_amount: openingBase.data,
+        initial_base_currency: baseCurrency,
+      })
       .select()
       .single();
 
@@ -329,73 +382,16 @@ export async function createAccount(
           error: "Ya existe una cuenta con ese nombre, moneda y tipo",
         };
       }
-      return { error: error.message };
+      return dbError("createAccount", error, "Error al crear la cuenta");
     }
 
-    // Obtener moneda base del usuario para calcular opening_base_amount
-    const { data: prefsRow } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", user.id)
-      .maybeSingle();
-    const baseCurrency = prefsRow?.base_currency ?? "USD";
-
-    const openingBase = await resolveOpeningBase(
-      openingAmount,
-      accountFields.currency,
-      baseCurrency,
-      base_amount,
-      exchange_rate,
-    );
-
-    const { data: months, error: monthsError } = await supabase
-      .from("months")
-      .select("id, year, month")
-      .eq("user_id", user.id);
-
-    if (monthsError) return { error: monthsError.message };
-
-    // Ensure the current calendar month is included (may not exist yet if
-    // the dashboard hasn't been loaded for this period)
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth() + 1;
-    const monthList = months ?? [];
-    const hasCurrentMonth = monthList.some(
-      (m) => m.year === currentYear && m.month === currentMonth,
-    );
-
-    if (!hasCurrentMonth) {
-      // Create it through createMonth so every EXISTING account gets its
-      // opening carried forward — a raw insert here used to seed only the
-      // new account, zeroing everyone else's balances for the month.
-      const created = await createMonth(currentYear, currentMonth);
-      if (!("error" in created)) {
-        monthList.push({
-          id: created.data.id,
-          year: created.data.year,
-          month: created.data.month,
-        });
-      }
-    }
-
-    const openingRows = monthList.map((month) => ({
-      month_id: month.id,
-      account_id: data.id,
-      opening_amount: openingAmount,
-      opening_base_amount: openingBase,
-    }));
-
-    if (openingRows.length > 0) {
-      const { error: openingError } = await supabase
-        .from("opening_balances")
-        .upsert(openingRows, { onConflict: "month_id,account_id" });
-
-      if (openingError) return { error: openingError.message };
-    }
+    // Every existing month gets an opening row for the new account.
+    const rebuilt = await recalculateOpeningBalances(null);
+    if ("error" in rebuilt) return { error: RECALCULATION_FAILED };
 
     return { data: data as Account };
-  } catch {
+  } catch (e) {
+    logError("createAccount", e);
     return { error: "Error al crear la cuenta" };
   }
 }
@@ -419,9 +415,82 @@ export async function updateAccount(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
+    let current: {
+      currency: string;
+      initial_amount: number | null;
+      initial_base_amount: number | null;
+      initial_base_currency: string | null;
+    } | null = null;
+    if (accountUpdates.currency !== undefined || initial_amount !== undefined) {
+      const { data: stored, error: storedError } = await supabase
+        .from("accounts")
+        .select("currency, initial_amount, initial_base_amount, initial_base_currency")
+        .eq("id", id)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (storedError) return dbError("updateAccount", storedError, "Error al actualizar la cuenta");
+      if (!stored) return { error: "Cuenta no encontrada" };
+      current = stored;
+    }
+
+    if (current && accountUpdates.currency !== undefined && current.currency !== accountUpdates.currency) {
+      const history =
+        Number(current.initial_amount ?? 0) !== 0
+          ? { data: true }
+          : await accountHasHistory(supabase, id);
+      if ("error" in history) return history;
+      if (history.data) {
+        return {
+          error:
+            "No se puede cambiar la moneda de una cuenta con movimientos, inversiones o saldo inicial. Creá una cuenta nueva en la otra moneda.",
+        };
+      }
+    }
+
+    let balanceUpdate: {
+      initial_amount: number;
+      initial_base_amount: number;
+      initial_base_currency: string;
+    } | null = null;
+    if (current && initial_amount !== undefined) {
+      const baseCurrencyResult = await loadBaseCurrency({ supabase, userId: user.id });
+      if ("error" in baseCurrencyResult) return baseCurrencyResult;
+      const baseCurrency = baseCurrencyResult.data;
+
+      // The same balance, with no new rate, keeps the base it was converted at.
+      const sameBalance =
+        Number(current.initial_amount ?? 0) === initial_amount &&
+        (accountUpdates.currency ?? current.currency) === current.currency &&
+        current.initial_base_currency === baseCurrency &&
+        base_amount === undefined &&
+        (exchange_rate === undefined || exchange_rate === 1);
+      if (!sameBalance) {
+        const openingBase = await resolveOpeningBase(
+          initial_amount,
+          accountUpdates.currency ?? current.currency,
+          baseCurrency,
+          base_amount,
+          exchange_rate,
+        );
+        if ("error" in openingBase) return openingBase;
+
+        // The same balance again rewrites nothing.
+        const unchanged =
+          Number(current.initial_amount ?? 0) === initial_amount &&
+          Number(current.initial_base_amount ?? 0) === openingBase.data;
+        if (!unchanged) {
+          balanceUpdate = {
+            initial_amount,
+            initial_base_amount: openingBase.data,
+            initial_base_currency: baseCurrency,
+          };
+        }
+      }
+    }
+
     const { data, error } = await supabase
       .from("accounts")
-      .update(accountUpdates)
+      .update({ ...accountUpdates, ...balanceUpdate })
       .eq("id", id)
       .eq("user_id", user.id)
       .select()
@@ -433,56 +502,18 @@ export async function updateAccount(
           error: "Ya existe una cuenta con ese nombre, moneda y tipo",
         };
       }
-      return { error: error.message };
+      return dbError("updateAccount", error, "Error al actualizar la cuenta");
     }
 
-    if (initial_amount !== undefined) {
-      const { data: prefsRow } = await supabase
-        .from("user_preferences")
-        .select("base_currency")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      const baseCurrency = prefsRow?.base_currency ?? "USD";
-
-      // accountUpdates.currency puede ser undefined si no se cambió; leer de la cuenta actualizada
-      const accountCurrency = accountUpdates.currency ?? data.currency;
-      const openingBase = await resolveOpeningBase(
-        initial_amount,
-        accountCurrency,
-        baseCurrency,
-        base_amount,
-        exchange_rate,
-      );
-
-      // Opening balances cascade: only the earliest month holds the real
-      // initial amount; later months are derived (prev opening + prev
-      // movements). Set the earliest month and recalc forward, matching the
-      // transaction mutation paths — never force every month to the same value.
-      const { data: earliestMonth } = await supabase
-        .from("months")
-        .select("id")
-        .eq("user_id", user.id)
-        .order("year", { ascending: true })
-        .order("month", { ascending: true })
-        .limit(1)
-        .maybeSingle();
-
-      if (earliestMonth) {
-        await supabase.from("opening_balances").upsert(
-          {
-            month_id: earliestMonth.id,
-            account_id: id,
-            opening_amount: initial_amount,
-            opening_base_amount: openingBase,
-          },
-          { onConflict: "month_id,account_id" },
-        );
-        await recalculateOpeningBalances(earliestMonth.id);
-      }
+    // The initial balance is part of every month's opening.
+    if (balanceUpdate) {
+      const rebuilt = await recalculateOpeningBalances(null);
+      if ("error" in rebuilt) return { error: RECALCULATION_FAILED };
     }
 
     return { data: data as Account };
-  } catch {
+  } catch (e) {
+    logError("updateAccount", e);
     return { error: "Error al actualizar la cuenta" };
   }
 }
@@ -506,13 +537,14 @@ export async function deleteAccount(id: string): Promise<ActionResult<null>> {
       if (error.code === "23503") {
         return {
           error:
-            "No se puede eliminar: la cuenta tiene transacciones asociadas",
+            "No se puede eliminar: la cuenta tiene movimientos o inversiones, aunque estén borrados.",
         };
       }
-      return { error: error.message };
+      return dbError("deleteAccount", error, "Error al eliminar la cuenta");
     }
     return { data: null };
-  } catch {
+  } catch (e) {
+    logError("deleteAccount", e);
     return { error: "Error al eliminar la cuenta" };
   }
 }

@@ -32,6 +32,7 @@ import { useCreateCategory, useUpdateCategory } from "@/hooks/useBudget";
 import { CreateCategorySchema } from "@/lib/validations/budget.schema";
 import { BUDGET_CATEGORY_TYPES, BUDGET_CATEGORY_LABELS } from "@/types/budget";
 import type { BudgetCategory } from "@/types/budget";
+import { uiScale } from "@/lib/ui-scale";
 import type { z } from "zod";
 
 interface CategoryDialogProps {
@@ -117,6 +118,7 @@ export function CategoryDialog({
                     <Input
                       placeholder="Ej: Alquiler, Supermercado, Sueldo..."
                       disabled={isPending}
+                      className={uiScale.field}
                       {...field}
                     />
                   </FormControl>
@@ -131,34 +133,34 @@ export function CategoryDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Tipo de movimiento</FormLabel>
-                  <FormControl>
-                    <Select
-                      value={field.value}
-                      onValueChange={field.onChange}
-                      disabled={isPending}
-                    >
-                      <SelectTrigger>
+                  <Select
+                    value={field.value}
+                    onValueChange={field.onChange}
+                    disabled={isPending}
+                  >
+                    <FormControl>
+                      <SelectTrigger className={`w-full ${uiScale.trigger}`}>
                         <SelectValue />
                       </SelectTrigger>
-                      <SelectContent>
-                        {BUDGET_CATEGORY_TYPES.map((type) => (
-                          <SelectItem key={type} value={type}>
-                            {BUDGET_CATEGORY_LABELS[type]}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </FormControl>
+                    </FormControl>
+                    <SelectContent>
+                      {BUDGET_CATEGORY_TYPES.map((type) => (
+                        <SelectItem key={type} value={type}>
+                          {BUDGET_CATEGORY_LABELS[type]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   <FormMessage />
                 </FormItem>
               )}
             />
 
             <DialogFooter>
-              <Button variant="outline" type="button" onClick={() => onOpenChange(false)}>
+              <Button variant="outline" size="sm" className={uiScale.button} type="button" onClick={() => onOpenChange(false)}>
                 Cancelar
               </Button>
-              <Button type="submit" disabled={isPending}>
+              <Button type="submit" size="sm" className={uiScale.button} disabled={isPending}>
                 {isPending
                   ? "Guardando..."
                   : isEditing

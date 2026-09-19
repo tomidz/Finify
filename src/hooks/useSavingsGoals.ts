@@ -13,6 +13,7 @@ import type {
 } from "@/lib/validations/savings-goals.schema";
 import type { SavingsGoalWithRelations } from "@/types/savings-goals";
 import { toast } from "sonner";
+import { errorMessage, unwrapResult } from "@/lib/action-result";
 
 const GOALS_KEYS = {
   all: ["savings-goals"] as const,
@@ -21,11 +22,7 @@ const GOALS_KEYS = {
 export function useSavingsGoals() {
   return useQuery({
     queryKey: GOALS_KEYS.all,
-    queryFn: async () => {
-      const result = await getSavingsGoals();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getSavingsGoals()),
     staleTime: 5 * 60_000,
   });
 }
@@ -33,15 +30,11 @@ export function useSavingsGoals() {
 export function useCreateSavingsGoal() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: CreateSavingsGoalInput) => {
-      const result = await createSavingsGoal(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: CreateSavingsGoalInput) => unwrapResult(await createSavingsGoal(input)),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: GOALS_KEYS.all });
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err) => toast.error(errorMessage(err)),
     onSuccess: () => {
       toast.success("Meta de ahorro creada");
     },
@@ -54,11 +47,7 @@ export function useCreateSavingsGoal() {
 export function useUpdateSavingsGoal() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: UpdateSavingsGoalInput) => {
-      const result = await updateSavingsGoal(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: UpdateSavingsGoalInput) => unwrapResult(await updateSavingsGoal(input)),
     onMutate: async (updatedGoal) => {
       await queryClient.cancelQueries({ queryKey: GOALS_KEYS.all });
       const previous = queryClient.getQueryData<SavingsGoalWithRelations[]>(
@@ -75,11 +64,11 @@ export function useUpdateSavingsGoal() {
       );
       return { previous };
     },
-    onError: (_err, _input, context) => {
+    onError: (err, _input, context) => {
       if (context?.previous) {
         queryClient.setQueryData(GOALS_KEYS.all, context.previous);
       }
-      toast.error(_err.message);
+      toast.error(errorMessage(err));
     },
     onSuccess: () => {
       toast.success("Meta de ahorro actualizada");
@@ -93,11 +82,7 @@ export function useUpdateSavingsGoal() {
 export function useDeleteSavingsGoal() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      const result = await deleteSavingsGoal(id);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (id: string) => unwrapResult(await deleteSavingsGoal(id)),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: GOALS_KEYS.all });
       const previous = queryClient.getQueryData<SavingsGoalWithRelations[]>(
@@ -109,11 +94,11 @@ export function useDeleteSavingsGoal() {
       );
       return { previous };
     },
-    onError: (_err, _id, context) => {
+    onError: (err, _id, context) => {
       if (context?.previous) {
         queryClient.setQueryData(GOALS_KEYS.all, context.previous);
       }
-      toast.error(_err.message);
+      toast.error(errorMessage(err));
     },
     onSuccess: () => {
       toast.success("Meta de ahorro eliminada");

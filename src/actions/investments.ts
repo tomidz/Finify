@@ -1,30 +1,32 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import type { TablesUpdate } from "@/types/database.types";
-import { getOrFetchFxRate } from "@/actions/fx";
-import { createMonth, pickEarliestMonthId, recalculateOpeningBalances } from "@/actions/months";
+import type { Json, TablesUpdate } from "@/types/database.types";
+import { getOrFetchFxRate } from "@/lib/server/fx";
+import { today as appToday } from "@/lib/dates";
+import { resolveFxRates } from "@/lib/server/fx-range";
+import { ledgerRpcError } from "@/lib/server/ledger-rpc";
+import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
+import { priceCacheKey, resolvePricesWithSources, type ResolvedPrices } from "@/lib/server/prices";
+import { priceRequestFor, type PriceRequest } from "@/lib/asset-classes";
 import {
   AdjustInvestmentPositionSchema,
   CreateInvestmentSchema,
+  ManualPriceSchema,
   SellInvestmentSchema,
+  SwapInvestmentSchema,
   TransferInvestmentPositionSchema,
   UpdateInvestmentSchema,
 } from "@/lib/validations/investment.schema";
 import type {
-  Investment,
-  InvestmentSale,
   InvestmentSaleWithAccount,
   InvestmentWithAccount,
   AssetType,
 } from "@/types/investments";
-import { fetchCryptoPrices } from "@/lib/coingecko";
-import {
-  fetchTwelveDataInstrument,
-  fetchTwelveDataPrices,
-} from "@/lib/twelvedata";
-
-type ActionResult<T> = { data: T } | { error: string };
+import { fetchTwelveDataInstrument } from "@/lib/twelvedata";
+import { dbError } from "@/lib/server/db-errors";
+import { logError } from "@/lib/log";
+import type { ActionResult } from "@/lib/action-result";
 
 async function getUserId() {
   const supabase = await createClient();
@@ -58,7 +60,7 @@ export async function getInvestments(): Promise<
       .eq("user_id", userId)
       .order("purchase_date", { ascending: false });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getInvestments", error, "Error al obtener inversiones");
 
     const mapped = (data ?? []).map((row) => {
       const accountRaw = row.accounts;
@@ -93,14 +95,15 @@ export async function getInvestments(): Promise<
     });
 
     return { data: mapped };
-  } catch {
+  } catch (e) {
+    logError("getInvestments", e);
     return { error: "Error al obtener inversiones" };
   }
 }
 
 export async function createInvestment(
   input: unknown
-): Promise<ActionResult<Investment>> {
+): Promise<ActionResult<{ id: string }>> {
   try {
     const parsed = CreateInvestmentSchema.safeParse(input);
     if (!parsed.success) {
@@ -122,7 +125,7 @@ export async function createInvestment(
       .eq("user_id", userId)
       .maybeSingle();
 
-    if (accError) return { error: accError.message };
+    if (accError) return dbError("createInvestment", accError, "No se pudo leer la cuenta");
     if (!account) return { error: "Cuenta no encontrada" };
 
     // Fees/taxes are capitalized: they raise the lot's cost basis and are
@@ -134,11 +137,28 @@ export async function createInvestment(
       (parsed.data.total_cost + purchaseCosts).toFixed(4),
     );
 
-    // Crear inversión
-    const { data, error } = await supabase
-      .from("investments")
-      .insert({
-        user_id: userId,
+    // Auto-descuento solo cuando la moneda de la inversión coincide con la de
+    // la cuenta: un débito cross-currency registraría el monto en la moneda
+    // equivocada (p. ej. cuenta EUR debitada "1.000 EUR" por una compra de
+    // USD 1.000). En ese caso el usuario registra el débito manualmente.
+    let cashRate: number | null = null;
+    if (
+      CASH_ACCOUNT_TYPES.has(account.account_type) &&
+      account.currency === parsed.data.currency &&
+      !parsed.data.skip_deduction
+    ) {
+      const rate = await cashRateToBase(
+        supabase,
+        userId,
+        account.currency,
+        parsed.data.purchase_date,
+      );
+      if ("error" in rate) return rate;
+      cashRate = rate.data;
+    }
+
+    const { data, error } = await supabase.rpc("create_investment", {
+      p_lot: {
         account_id: parsed.data.account_id,
         asset_name: parsed.data.asset_name,
         ticker: parsed.data.ticker ?? null,
@@ -150,144 +170,51 @@ export async function createInvestment(
         currency: parsed.data.currency,
         purchase_date: parsed.data.purchase_date,
         notes: parsed.data.notes ?? null,
-      })
-      .select()
-      .single();
-
-    if (error) return { error: error.message };
-
-    // Auto-descuento solo cuando la moneda de la inversión coincide con la de
-    // la cuenta: un débito cross-currency registraría el monto en la moneda
-    // equivocada (p. ej. cuenta EUR debitada "1.000 EUR" por una compra de
-    // USD 1.000). En ese caso el usuario registra el débito manualmente.
-    const eligibleForDeduction =
-      (account.account_type === "investment_broker" ||
-        account.account_type === "crypto_exchange" ||
-        account.account_type === "crypto_wallet") &&
-      account.currency === parsed.data.currency;
-
-    if (eligibleForDeduction && !parsed.data.skip_deduction) {
-      const deductionError = await autoDeductFromAccount(
-        supabase,
-        userId,
-        parsed.data.account_id,
-        account.currency,
-        totalCostWithFees,
-        parsed.data.currency,
-        parsed.data.purchase_date,
-        parsed.data.asset_name,
-        data.id,
-      );
-      if (deductionError) {
-        console.warn("Auto-deduction failed:", deductionError);
-      }
+      },
+      p_cash_rate: cashRate ?? undefined,
+    });
+    if (error) {
+      return ledgerRpcError("create_investment", error, "Error al crear inversión");
     }
 
-    return {
-      data: {
-        ...data,
-        quantity: Number(data.quantity),
-        price_per_unit: Number(data.price_per_unit),
-        total_cost: Number(data.total_cost),
-      } as Investment,
-    };
-  } catch {
+    return { data: { id: data } };
+  } catch (e) {
+    logError("createInvestment", e);
     return { error: "Error al crear inversión" };
   }
 }
 
-async function autoDeductFromAccount(
+const CASH_ACCOUNT_TYPES = new Set([
+  "investment_broker",
+  "crypto_exchange",
+  "crypto_wallet",
+]);
+
+const CASH_RATE_FAILED =
+  "No se pudo obtener el tipo de cambio para la caja de la cuenta. No se guardó nada.";
+
+/**
+ * Rate from an account's currency to the base currency on `date`, for the
+ * cash an investment moves.
+ */
+async function cashRateToBase(
   supabase: Awaited<ReturnType<typeof createClient>>,
   userId: string,
-  accountId: string,
-  accountCurrency: string,
-  totalCost: number,
-  investmentCurrency: string,
+  currency: string,
   date: string,
-  assetName: string,
-  investmentId: string,
-): Promise<string | null> {
-  try {
-    // Resolver month_id para la fecha — creándolo si no existe. El skip
-    // silencioso anterior registraba el lote SIN debitar el cash cuando la
-    // compra caía en un mes todavía no abierto.
-    const parsedDate = new Date(`${date}T00:00:00`);
-    const year = parsedDate.getFullYear();
-    const month = parsedDate.getMonth() + 1;
-
-    const monthResult = await createMonth(year, month);
-    if ("error" in monthResult) return monthResult.error;
-    const monthRow = monthResult.data;
-
-    // Moneda base del usuario para FX correcto en base_amount
-    const { data: prefsRow } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", userId)
-      .maybeSingle();
-    const baseCurrency = prefsRow?.base_currency ?? "USD";
-
-    // El amount se registra en la moneda de la cuenta. base_amount va en moneda base.
-    const amount = -Math.abs(totalCost);
-    let exchangeRate = 1;
-    let baseAmount = amount;
-    if (accountCurrency !== baseCurrency) {
-      const fxResult = await getOrFetchFxRate({
-        date,
-        from: accountCurrency,
-        to: baseCurrency,
-      });
-      if ("error" in fxResult) return fxResult.error;
-      exchangeRate = fxResult.data;
-      baseAmount = Number((amount * fxResult.data).toFixed(4));
-    }
-
-    // Crear transacción tipo correction
-    const { data: tx, error: txError } = await supabase
-      .from("transactions")
-      .insert({
-        user_id: userId,
-        month_id: monthRow.id,
-        category_id: null,
-        transaction_type: "investment",
-        date,
-        description: `Compra: ${assetName}`,
-        notes: null,
-        source_investment_id: investmentId,
-      })
-      .select()
-      .single();
-
-    if (txError) return txError.message;
-    if (!tx) return "No se pudo crear la transacción de descuento";
-
-    const { error: amountError } = await supabase.from("transaction_amounts").insert({
-      transaction_id: tx.id,
-      account_id: accountId,
-      amount,
-      original_currency: accountCurrency,
-      exchange_rate: exchangeRate,
-      base_amount: baseAmount,
-    });
-
-    if (amountError) {
-      // Cleanup orphaned transaction
-      await supabase.from("transactions").delete().eq("id", tx.id);
-      return amountError.message;
-    }
-
-    await recalculateOpeningBalances(monthRow.id);
-
-    return null;
-  } catch (e) {
-    console.error("autoDeductFromAccount:", e);
-    return e instanceof Error ? e.message : "Error desconocido en auto-descuento";
-  }
+): Promise<ActionResult<number>> {
+  const baseCurrency = await loadBaseCurrency({ supabase, userId });
+  if ("error" in baseCurrency) return baseCurrency;
+  if (currency === baseCurrency.data) return { data: 1 };
+  const fx = await getOrFetchFxRate({ date, from: currency, to: baseCurrency.data });
+  if (!("error" in fx)) return fx;
+  logError("cashRateToBase", fx.error);
+  return { error: CASH_RATE_FAILED };
 }
 
 export async function updateInvestment(
   input: unknown
-): Promise<ActionResult<Investment>> {
+): Promise<ActionResult<{ id: string }>> {
   try {
     const parsed = UpdateInvestmentSchema.safeParse(input);
     if (!parsed.success) {
@@ -308,149 +235,66 @@ export async function updateInvestment(
       )
     ) as TablesUpdate<"investments">;
 
-    // Fetch the current row first to detect an account move — the linked
-    // cash deduction must follow the lot to the new account or the old
-    // account stays debited (one-sided edit).
-    const { data: existingLot } = await supabase
-      .from("investments")
-      .select("account_id")
-      .eq("id", id)
-      .eq("user_id", userId)
-      .maybeSingle();
+    const [{ data: existingLot, error: lotError }, { count: cashCount, error: cashError }] =
+      await Promise.all([
+        supabase
+          .from("investments")
+          .select("account_id, purchase_date, total_cost, currency, asset_name")
+          .eq("id", id)
+          .eq("user_id", userId)
+          .maybeSingle(),
+        supabase
+          .from("transactions")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", userId)
+          .eq("source_investment_id", id),
+      ]);
+    const readError = lotError ?? cashError;
+    if (readError) return dbError("updateInvestment", readError, "No se pudo leer la inversión");
     if (!existingLot) return { error: "Inversión no encontrada" };
 
-    const { data, error } = await supabase
-      .from("investments")
-      .update(clean)
-      .eq("id", id)
-      .eq("user_id", userId)
-      .select()
-      .single();
-
-    if (error) return { error: error.message };
-
-    const accountChanged =
-      updates.account_id !== undefined &&
-      updates.account_id !== existingLot.account_id;
-
-    // If total_cost, purchase_date or account changed, sync the linked
-    // auto-deduction transaction to keep cash accounting honest.
-    if (
-      updates.total_cost !== undefined ||
-      updates.purchase_date !== undefined ||
-      accountChanged
-    ) {
-      const { data: linkedTxs } = await supabase
-        .from("transactions")
-        .select("id, month_id, date")
-        .eq("user_id", userId)
-        .eq("source_investment_id", id);
-
-      const newTotalCost = Number(data.total_cost);
-
-      // The leg lives in the ACCOUNT's currency, not the investment's.
-      const { data: accountRow } = await supabase
+    // A purchase that moved cash moves it again when what the cash depends on
+    // changes, at the rate of the account and date the lot ends up with.
+    const cashChanged =
+      (clean.account_id !== undefined && clean.account_id !== existingLot.account_id) ||
+      (clean.purchase_date !== undefined && clean.purchase_date !== existingLot.purchase_date) ||
+      (clean.total_cost !== undefined && clean.total_cost !== Number(existingLot.total_cost)) ||
+      (clean.currency !== undefined && clean.currency !== existingLot.currency) ||
+      (clean.asset_name !== undefined && clean.asset_name !== existingLot.asset_name);
+    let cashRate: number | null = null;
+    if ((cashCount ?? 0) > 0 && cashChanged) {
+      const { data: account, error: accError } = await supabase
         .from("accounts")
-        .select("id, currency")
-        .eq("id", data.account_id)
+        .select("currency")
+        .eq("id", clean.account_id ?? existingLot.account_id)
         .eq("user_id", userId)
         .maybeSingle();
-      const accountCurrency =
-        (accountRow?.currency as string) ?? (data.currency as string);
-
-      const { data: prefsRow } = await supabase
-        .from("user_preferences")
-        .select("base_currency")
-        .eq("user_id", userId)
-        .maybeSingle();
-      const baseCurrency = prefsRow?.base_currency ?? "USD";
-
-      const monthsToRecalc = new Set<string>();
-      for (const tx of linkedTxs ?? []) {
-        const txDate = (updates.purchase_date ?? tx.date) as string;
-        let exchangeRate = 1;
-        let baseAmount = -Math.abs(newTotalCost);
-        if (accountCurrency !== baseCurrency) {
-          const fx = await getOrFetchFxRate({
-            date: txDate,
-            from: accountCurrency,
-            to: baseCurrency,
-          });
-          if (!("error" in fx)) {
-            exchangeRate = fx.data;
-            baseAmount = Number((-Math.abs(newTotalCost) * fx.data).toFixed(4));
-          }
-        }
-
-        await supabase
-          .from("transaction_amounts")
-          .update({
-            account_id: data.account_id,
-            amount: -Math.abs(newTotalCost),
-            original_currency: accountCurrency,
-            exchange_rate: exchangeRate,
-            base_amount: baseAmount,
-          })
-          .eq("transaction_id", tx.id);
-
-        if (updates.purchase_date && updates.purchase_date !== tx.date) {
-          // Move the correction transaction to the new month if the purchase
-          // date changed across month boundaries.
-          const newMonthId = await resolveMonthForDate(supabase, userId, txDate);
-          if (newMonthId && newMonthId !== tx.month_id) {
-            await supabase
-              .from("transactions")
-              .update({ date: txDate, month_id: newMonthId })
-              .eq("id", tx.id);
-            monthsToRecalc.add(tx.month_id as string);
-            monthsToRecalc.add(newMonthId);
-          } else {
-            await supabase
-              .from("transactions")
-              .update({ date: txDate })
-              .eq("id", tx.id);
-            monthsToRecalc.add(tx.month_id as string);
-          }
-        } else {
-          monthsToRecalc.add(tx.month_id as string);
-        }
-      }
-
-      const earliest = await pickEarliestMonthId([...monthsToRecalc]);
-      if (earliest) {
-        await recalculateOpeningBalances(earliest);
-      }
+      if (accError) return dbError("updateInvestment", accError, "No se pudo leer la cuenta");
+      if (!account) return { error: "Cuenta no encontrada" };
+      const rate = await cashRateToBase(
+        supabase,
+        userId,
+        account.currency,
+        clean.purchase_date ?? existingLot.purchase_date,
+      );
+      if ("error" in rate) return rate;
+      cashRate = rate.data;
     }
 
-    return {
-      data: {
-        ...data,
-        quantity: Number(data.quantity),
-        price_per_unit: Number(data.price_per_unit),
-        total_cost: Number(data.total_cost),
-      } as Investment,
-    };
-  } catch {
+    const { error } = await supabase.rpc("update_investment", {
+      p_id: id,
+      p_changes: clean as Json,
+      p_cash_rate: cashRate ?? undefined,
+    });
+    if (error) {
+      return ledgerRpcError("update_investment", error, "Error al actualizar inversión");
+    }
+
+    return { data: { id } };
+  } catch (e) {
+    logError("updateInvestment", e);
     return { error: "Error al actualizar inversión" };
   }
-}
-
-async function resolveMonthForDate(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  userId: string,
-  date: string,
-): Promise<string | null> {
-  const parsedDate = new Date(`${date}T00:00:00`);
-  const year = parsedDate.getFullYear();
-  const month = parsedDate.getMonth() + 1;
-  const { data: row } = await supabase
-    .from("months")
-    .select("id")
-    .eq("user_id", userId)
-    .eq("year", year)
-    .eq("month", month)
-    .maybeSingle();
-  return row?.id ?? null;
 }
 
 export async function deleteInvestment(
@@ -460,269 +304,17 @@ export async function deleteInvestment(
     const userId = await getUserId();
     if (!userId) return { error: "No autenticado" };
 
+    // The linked cash goes with the lot.
     const supabase = await createClient();
-
-    // Find and reverse the linked auto-deduction correction transaction (if any).
-    // ON DELETE SET NULL on source_investment_id will null the FK *after* the
-    // investment row is deleted, but we want to delete the correction outright.
-    const { data: linkedTxs } = await supabase
-      .from("transactions")
-      .select("id, month_id")
-      .eq("user_id", userId)
-      .eq("source_investment_id", id);
-
-    const monthsToRecalc = new Set<string>();
-    for (const tx of linkedTxs ?? []) {
-      monthsToRecalc.add(tx.month_id as string);
-      await supabase.from("transactions").delete().eq("id", tx.id).eq("user_id", userId);
-    }
-
-    const { error } = await supabase
-      .from("investments")
-      .delete()
-      .eq("id", id)
-      .eq("user_id", userId);
-
-    if (error) return { error: error.message };
-
-    const earliest = await pickEarliestMonthId([...monthsToRecalc]);
-    if (earliest) {
-      await recalculateOpeningBalances(earliest);
+    const { error } = await supabase.rpc("delete_investment", { p_id: id });
+    if (error) {
+      return ledgerRpcError("delete_investment", error, "Error al eliminar inversión");
     }
 
     return { data: null };
-  } catch {
+  } catch (e) {
+    logError("deleteInvestment", e);
     return { error: "Error al eliminar inversión" };
-  }
-}
-
-export async function getCurrentInvestmentValuesByAccount(): Promise<
-  ActionResult<Record<string, { current: number; cost: number }>>
-> {
-  try {
-    const userId = await getUserId();
-    if (!userId) return { error: "No autenticado" };
-
-    const supabase = await createClient();
-
-    const { data: prefs } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    const baseCurrency = prefs?.base_currency ?? "USD";
-
-    const investmentsResult = await getInvestments();
-    if ("error" in investmentsResult) return investmentsResult;
-
-    const investments = investmentsResult.data;
-    if (investments.length === 0) return { data: {} };
-
-    const grouped = new Map<
-      string,
-      {
-        key: string;
-        price_key: string;
-        account_id: string;
-        asset_type: string;
-        currency: string;
-        ticker: string;
-        isin: string | null;
-        quantity: number;
-        total_cost: number;
-      }
-    >();
-
-    for (const investment of investments) {
-      const ticker = (investment.ticker ?? investment.asset_name).trim();
-      const key = `${investment.account_id}::${ticker}`;
-      const current = grouped.get(key) ?? {
-        key,
-        price_key: investment.ticker?.trim() || investment.isin?.trim() || investment.asset_name.trim(),
-        account_id: investment.account_id,
-        asset_type: investment.asset_type,
-        currency: investment.currency,
-        ticker,
-        isin: investment.isin,
-        quantity: 0,
-        total_cost: 0,
-      };
-      current.quantity += investment.quantity;
-      current.total_cost += investment.total_cost;
-      grouped.set(key, current);
-    }
-
-    const priceMapResult = await fetchCurrentPrices(
-      Array.from(
-        new Map(
-          Array.from(grouped.values()).map((holding) => [holding.price_key, {
-            key: holding.price_key,
-            ticker: holding.ticker,
-            isin: holding.isin,
-            assetType: holding.asset_type,
-          }]),
-        ).values(),
-      ),
-      baseCurrency,
-    );
-
-    if ("error" in priceMapResult) return priceMapResult;
-
-    const prices = priceMapResult.data;
-    const today = new Date().toISOString().slice(0, 10);
-    const fxCache = new Map<string, number>();
-    const totalsByAccount: Record<string, { current: number; cost: number }> = {};
-
-    const add = (accountId: string, current: number, cost: number) => {
-      const entry = totalsByAccount[accountId] ?? { current: 0, cost: 0 };
-      entry.current += current;
-      entry.cost += cost;
-      totalsByAccount[accountId] = entry;
-    };
-
-    for (const holding of grouped.values()) {
-      const marketPrice = prices[holding.price_key];
-
-      if (marketPrice == null) {
-        // No live price — treat current value as the cost basis (flat).
-        add(holding.account_id, holding.total_cost, holding.total_cost);
-        continue;
-      }
-
-      // Convert both the current value and the cost basis with the same factor
-      // so they share a currency and the gain/loss % is meaningful.
-      let factor = 1;
-      if (holding.asset_type !== "crypto" && holding.currency !== baseCurrency) {
-        const key = `${today}:${holding.currency}:${baseCurrency}`;
-        let fxRate = fxCache.get(key);
-        if (fxRate == null) {
-          const fxResult = await getOrFetchFxRate({
-            date: today,
-            from: holding.currency,
-            to: baseCurrency,
-          });
-          if ("error" in fxResult) return fxResult;
-          fxRate = fxResult.data;
-          fxCache.set(key, fxRate);
-        }
-        factor = fxRate;
-      }
-
-      add(
-        holding.account_id,
-        holding.quantity * marketPrice * factor,
-        holding.total_cost * factor,
-      );
-    }
-
-    return { data: totalsByAccount };
-  } catch {
-    return { error: "Error al obtener valor actual de inversiones" };
-  }
-}
-
-export async function getCurrentInvestmentValuesByMonth(
-  year: number,
-): Promise<ActionResult<Record<number, { currentValue: number; costBasis: number }>>> {
-  try {
-    const userId = await getUserId();
-    if (!userId) return { error: "No autenticado" };
-
-    const supabase = await createClient();
-    const { data: prefs } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    const baseCurrency = prefs?.base_currency ?? "USD";
-    const investmentsResult = await getInvestments();
-    if ("error" in investmentsResult) return investmentsResult;
-
-    const investments = investmentsResult.data;
-    if (investments.length === 0) return { data: {} };
-
-    const priceMapResult = await fetchCurrentPrices(
-      Array.from(
-        new Map(
-          investments.map((investment) => {
-            const key = investment.ticker?.trim() || investment.isin?.trim() || investment.asset_name.trim();
-            return [key, {
-              key,
-              ticker: investment.ticker,
-              isin: investment.isin,
-              assetType: investment.asset_type,
-            }];
-          }),
-        ).values(),
-      ),
-      baseCurrency,
-    );
-    if ("error" in priceMapResult) return priceMapResult;
-
-    const prices = priceMapResult.data;
-    const totalsByMonth: Record<number, { currentValue: number; costBasis: number }> = {};
-    const today = new Date().toISOString().slice(0, 10);
-    const fxCache = new Map<string, number>();
-
-    const monthSet = new Set<number>();
-    for (const investment of investments) {
-      const purchaseDate = new Date(`${investment.purchase_date}T00:00:00`);
-      const purchaseYear = purchaseDate.getFullYear();
-      const purchaseMonth = purchaseDate.getMonth() + 1;
-      if (purchaseYear > year) continue;
-      for (let month = purchaseYear < year ? 1 : purchaseMonth; month <= 12; month += 1) {
-        monthSet.add(month);
-      }
-    }
-
-    for (const month of monthSet) {
-      totalsByMonth[month] = { currentValue: 0, costBasis: 0 };
-    }
-
-    for (const investment of investments) {
-      const purchaseDate = new Date(`${investment.purchase_date}T00:00:00`);
-      const purchaseYear = purchaseDate.getFullYear();
-      const purchaseMonth = purchaseDate.getMonth() + 1;
-      if (purchaseYear > year) continue;
-
-      const priceKey = investment.ticker?.trim() || investment.isin?.trim() || investment.asset_name.trim();
-      const price = prices[priceKey];
-
-      let currentValue = price != null ? investment.quantity * price : investment.total_cost;
-      let costBasis = investment.total_cost;
-
-      if (investment.asset_type !== "crypto" && investment.currency !== baseCurrency) {
-        const fxKey = `${today}:${investment.currency}:${baseCurrency}`;
-        let fxRate = fxCache.get(fxKey);
-        if (fxRate == null) {
-          const fxResult = await getOrFetchFxRate({
-            date: today,
-            from: investment.currency,
-            to: baseCurrency,
-          });
-          if ("error" in fxResult) return fxResult;
-          fxRate = fxResult.data;
-          fxCache.set(fxKey, fxRate);
-        }
-        // Both legs must be in base currency or the delta (gain/loss) is wrong.
-        currentValue *= fxRate;
-        costBasis *= fxRate;
-      }
-
-      const startMonth = purchaseYear < year ? 1 : purchaseMonth;
-      for (let month = startMonth; month <= 12; month += 1) {
-        totalsByMonth[month] = {
-          currentValue: (totalsByMonth[month]?.currentValue ?? 0) + currentValue,
-          costBasis: (totalsByMonth[month]?.costBasis ?? 0) + costBasis,
-        };
-      }
-    }
-
-    return { data: totalsByMonth };
-  } catch {
-    return { error: "Error al obtener valores actuales por mes" };
   }
 }
 
@@ -738,11 +330,21 @@ export async function lookupInvestmentInstrument(input: {
   }>
 > {
   try {
+    const userId = await getUserId();
+    if (!userId) return { error: "No autenticado" };
+
     const query = input.isin?.trim() || input.ticker?.trim();
     if (!query) return { error: "Ingresá un ticker o ISIN" };
 
-    const instrument = await fetchTwelveDataInstrument(query);
-    if (!instrument) return { error: "No se encontró el activo" };
+    const lookup = await fetchTwelveDataInstrument(query);
+    if (!lookup.ok) {
+      if (lookup.reason === "not_found") return { error: "No se encontró el activo" };
+      if (lookup.reason === "rate_limited") {
+        return { error: "El proveedor de precios limitó las consultas. Probá en un minuto." };
+      }
+      return { error: "No se pudo consultar el proveedor de precios. Probá de nuevo." };
+    }
+    const instrument = lookup.data;
 
     return {
       data: {
@@ -752,7 +354,8 @@ export async function lookupInvestmentInstrument(input: {
         price_per_unit: instrument.price,
       },
     };
-  } catch {
+  } catch (e) {
+    logError("lookupInvestmentInstrument", e);
     return { error: "Error al buscar activo" };
   }
 }
@@ -782,7 +385,9 @@ export async function transferInvestmentPosition(
       ])
       .eq("user_id", userId);
 
-    if (accountsError) return { error: accountsError.message };
+    if (accountsError) {
+      return dbError("transferInvestmentPosition", accountsError, "No se pudieron leer las cuentas");
+    }
     if (!accounts || accounts.length !== 2) {
       return { error: "Cuenta origen o destino no encontrada" };
     }
@@ -796,96 +401,51 @@ export async function transferInvestmentPosition(
       return { error: "Solo se puede mover posicion entre cuentas de inversion" };
     }
 
-    // Atomic FIFO move: the RPC locks the source holding, validates
-    // availability inside the lock and rolls back as a unit. The TS loop it
-    // replaces could duplicate the position between accounts (insert at
-    // destination succeeded, source reduction failed).
-    const { error: moveError } = await supabase.rpc("transfer_investment_lots", {
-      p_source_account_id: parsed.data.source_account_id,
-      p_destination_account_id: parsed.data.destination_account_id,
-      p_asset_name: parsed.data.asset_name,
-      p_ticker: parsed.data.ticker ?? "",
-      p_asset_type: parsed.data.asset_type,
-      p_currency: parsed.data.currency,
-      p_quantity: parsed.data.quantity,
-      p_fee_quantity: parsed.data.fee_quantity,
-      p_transfer_date: parsed.data.transfer_date,
-      p_notes: parsed.data.notes ?? "Transferido desde otra cuenta",
-    });
-    if (moveError) return { error: moveError.message };
-
-    // Cash fee: deduct from the source account's cash as a `correction`
-    // (a cost, not a budget expense), mirroring the investment-buy deduction.
+    // Cash fee: deduct from the source account's cash as an investment
+    // movement (a cost, not a budget expense), mirroring the purchase.
+    let feeRate: number | null = null;
     if (parsed.data.fee_cash > 0) {
       const sourceAccount = accounts.find(
         (account) => account.id === parsed.data.source_account_id,
       );
-      const sourceCurrency = (sourceAccount?.currency as string) ?? "USD";
-
-      const parsedDate = new Date(`${parsed.data.transfer_date}T00:00:00`);
-      const monthResult = await createMonth(
-        parsedDate.getFullYear(),
-        parsedDate.getMonth() + 1,
+      if (!sourceAccount) return { error: "Cuenta origen no encontrada" };
+      const rate = await cashRateToBase(
+        supabase,
+        userId,
+        sourceAccount.currency,
+        parsed.data.transfer_date,
       );
-      if ("error" in monthResult) return { error: monthResult.error };
-      const monthId = monthResult.data.id;
+      if ("error" in rate) return rate;
+      feeRate = rate.data;
+    }
 
-      const { data: prefs } = await supabase
-        .from("user_preferences")
-        .select("base_currency")
-        .eq("user_id", userId)
-        .maybeSingle();
-      const baseCurrency = prefs?.base_currency ?? "USD";
-
-      const amount = -Math.abs(parsed.data.fee_cash);
-      let exchangeRate = 1;
-      let baseAmount = amount;
-      if (sourceCurrency !== baseCurrency) {
-        const fxResult = await getOrFetchFxRate({
-          date: parsed.data.transfer_date,
-          from: sourceCurrency,
-          to: baseCurrency,
-        });
-        if ("error" in fxResult) return fxResult;
-        exchangeRate = fxResult.data;
-        baseAmount = Number((amount * fxResult.data).toFixed(4));
-      }
-
-      const { data: feeTx, error: feeTxError } = await supabase
-        .from("transactions")
-        .insert({
-          user_id: userId,
-          month_id: monthId,
-          category_id: null,
-          transaction_type: "investment",
-          date: parsed.data.transfer_date,
-          description: `Comisión transferencia ${parsed.data.asset_name}`,
-          notes: null,
-        })
-        .select()
-        .single();
-      if (feeTxError) return { error: feeTxError.message };
-
-      const { error: feeAmountError } = await supabase
-        .from("transaction_amounts")
-        .insert({
-          transaction_id: feeTx.id,
-          account_id: parsed.data.source_account_id,
-          amount,
-          original_currency: sourceCurrency,
-          exchange_rate: exchangeRate,
-          base_amount: baseAmount,
-        });
-      if (feeAmountError) {
-        await supabase.from("transactions").delete().eq("id", feeTx.id);
-        return { error: feeAmountError.message };
-      }
-
-      await recalculateOpeningBalances(monthId);
+    // Atomic FIFO move: the RPC locks the source holding, validates
+    // availability inside the lock and rolls back as a unit, together with
+    // the fee. The TS loop it replaces could duplicate the position between
+    // accounts (insert at destination succeeded, source reduction failed).
+    const { error: moveError } = await supabase.rpc("transfer_investment_position", {
+      p_move: {
+        source_account_id: parsed.data.source_account_id,
+        destination_account_id: parsed.data.destination_account_id,
+        asset_name: parsed.data.asset_name,
+        ticker: parsed.data.ticker ?? "",
+        asset_type: parsed.data.asset_type,
+        currency: parsed.data.currency,
+        quantity: parsed.data.quantity,
+        fee_quantity: parsed.data.fee_quantity,
+        transfer_date: parsed.data.transfer_date,
+        notes: parsed.data.notes ?? "Transferido desde otra cuenta",
+      },
+      p_fee_cash: parsed.data.fee_cash,
+      p_fee_rate: feeRate ?? undefined,
+    });
+    if (moveError) {
+      return ledgerRpcError("transfer_investment_position", moveError, "Error al transferir posicion");
     }
 
     return { data: null };
-  } catch {
+  } catch (e) {
+    logError("transferInvestmentPosition", e);
     return { error: "Error al transferir posicion" };
   }
 }
@@ -920,7 +480,7 @@ export async function adjustInvestmentPosition(
       .eq("user_id", userId)
       .maybeSingle();
 
-    if (accError) return { error: accError.message };
+    if (accError) return dbError("adjustInvestmentPosition", accError, "No se pudo leer la cuenta");
     if (!account) return { error: "Cuenta no encontrada" };
 
     if (parsed.data.direction === "increase") {
@@ -939,7 +499,9 @@ export async function adjustInvestmentPosition(
         purchase_date: parsed.data.adjustment_date,
         notes: parsed.data.notes ?? "Ajuste de posición",
       });
-      if (insertError) return { error: insertError.message };
+      if (insertError) {
+        return dbError("adjustInvestmentPosition", insertError, "Error al ajustar la posición");
+      }
       return { data: null };
     }
 
@@ -957,15 +519,15 @@ export async function adjustInvestmentPosition(
       },
     );
     if (reduceError) {
-      return {
-        error: reduceError.message.includes("No hay cantidad")
-          ? "No hay cantidad suficiente para ajustar"
-          : reduceError.message,
-      };
+      if (reduceError.message.includes("No hay cantidad")) {
+        return { error: "No hay cantidad suficiente para ajustar" };
+      }
+      return dbError("adjustInvestmentPosition", reduceError, "Error al ajustar la posición");
     }
 
     return { data: null };
-  } catch {
+  } catch (e) {
+    logError("adjustInvestmentPosition", e);
     return { error: "Error al ajustar la posición" };
   }
 }
@@ -993,7 +555,7 @@ function lotMatchesHolding(
 
 export async function sellInvestment(
   input: unknown,
-): Promise<ActionResult<InvestmentSale>> {
+): Promise<ActionResult<{ id: string }>> {
   try {
     const parsed = SellInvestmentSchema.safeParse(input);
     if (!parsed.success) {
@@ -1014,7 +576,7 @@ export async function sellInvestment(
       .eq("user_id", userId)
       .maybeSingle();
 
-    if (accError) return { error: accError.message };
+    if (accError) return dbError("sellInvestment", accError, "No se pudo leer la cuenta");
     if (!account) return { error: "Cuenta no encontrada" };
 
     const { data: lots, error: lotsError } = await supabase
@@ -1027,7 +589,7 @@ export async function sellInvestment(
       .order("purchase_date", { ascending: true })
       .order("created_at", { ascending: true });
 
-    if (lotsError) return { error: lotsError.message };
+    if (lotsError) return dbError("sellInvestment", lotsError, "No se pudo leer la posición");
 
     const matchingLots = (lots ?? []).filter((lot) =>
       lotMatchesHolding(lot, parsed.data.ticker, parsed.data.asset_name),
@@ -1046,28 +608,38 @@ export async function sellInvestment(
       return { error: "No hay cantidad suficiente para vender" };
     }
 
-    const totalCostBasis = matchingLots.reduce(
-      (sum, lot) => sum + Number(lot.total_cost),
-      0,
-    );
-    const avgCost = totalCostBasis / totalQuantity;
-    const costBasisOfSale = Number(
-      (parsed.data.quantity_sold * avgCost).toFixed(4),
-    );
     const grossProceeds = Number(
       (parsed.data.quantity_sold * parsed.data.price_per_unit).toFixed(4),
     );
     const fees = parsed.data.fees ?? 0;
     const tax = parsed.data.tax ?? 0;
-    const realizedPnl = Number(
-      (grossProceeds - fees - tax - costBasisOfSale).toFixed(4),
-    );
     const netProceeds = Number((grossProceeds - fees - tax).toFixed(4));
 
-    const { data: saleRow, error: saleError } = await supabase
-      .from("investment_sales")
-      .insert({
-        user_id: userId,
+    // Same currency gate as the purchase deduction: a cross-currency credit
+    // would book the proceeds in the wrong currency.
+    let cashRate: number | null = null;
+    if (
+      CASH_ACCOUNT_TYPES.has(account.account_type) &&
+      account.currency === parsed.data.currency &&
+      !parsed.data.skip_credit &&
+      netProceeds > 0
+    ) {
+      const rate = await cashRateToBase(
+        supabase,
+        userId,
+        account.currency,
+        parsed.data.sale_date,
+      );
+      if ("error" in rate) return rate;
+      cashRate = rate.data;
+    }
+
+    // The sale, the lot reduction and the credit in one transaction. The
+    // reduction locks the holding and re-validates availability inside the
+    // lock (kills the concurrent double-sell race); the cost it removes there
+    // becomes the sale's cost basis.
+    const { data, error } = await supabase.rpc("record_investment_sale", {
+      p_sale: {
         account_id: parsed.data.account_id,
         asset_name: parsed.data.asset_name,
         ticker: parsed.data.ticker ?? null,
@@ -1078,176 +650,20 @@ export async function sellInvestment(
         total_proceeds: grossProceeds,
         fees,
         tax,
-        cost_basis: costBasisOfSale,
-        realized_pnl: realizedPnl,
         currency: parsed.data.currency,
         sale_date: parsed.data.sale_date,
         notes: parsed.data.notes ?? null,
-      })
-      .select()
-      .single();
-
-    if (saleError) return { error: saleError.message };
-
-    // Reduce the lots atomically (proportional, keeps avg cost). The RPC
-    // locks the holding, re-validates availability inside the lock (kills
-    // the concurrent double-sell race) and rolls back as a unit — the loop
-    // it replaced could leave lots half-reduced on a mid-loop failure.
-    const { data: removedCost, error: reduceError } = await supabase.rpc(
-      "reduce_investment_lots",
-      {
-        p_account_id: parsed.data.account_id,
-        p_asset_name: parsed.data.asset_name,
-        p_ticker: parsed.data.ticker ?? "",
-        p_asset_type: parsed.data.asset_type,
-        p_currency: parsed.data.currency,
-        p_quantity: parsed.data.quantity_sold,
       },
-    );
-
-    if (reduceError) {
-      await supabase.from("investment_sales").delete().eq("id", saleRow.id);
-      return { error: reduceError.message };
+      p_cash_rate: cashRate ?? undefined,
+    });
+    if (error) {
+      return ledgerRpcError("record_investment_sale", error, "Error al registrar venta");
     }
 
-    // The RPC returns the exact cost removed under the lock; if a concurrent
-    // mutation shifted the basis between our read and the lock, sync the sale.
-    const actualCostBasis = Number(removedCost ?? costBasisOfSale);
-    if (Math.abs(actualCostBasis - costBasisOfSale) > 0.005) {
-      const syncedPnl = Number(
-        (grossProceeds - fees - tax - actualCostBasis).toFixed(4),
-      );
-      await supabase
-        .from("investment_sales")
-        .update({ cost_basis: actualCostBasis, realized_pnl: syncedPnl })
-        .eq("id", saleRow.id);
-      saleRow.cost_basis = actualCostBasis;
-      saleRow.realized_pnl = syncedPnl;
-    }
-
-    // Same currency gate as the purchase deduction: a cross-currency credit
-    // would book the proceeds in the wrong currency.
-    const eligibleForCredit =
-      (account.account_type === "investment_broker" ||
-        account.account_type === "crypto_exchange" ||
-        account.account_type === "crypto_wallet") &&
-      account.currency === parsed.data.currency;
-
-    if (eligibleForCredit && !parsed.data.skip_credit && netProceeds > 0) {
-      const creditError = await autoCreditToAccount(
-        supabase,
-        userId,
-        parsed.data.account_id,
-        account.currency,
-        netProceeds,
-        parsed.data.sale_date,
-        parsed.data.asset_name,
-        saleRow.id,
-      );
-      if (creditError) {
-        console.warn("Auto-credit failed:", creditError);
-      }
-    }
-
-    return {
-      data: {
-        ...saleRow,
-        quantity_sold: Number(saleRow.quantity_sold),
-        price_per_unit: Number(saleRow.price_per_unit),
-        total_proceeds: Number(saleRow.total_proceeds),
-        fees: Number(saleRow.fees),
-        tax: Number(saleRow.tax),
-        cost_basis: Number(saleRow.cost_basis),
-        realized_pnl: Number(saleRow.realized_pnl),
-      } as InvestmentSale,
-    };
-  } catch {
-    return { error: "Error al registrar venta" };
-  }
-}
-
-async function autoCreditToAccount(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  userId: string,
-  accountId: string,
-  accountCurrency: string,
-  netProceeds: number,
-  date: string,
-  assetName: string,
-  saleId: string,
-): Promise<string | null> {
-  try {
-    const parsedDate = new Date(`${date}T00:00:00`);
-    const year = parsedDate.getFullYear();
-    const month = parsedDate.getMonth() + 1;
-
-    // Create the month if needed — skipping silently credited nothing for
-    // sales dated in a not-yet-opened month.
-    const monthResult = await createMonth(year, month);
-    if ("error" in monthResult) return monthResult.error;
-    const monthRow = monthResult.data;
-
-    const { data: prefsRow } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", userId)
-      .maybeSingle();
-    const baseCurrency = prefsRow?.base_currency ?? "USD";
-
-    const amount = Math.abs(netProceeds);
-    let exchangeRate = 1;
-    let baseAmount = amount;
-    if (accountCurrency !== baseCurrency) {
-      const fxResult = await getOrFetchFxRate({
-        date,
-        from: accountCurrency,
-        to: baseCurrency,
-      });
-      if ("error" in fxResult) return fxResult.error;
-      exchangeRate = fxResult.data;
-      baseAmount = Number((amount * fxResult.data).toFixed(4));
-    }
-
-    const { data: tx, error: txError } = await supabase
-      .from("transactions")
-      .insert({
-        user_id: userId,
-        month_id: monthRow.id,
-        category_id: null,
-        transaction_type: "investment",
-        date,
-        description: `Venta: ${assetName}`,
-        notes: null,
-        source_investment_sale_id: saleId,
-      })
-      .select()
-      .single();
-
-    if (txError) return txError.message;
-    if (!tx) return "No se pudo crear la transacción de crédito";
-
-    const { error: amountError } = await supabase
-      .from("transaction_amounts")
-      .insert({
-        transaction_id: tx.id,
-        account_id: accountId,
-        amount,
-        original_currency: accountCurrency,
-        exchange_rate: exchangeRate,
-        base_amount: baseAmount,
-      });
-
-    if (amountError) {
-      await supabase.from("transactions").delete().eq("id", tx.id);
-      return amountError.message;
-    }
-
-    await recalculateOpeningBalances(monthRow.id);
-
-    return null;
+    return { data: { id: data } };
   } catch (e) {
-    console.error("autoCreditToAccount:", e);
-    return e instanceof Error ? e.message : "Error desconocido en auto-crédito";
+    logError("sellInvestment", e);
+    return { error: "Error al registrar venta" };
   }
 }
 
@@ -1271,33 +687,20 @@ export async function getInvestmentSales(): Promise<
       .eq("user_id", userId)
       .order("sale_date", { ascending: false });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getInvestmentSales", error, "Error al obtener ventas");
 
-    const { data: prefsRow } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", userId)
-      .maybeSingle();
-    const baseCurrency = prefsRow?.base_currency ?? "USD";
+    const baseCurrencyResult = await loadBaseCurrency({ supabase, userId });
+    if ("error" in baseCurrencyResult) return baseCurrencyResult;
+    const baseCurrency = baseCurrencyResult.data;
 
-    // Resolve FX per unique (currency, sale_date) pair. Sales are usually few
-    // and FX rates are cached in fx_rates, so this is cheap.
-    const fxKey = (currency: string, date: string) => `${currency}|${date}`;
-    const fxCache = new Map<string, number>();
-    for (const row of data ?? []) {
-      const key = fxKey(row.currency as string, row.sale_date as string);
-      if (fxCache.has(key)) continue;
-      if (row.currency === baseCurrency) {
-        fxCache.set(key, 1);
-        continue;
-      }
-      const fx = await getOrFetchFxRate({
+    const fxAt = await resolveFxRates(
+      supabase,
+      (data ?? []).map((row) => ({
         date: row.sale_date as string,
         from: row.currency as string,
-        to: baseCurrency,
-      });
-      fxCache.set(key, "error" in fx ? 1 : fx.data);
-    }
+      })),
+      baseCurrency,
+    );
 
     const mapped = (data ?? []).map((row) => {
       const accountRaw = row.accounts;
@@ -1307,8 +710,9 @@ export async function getInvestmentSales(): Promise<
         ? currencyRaw[0]
         : currencyRaw;
 
-      const rate = fxCache.get(fxKey(row.currency as string, row.sale_date as string)) ?? 1;
-      const toBase = (n: number) => Number((n * rate).toFixed(4));
+      // Without a rate the sale has no base amounts, never 1:1 ones.
+      const rate = fxAt(row.sale_date as string, row.currency as string);
+      const toBase = (n: number) => (rate != null ? Number((n * rate).toFixed(4)) : null);
 
       return {
         id: row.id,
@@ -1334,6 +738,7 @@ export async function getInvestmentSales(): Promise<
         currency: row.currency,
         sale_date: row.sale_date,
         notes: row.notes,
+        swap_lot_id: row.swap_lot_id,
         created_at: row.created_at,
         updated_at: row.updated_at,
         account_name: (account as { name?: string })?.name ?? "",
@@ -1343,7 +748,8 @@ export async function getInvestmentSales(): Promise<
     });
 
     return { data: mapped };
-  } catch {
+  } catch (e) {
+    logError("getInvestmentSales", e);
     return { error: "Error al obtener ventas" };
   }
 }
@@ -1352,8 +758,8 @@ export async function getInvestmentSales(): Promise<
  * Deletes an investment_sale, reverses its auto-credit correction, and
  * restores the lots that were proportionally reduced when the sale was
  * recorded. This is a best-effort restoration: we re-insert a single lot
- * with the cost_basis stored on the sale, dated at the original purchase
- * date. If the sale was a partial exit, this collapses the remaining
+ * with the cost_basis stored on the sale, dated at the sale date
+ * (delete_investment_sale, 0051). If the sale was a partial exit, this collapses the remaining
  * partial lots into a single lot — accounting-wise correct but loses lot
  * detail.
  */
@@ -1365,68 +771,51 @@ export async function deleteInvestmentSale(
     if (!userId) return { error: "No autenticado" };
     const supabase = await createClient();
 
-    const { data: sale, error: saleError } = await supabase
-      .from("investment_sales")
-      .select("*")
-      .eq("id", saleId)
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (saleError) return { error: saleError.message };
-    if (!sale) return { error: "Venta no encontrada" };
-
-    // Delete any auto-credit correction linked to this sale.
-    const { data: linkedTxs } = await supabase
-      .from("transactions")
-      .select("id, month_id")
-      .eq("user_id", userId)
-      .eq("source_investment_sale_id", saleId);
-
-    const monthsToRecalc = new Set<string>();
-    for (const tx of linkedTxs ?? []) {
-      monthsToRecalc.add(tx.month_id as string);
-      await supabase.from("transactions").delete().eq("id", tx.id).eq("user_id", userId);
-    }
-
-    // Restore a lot with the same cost_basis so cost-basis accounting stays
-    // honest. Pricing per unit is recomputed.
-    const restoreQty = Number(sale.quantity_sold);
-    const restoreCost = Number(sale.cost_basis);
-    // Zero-cost lots (adjustments, airdrops) are valid since migration 0032:
-    // restore them too, or reverting the sale silently loses the coins.
-    if (restoreQty > QTY_EPSILON && restoreCost >= 0) {
-      const pricePerUnit = restoreCost / restoreQty;
-      const { error: insertError } = await supabase.from("investments").insert({
-        user_id: userId,
-        account_id: sale.account_id,
-        asset_name: sale.asset_name,
-        ticker: sale.ticker,
-        isin: sale.isin,
-        asset_type: sale.asset_type,
-        quantity: restoreQty,
-        price_per_unit: pricePerUnit,
-        total_cost: restoreCost,
-        currency: sale.currency,
-        purchase_date: sale.sale_date, // best we can do without original lot data
-        notes: `Restaurado al revertir venta del ${sale.sale_date}`,
-      });
-      if (insertError) return { error: insertError.message };
-    }
-
-    const { error: deleteError } = await supabase
-      .from("investment_sales")
-      .delete()
-      .eq("id", saleId)
-      .eq("user_id", userId);
-    if (deleteError) return { error: deleteError.message };
-
-    const earliest = await pickEarliestMonthId([...monthsToRecalc]);
-    if (earliest) {
-      await recalculateOpeningBalances(earliest);
+    const { error } = await supabase.rpc("delete_investment_sale", {
+      p_sale_id: saleId,
+    });
+    if (error) {
+      return ledgerRpcError("delete_investment_sale", error, "Error al eliminar la venta");
     }
 
     return { data: null };
-  } catch {
+  } catch (e) {
+    logError("deleteInvestmentSale", e);
     return { error: "Error al eliminar la venta" };
+  }
+}
+
+/**
+ * Exchanges one asset for another inside an account at market value, without
+ * moving the account's cash: the asset given is sold at that value and the
+ * asset received is bought at it (swap_investment_lots, 0051).
+ */
+export async function swapInvestment(
+  input: unknown,
+): Promise<ActionResult<{ id: string }>> {
+  try {
+    const parsed = SwapInvestmentSchema.safeParse(input);
+    if (!parsed.success) {
+      return { error: parsed.error.issues[0]?.message ?? "Datos inválidos" };
+    }
+
+    const userId = await getUserId();
+    if (!userId) return { error: "No autenticado" };
+
+    const supabase = await createClient();
+    const { data, error } = await supabase.rpc("swap_investment_lots", {
+      p_swap: {
+        ...parsed.data,
+        notes: parsed.data.notes ?? null,
+      },
+    });
+    if (error) {
+      return ledgerRpcError("swap_investment_lots", error, "Error al registrar el intercambio");
+    }
+    return { data: { id: data } };
+  } catch (e) {
+    logError("swapInvestment", e);
+    return { error: "Error al registrar el intercambio" };
   }
 }
 
@@ -1435,69 +824,71 @@ export async function deleteInvestmentSale(
 /* ------------------------------------------------------------------ */
 
 export async function fetchCurrentPrices(
-  tickers: { key: string; ticker?: string | null; isin?: string | null; assetType: string }[],
-  baseCurrency: string
-): Promise<ActionResult<Record<string, number>>> {
+  tickers: PriceRequest[],
+  baseCurrency: string,
+  fresh = false,
+): Promise<ActionResult<ResolvedPrices>> {
+  const ctx = await getServerContext();
+  if (!ctx) return { error: "No autenticado" };
+  return resolvePricesWithSources(tickers, baseCurrency, ctx, { fresh: fresh === true });
+}
+
+/**
+ * A price the user sets for an asset no provider quotes, in the holding's
+ * currency. It is used while no provider answers, and a quote from a provider
+ * replaces it.
+ */
+export async function setManualPrice(
+  input: unknown,
+): Promise<ActionResult<null>> {
   try {
-    const prices: Record<string, number> = {};
-
-    const cryptoTickers = tickers
-      .filter((t) => t.assetType === "crypto")
-      .map((t) => ({ key: t.key, code: (t.ticker ?? t.key).trim().toUpperCase() }));
-    const marketTickers = tickers.filter((t) => t.assetType !== "crypto");
-
-    if (cryptoTickers.length > 0) {
-      const cryptoPrices = await fetchCryptoPrices(
-        cryptoTickers.map((ticker) => ticker.code),
-        baseCurrency
-      );
-      for (const ticker of cryptoTickers) {
-        const price = cryptoPrices[ticker.code];
-        if (price != null) prices[ticker.key] = price;
-      }
+    const parsed = ManualPriceSchema.safeParse(input);
+    if (!parsed.success) {
+      return { error: parsed.error.issues[0]?.message ?? "Datos inválidos" };
     }
 
-    if (marketTickers.length > 0) {
-      const twelveDataPrices = await fetchTwelveDataPrices(
-        marketTickers.map((ticker) => ({
-          key: ticker.key,
-          symbol: ticker.ticker,
-          isin: ticker.isin,
-        })),
-      );
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
+    const baseCurrency = await loadBaseCurrency(ctx);
+    if ("error" in baseCurrency) return baseCurrency;
 
-      for (const ticker of marketTickers) {
-        const resolved = twelveDataPrices[ticker.key];
-        if (resolved) {
-          prices[ticker.key] = resolved.price;
-        }
-      }
-
-      const unresolved = marketTickers.filter((ticker) => prices[ticker.key] == null && ticker.ticker);
-      if (unresolved.length > 0) {
-        try {
-          const yahooFinance = await import("yahoo-finance2");
-          const yf = yahooFinance.default;
-
-          for (const ticker of unresolved) {
-            try {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const quote: any = await yf.quote(ticker.ticker!);
-              if (quote && typeof quote.regularMarketPrice === "number") {
-                prices[ticker.key] = quote.regularMarketPrice;
-              }
-            } catch {
-              // continue
-            }
-          }
-        } catch {
-          // ignore fallback errors
-        }
-      }
+    const { lots, asset_type, currency, date } = parsed.data;
+    // Crypto prices are stored in the base currency, like CoinGecko's.
+    let price = parsed.data.price;
+    if (asset_type === "crypto" && currency !== baseCurrency.data) {
+      const fx = await getOrFetchFxRate({ date: appToday(), from: currency, to: baseCurrency.data });
+      if ("error" in fx) return { error: fx.error };
+      price *= fx.data;
     }
 
-    return { data: prices };
-  } catch {
-    return { error: "Error al obtener precios actuales" };
+    const keys = new Set(
+      lots.map((lot) =>
+        priceCacheKey(
+          priceRequestFor({
+            asset_name: lot.asset_name,
+            ticker: lot.ticker ?? null,
+            isin: lot.isin ?? null,
+            asset_type,
+            currency,
+          }),
+          baseCurrency.data,
+        ),
+      ),
+    );
+    const { error } = await ctx.supabase.from("instrument_prices").upsert(
+      [...keys].map((price_key) => ({
+        user_id: ctx.userId,
+        price_key,
+        price,
+        source: "manual",
+        fetched_at: `${date}T12:00:00Z`,
+      })),
+      { onConflict: "user_id,price_key" },
+    );
+    if (error) return dbError("setManualPrice", error, "No se pudo guardar el precio");
+    return { data: null };
+  } catch (e) {
+    logError("setManualPrice", e);
+    return { error: "No se pudo guardar el precio" };
   }
 }

@@ -1,57 +1,112 @@
 "use client";
 
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-} from "@/components/ui/card";
-import { formatAmount, amountTone } from "@/lib/format";
-import type { MonthSummary } from "@/hooks/useMonthSummary";
+import { StatCard, StatGrid } from "@/components/stat-card";
+import { formatAmount, formatDayMonth } from "@/lib/format";
+import type { PeriodSummary } from "@/lib/finance/period-summary";
 
 interface SummaryCardsProps {
-  summary: MonthSummary;
+  /** Null while it loads: the cards show "—", never 0. */
+  summary: PeriodSummary | null;
   currencySymbol: string;
+  /** Expenses by category type instead of their total and the result. */
+  detailed?: boolean;
+  /** Skeletons in place of the amounts. */
+  loading?: boolean;
 }
 
-export function SummaryCards({ summary, currencySymbol }: SummaryCardsProps) {
-  const cards = [
+interface SummaryCard {
+  label: string;
+  value: number | undefined;
+  signTone?: boolean;
+  hint?: React.ReactNode;
+}
+
+export function SummaryCards({ summary, currencySymbol, detailed = false, loading = false }: SummaryCardsProps) {
+  const otherLines = !summary
+    ? []
+    : (
+        [
+          ["Inversiones", summary.other.investments],
+          ["Correcciones", summary.other.corrections],
+          ["Comisiones", summary.other.transferFees],
+          ["Cambio en transferencias", summary.other.transferFx],
+          ["Diferencia de cambio", summary.other.revaluation],
+        ] as const
+      ).filter(([, value]) => Math.abs(value) >= 0.005);
+
+  const cards: SummaryCard[] = [
+    { label: "Saldo apertura", value: summary?.openingBase, signTone: true },
+    { label: "Ingresos", value: summary?.income },
+    ...(!detailed
+      ? [
+          { label: "Total gastos", value: summary?.totalExpenses },
+          { label: "Resultado", value: summary?.netMonth, signTone: true },
+        ]
+      : [
+          { label: "Gastos Esenciales", value: summary?.essentialExpenses },
+          { label: "Gastos Discrecionales", value: summary?.discretionaryExpenses },
+          { label: "Pago de Deudas", value: summary?.debtPayments },
+          { label: "Ahorros", value: summary?.savings },
+          { label: "Inversiones", value: summary?.investments },
+          ...(summary && summary.uncategorizedExpenses !== 0
+            ? [{ label: "Sin categoría", value: summary.uncategorizedExpenses }]
+            : []),
+        ]),
     {
-      label: "Saldo apertura",
-      value: summary.openingBase,
-      color: amountTone(summary.openingBase),
+      label: "Otros movimientos",
+      value: summary?.other.total,
+      signTone: true,
+      hint:
+        otherLines.length === 0 ? undefined : (
+          <div className="flex flex-col gap-0.5 text-xs">
+            {otherLines.map(([label, value]) => (
+              <div key={label} className="flex justify-between gap-4">
+                <span>{label}</span>
+                <span className="tabular-nums">
+                  {currencySymbol} {formatAmount(value)}
+                </span>
+              </div>
+            ))}
+          </div>
+        ),
     },
-    { label: "Ingresos", value: summary.income, color: "text-green-600" },
-    {
-      label: "Total gastos",
-      value: summary.totalExpenses,
-      color: "text-red-600",
-    },
-    {
-      label: "Resultado del mes",
-      value: summary.netMonth,
-      color: amountTone(summary.netMonth),
-    },
-    {
-      label: "Saldo cierre",
-      value: summary.closingBase,
-      color: amountTone(summary.closingBase),
-    },
+    { label: "Saldo cierre", value: summary?.closingBase, signTone: true },
   ];
 
+  const notes = !summary
+    ? []
+    : [
+        summary.olderRates === 1
+          ? "1 movimiento valuado con un TC anterior a su fecha."
+          : summary.olderRates > 1
+            ? `${summary.olderRates} movimientos valuados con un TC anterior a su fecha.`
+            : null,
+        summary.closingRateDate ? `Saldos al TC del ${formatDayMonth(summary.closingRateDate)}.` : null,
+        summary.fxMissing > 0 ? "Hay saldos sin cotización: van sin diferencia de cambio." : null,
+        !summary.ties
+          ? `${currencySymbol} ${formatAmount(summary.unexplained)} de movimientos no entran en ninguna línea.`
+          : null,
+      ].filter((note): note is string => note !== null);
+
   return (
-    <div className="grid gap-3 grid-cols-2 lg:grid-cols-5">
-      {cards.map((card) => (
-        <Card key={card.label} className="gap-0 py-0">
-          <CardHeader className="px-4 pt-4 pb-2">
-            <CardDescription>{card.label}</CardDescription>
-          </CardHeader>
-          <CardContent className="px-4 pb-4">
-            <p className={`text-2xl font-semibold ${card.color}`}>
-              {currencySymbol} {formatAmount(Math.abs(card.value))}
-            </p>
-          </CardContent>
-        </Card>
+    <div className="flex flex-col gap-1.5">
+      <StatGrid columns={detailed ? 5 : 6}>
+        {cards.map((card) => (
+          <StatCard
+            key={card.label}
+            label={card.label}
+            value={card.value}
+            currency={currencySymbol}
+            signTone={card.signTone}
+            hint={card.hint}
+            loading={loading}
+          />
+        ))}
+      </StatGrid>
+      {notes.map((note) => (
+        <p key={note} className="text-muted-foreground text-[11px]">
+          {note}
+        </p>
       ))}
     </div>
   );

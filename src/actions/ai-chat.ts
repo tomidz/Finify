@@ -6,9 +6,10 @@ import {
   utcDayKey,
   type AiUsageStatus,
 } from "@/lib/ai/chat-store";
+import { logError } from "@/lib/log";
 import { createClient } from "@/lib/supabase/server";
-
-type ActionResult<T> = { data: T } | { error: string };
+import { dbError } from "@/lib/server/db-errors";
+import type { ActionResult } from "@/lib/action-result";
 
 export type AiSessionSummary = {
   id: string;
@@ -37,7 +38,7 @@ export async function getAiSessions(): Promise<
     .order("updated_at", { ascending: false })
     .limit(30);
 
-  if (error) return { error: "No se pudieron cargar las conversaciones" };
+  if (error) return dbError("getAiSessions", error, "No se pudieron cargar las conversaciones");
   return { data: data ?? [] };
 }
 
@@ -52,15 +53,17 @@ export async function getAiSessionMessages(
 
   const { data, error } = await supabase
     .from("ai_messages")
-    .select("id, role, parts")
+    .select("id, client_message_id, role, parts")
     .eq("session_id", sessionId)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true });
 
-  if (error) return { error: "No se pudo cargar la conversación" };
+  if (error) return dbError("getAiSessionMessages", error, "No se pudo cargar la conversación");
 
   return {
+    // The chat's own ids, so a retry or a regenerate points at the same rows.
     data: (data ?? []).map((row) => ({
-      id: row.id,
+      id: row.client_message_id ?? row.id,
       role: row.role as "user" | "assistant",
       parts: Array.isArray(row.parts) ? row.parts : [],
     })),
@@ -100,7 +103,14 @@ export async function extendAiQuota(): Promise<ActionResult<AiUsageStatus>> {
     day: utcDayKey(),
     extra_tokens: AI_DAILY_TOKEN_CAP,
   });
-  if (error) return { error: "No se pudo ampliar el límite" };
+  if (error) {
+    // The database counts too: another tab may have used the last one.
+    if (error.code === "23514") {
+      logError("extendAiQuota", error);
+      return { error: `Ya usaste las ${usage.maxExtensions} ampliaciones de hoy. Volvé mañana.` };
+    }
+    return dbError("extendAiQuota", error, "No se pudo ampliar el límite");
+  }
 
   return {
     data: {
@@ -125,6 +135,6 @@ export async function deleteAiSession(
     .delete()
     .eq("id", sessionId);
 
-  if (error) return { error: "No se pudo borrar la conversación" };
+  if (error) return dbError("deleteAiSession", error, "No se pudo borrar la conversación");
   return { data: null };
 }

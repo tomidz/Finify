@@ -1,8 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, Pencil, Trash2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Pencil, Plus, Tags, Trash2 } from "lucide-react";
+import { PageButton } from "@/components/page-button";
+import { RowActions } from "@/components/row-actions";
+import { StateCard } from "@/components/state-card";
+import { TruncatedText } from "@/components/truncated-text";
+import {
+  PageHeader,
+  PageHeaderActions,
+  PageHeaderDescription,
+  PageHeaderTitle,
+  PageHeaderTitleGroup,
+} from "@/components/ui/page-header";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -11,15 +22,34 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Skeleton } from "@/components/ui/skeleton";
+import { useConfirm } from "@/hooks/use-confirm";
 import { useBudgetCategories, useDeleteCategory } from "@/hooks/useBudget";
+import { useUsageCounts } from "@/hooks/useTransactions";
+import { useShortcut } from "@/lib/keyboard";
 import { BUDGET_CATEGORY_LABELS } from "@/types/budget";
 import type { BudgetCategory } from "@/types/budget";
 import { CategoryDialog } from "../_components/CategoryDialog";
 
+/**
+ * What deleting a category takes with it (FKs in 0006, 0004 and 0011): its
+ * budget lines and every month's plan are deleted; transactions, recurring
+ * templates and rules keep existing without a category.
+ */
+function deleteCategoryDescription(transactionCount: number | undefined) {
+  const uncategorized =
+    transactionCount === undefined
+      ? "sus transacciones, recurrentes y reglas quedan"
+      : transactionCount === 0
+        ? "sus recurrentes y reglas quedan"
+        : `sus ${transactionCount} ${transactionCount === 1 ? "transacción" : "transacciones"}, recurrentes y reglas quedan`;
+  return `Se borra su plan de todos los meses; ${uncategorized} sin categoría.`;
+}
+
 export default function BudgetCategoriesPage() {
-  const { data: categories, isLoading, isError, error } = useBudgetCategories();
+  const { data: categories, isLoading, isError, error, refetch } = useBudgetCategories();
+  const { data: usageCounts } = useUsageCounts();
   const deleteMutation = useDeleteCategory();
+  const confirm = useConfirm();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<BudgetCategory | null>(null);
 
@@ -27,6 +57,7 @@ export default function BudgetCategoriesPage() {
     setEditing(null);
     setDialogOpen(true);
   };
+  useShortcut("n", handleCreate);
 
   const handleEdit = (cat: BudgetCategory) => {
     setEditing(cat);
@@ -34,7 +65,14 @@ export default function BudgetCategoriesPage() {
   };
 
   const handleDelete = async (cat: BudgetCategory) => {
-    if (!confirm(`¿Eliminar la categoría "${cat.name}"?`)) return;
+    const confirmed = await confirm({
+      title: `¿Borrar "${cat.name}"?`,
+      description: deleteCategoryDescription(
+        !usageCounts ? undefined : (usageCounts.categoryCounts[cat.id] ?? 0),
+      ),
+      destructive: true,
+    });
+    if (!confirmed) return;
     try {
       await deleteMutation.mutateAsync(cat.id);
     } catch {
@@ -42,90 +80,102 @@ export default function BudgetCategoriesPage() {
     }
   };
 
-  if (isLoading) {
+  const content = (() => {
+    if (isLoading) {
+      return (
+        <StateCard variant="loading">
+          <Skeleton className="h-64 w-full rounded-md" />
+        </StateCard>
+      );
+    }
+
+    // A failed refresh keeps what is on screen (QueryProvider says it failed).
+    if (isError && error && !categories) {
+      return (
+        <StateCard
+          variant="error"
+          title="No se pudieron cargar las categorías"
+          error={error}
+          onRetry={() => void refetch()}
+        />
+      );
+    }
+
+    if (!categories || categories.length === 0) {
+      return (
+        <StateCard
+          variant="empty"
+          icon={Tags}
+          title="Sin categorías"
+          action={
+            <PageButton variant="outline" icon={Plus} onClick={handleCreate}>
+              Nueva categoría
+            </PageButton>
+          }
+        />
+      );
+    }
+
     return (
-      <div className="space-y-4">
-        <Skeleton className="h-10 w-48" />
-        <Skeleton className="h-64 w-full" />
-      </div>
-    );
-  }
-
-  if (isError && error) {
-    return (
-      <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-center">
-        <p className="text-destructive font-medium">Error al cargar categorías</p>
-        <p className="text-muted-foreground mt-1 text-sm">{error.message}</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Categorías</h1>
-          <p className="text-muted-foreground text-sm">
-            Creá categorías y asignales un tipo de movimiento.
-          </p>
-        </div>
-        <Button size="sm" onClick={handleCreate}>
-          <Plus className="mr-1 size-4" />
-          Nueva categoría
-        </Button>
-      </div>
-
       <div className="rounded-md border">
-        <Table>
+        <Table className="text-xs">
           <TableHeader>
             <TableRow>
               <TableHead>Nombre</TableHead>
               <TableHead>Tipo de movimiento</TableHead>
-              <TableHead className="w-24 text-right">Acciones</TableHead>
+              <TableHead className="w-12">
+                <span className="sr-only">Acciones</span>
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {!categories || categories.length === 0 ? (
-              <TableRow>
-                <TableCell
-                  colSpan={3}
-                  className="h-32 text-center text-muted-foreground"
-                >
-                  No hay categorías. Creá la primera.
+            {categories.map((cat) => (
+              <TableRow key={cat.id}>
+                <TableCell className="w-1/2 max-w-0 font-medium">
+                  <TruncatedText>{cat.name}</TruncatedText>
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {BUDGET_CATEGORY_LABELS[cat.category_type]}
+                </TableCell>
+                <TableCell className="py-1 text-right">
+                  <RowActions
+                    actions={[
+                      { label: "Editar", icon: Pencil, onSelect: () => handleEdit(cat) },
+                      {
+                        label: "Borrar",
+                        icon: Trash2,
+                        destructive: true,
+                        disabled: deleteMutation.isPending,
+                        onSelect: () => void handleDelete(cat),
+                      },
+                    ]}
+                  />
                 </TableCell>
               </TableRow>
-            ) : (
-              categories.map((cat) => (
-                <TableRow key={cat.id}>
-                  <TableCell className="font-medium">{cat.name}</TableCell>
-                  <TableCell>
-                    {BUDGET_CATEGORY_LABELS[cat.category_type]}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleEdit(cat)}
-                      >
-                        <Pencil className="size-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleDelete(cat)}
-                        disabled={deleteMutation.isPending}
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
+            ))}
           </TableBody>
         </Table>
       </div>
+    );
+  })();
+
+  return (
+    <div className="flex flex-col gap-6">
+      <PageHeader>
+        <PageHeaderTitleGroup>
+          <PageHeaderTitle breadcrumb={[{ label: "Presupuesto", href: "/budget" }]}>
+            Categorías
+          </PageHeaderTitle>
+          <PageHeaderDescription>Cada categoría tiene un tipo de movimiento.</PageHeaderDescription>
+        </PageHeaderTitleGroup>
+        <PageHeaderActions>
+          <PageButton icon={Plus} kbd="N" onClick={handleCreate}>
+            Nueva categoría
+          </PageButton>
+        </PageHeaderActions>
+      </PageHeader>
+
+      {content}
 
       <CategoryDialog
         category={editing}

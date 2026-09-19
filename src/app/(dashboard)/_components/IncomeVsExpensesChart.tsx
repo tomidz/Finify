@@ -10,18 +10,15 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { formatAmount, CATEGORY_COLORS } from "@/lib/format";
-import type { MonthSummary } from "@/hooks/useMonthSummary";
+import { chartAxisProps, formatCompactAmount } from "@/components/charts/axis";
+import { ChartCard } from "@/components/charts/chart-card";
+import { ChartTooltip } from "@/components/charts/chart-tooltip";
+import { CATEGORY_TYPE_COLORS, UNCATEGORIZED_COLOR } from "@/components/charts/palette";
+import type { PeriodSummary } from "@/lib/finance/period-summary";
 
 interface IncomeVsExpensesChartProps {
-  summary: MonthSummary;
+  /** Null while it loads. */
+  summary: PeriodSummary | null;
   currencySymbol: string;
 }
 
@@ -29,89 +26,70 @@ export function IncomeVsExpensesChart({
   summary,
   currencySymbol,
 }: IncomeVsExpensesChartProps) {
-  const data = useMemo(() => [
+  const data = useMemo(() => !summary ? [] : [
     {
       name: "Ingresos",
       value: summary.income,
-      fill: CATEGORY_COLORS.income,
+      fill: CATEGORY_TYPE_COLORS.income,
     },
     {
       name: "G. Esenciales",
       value: summary.essentialExpenses,
-      fill: CATEGORY_COLORS.essential_expenses,
+      fill: CATEGORY_TYPE_COLORS.essential_expenses,
     },
     {
       name: "G. Discrecionales",
       value: summary.discretionaryExpenses,
-      fill: CATEGORY_COLORS.discretionary_expenses,
+      fill: CATEGORY_TYPE_COLORS.discretionary_expenses,
     },
     {
       name: "Deudas",
       value: summary.debtPayments,
-      fill: CATEGORY_COLORS.debt_payments,
+      fill: CATEGORY_TYPE_COLORS.debt_payments,
     },
     {
       name: "Ahorros",
       value: summary.savings,
-      fill: CATEGORY_COLORS.savings,
+      fill: CATEGORY_TYPE_COLORS.savings,
     },
     {
       name: "Inversiones",
       value: summary.investments,
-      fill: CATEGORY_COLORS.investments,
+      fill: CATEGORY_TYPE_COLORS.investments,
     },
+    ...(summary.uncategorizedExpenses !== 0
+      ? [{ name: "Sin categoría", value: summary.uncategorizedExpenses, fill: UNCATEGORIZED_COLOR }]
+      : []),
   ], [summary]);
 
   const allZero = data.every((d) => d.value === 0);
 
   return (
-    <Card>
-      <CardHeader className="px-4 pt-4 pb-2">
-        <CardTitle className="text-sm font-semibold">
-          Ingresos vs Gastos
-        </CardTitle>
-        <CardDescription className="text-xs">
-          Desglose del mes por tipo de categoría.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="px-4 pb-4">
-        {allZero ? (
-          <div className="flex h-[250px] items-center justify-center">
-            <p className="text-muted-foreground text-sm">
-              Sin movimientos en este mes.
-            </p>
-          </div>
-        ) : (
-          <ResponsiveContainer width="100%" height={250}>
-            <BarChart data={data}>
-              <XAxis
-                dataKey="name"
-                tick={{ fontSize: 11 }}
-                axisLine={false}
-                tickLine={false}
-              />
-              <YAxis
-                tickFormatter={(v: number) => formatAmount(v)}
-                tick={{ fontSize: 11 }}
-                axisLine={false}
-                tickLine={false}
-                width={80}
-              />
-              <Tooltip
-                formatter={(v) => [
-                  `${currencySymbol} ${formatAmount(Number(v ?? 0))}`,
-                  "Monto",
-                ]}
-              />
-              <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                {data.map((entry) => (
-                  <Cell key={entry.name} fill={entry.fill} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        )}
-      </CardContent>
-    </Card>
+    <ChartCard
+      title="Ingresos vs gastos"
+      description="Por tipo de categoría."
+      loading={!summary}
+      empty={allZero}
+      emptyTitle="Sin movimientos"
+      name="income-vs-expenses"
+      resetKeys={[data]}
+    >
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data}>
+          <XAxis dataKey="name" {...chartAxisProps} />
+          <YAxis tickFormatter={formatCompactAmount} width={48} {...chartAxisProps} />
+          <Tooltip
+            isAnimationActive={false}
+            cursor={{ fill: "var(--muted)" }}
+            content={<ChartTooltip currency={currencySymbol} />}
+          />
+          <Bar dataKey="value" name="Monto" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+            {data.map((entry) => (
+              <Cell key={entry.name} fill={entry.fill} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </ChartCard>
   );
 }

@@ -1,0 +1,260 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`what the model is told > keeps the rules and the context 1`] = `
+"Sos el AI CFO de Finify, la app de finanzas personales del usuario.
+
+Tu trabajo: analizar sus gastos, presupuesto, inversiones, deudas y patrimonio, y responder con criterio de CFO: números concretos, tendencias y recomendaciones accionables.
+
+Reglas:
+- Los datos salen EXCLUSIVAMENTE de las tools. Nunca inventes montos, meses ni posiciones.
+- Si una tool devuelve { error }, decilo tal cual y no sigas como si el dato fuera cero.
+- Un dato que falta no es cero: null, "sin cotización" (fxMissing, rate_missing) o un error quieren decir que no se sabe; decilo así.
+- Si una consulta no trae datos, decí qué consultaste (qué tool y qué período).
+- Los montos en moneda base (base_amount, *Base, totales) ya están convertidos: no los vuelvas a convertir. Para convertir otro monto usá convert_currency.
+- Para totales de un período usá get_period_summary, que es el mismo cálculo del dashboard; get_transactions es para ver los movimientos.
+- Sos de solo lectura: no podés crear ni modificar nada. Si el usuario pide un cambio (registrar un gasto, editar el presupuesto), explicá en qué pantalla hacerlo.
+- No des asesoramiento financiero regulado; analizá los datos y presentá opciones con sus trade-offs.
+- Respondé en el idioma del usuario (por defecto español rioplatense). Montos con separador de miles y 0-2 decimales, con la moneda.
+- Sé selectivo: mostrá los números que cambian la conclusión, no volcados completos de datos. Usá tablas Markdown solo para comparaciones cortas."
+`;
+
+exports[`what the model is told > keeps the rules and the context 2`] = `
+"Contexto:
+- Moneda base: USD. Todos los totales están en esa moneda.
+- Hoy: 2026-09-18 (hora de Argentina).
+- Meses cargados: de Enero 2025 (id m-2025-01) a Septiembre 2026 (id m-2026-09). El mes en curso es Septiembre 2026 (id m-2026-09)."
+`;
+
+exports[`what the model is told > keeps the tools and their input schemas 1`] = `
+[
+  {
+    "description": "Meses cargados (id, año, mes), del más viejo al más nuevo. Usá los ids como monthId en las demás tools.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "get_months",
+  },
+  {
+    "description": "Cuentas (nombre, tipo, moneda, activa). No incluye saldos: usá get_account_balance o get_net_worth.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "get_accounts",
+  },
+  {
+    "description": "Saldo actual de una cuenta: amount en su moneda y base_amount en moneda base a la cotización de hoy (con rate_missing, base_amount es el valor de carga).",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "accountId": {
+          "description": "id de la cuenta (de get_accounts)",
+          "type": "string",
+        },
+      },
+      "required": [
+        "accountId",
+      ],
+      "type": "object",
+    },
+    "name": "get_account_balance",
+  },
+  {
+    "description": "Resumen de un mes o rango de meses, el mismo del dashboard: apertura, ingresos, gastos por tipo, resultado (ingresos − gastos), otros movimientos (inversiones, correcciones, comisiones, diferencia de cambio) y cierre, todo en moneda base; más el saldo de cada cuenta en su moneda. Usala para cualquier total de un período.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "endMonthId": {
+          "description": "id del mes final (de get_months); igual al inicial para un mes",
+          "type": "string",
+        },
+        "startMonthId": {
+          "description": "id del mes inicial (de get_months)",
+          "type": "string",
+        },
+      },
+      "required": [
+        "startMonthId",
+        "endMonthId",
+      ],
+      "type": "object",
+    },
+    "name": "get_period_summary",
+  },
+  {
+    "description": "Presupuesto de un mes: totales por grupo (ingresos, gastos, ahorro, inversiones) y cada categoría con plan, real, estado (favorable, watch, unfavorable, no-plan) y favorableVariance (positiva cuando va bien: bajo el plan en gastos, sobre el plan en el resto).",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "monthId": {
+          "description": "id del mes (de get_months)",
+          "type": "string",
+        },
+      },
+      "required": [
+        "monthId",
+      ],
+      "type": "object",
+    },
+    "name": "get_budget_summary",
+  },
+  {
+    "description": "Movimientos de un rango de meses (máximo 12), en moneda base a la cotización de su fecha. Cada fila trae base_amount con signo (+ entra, − sale; null en una transferencia, que solo mueve plata entre cuentas). Los totales cubren todo el rango y no suman transferencias: income y expenses en positivo, other (inversiones y correcciones) con signo. Las filas se cortan en 300 (truncated). Para totales de un período preferí get_period_summary.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "endMonthId": {
+          "description": "id del mes final (de get_months)",
+          "type": "string",
+        },
+        "startMonthId": {
+          "description": "id del mes inicial (de get_months)",
+          "type": "string",
+        },
+      },
+      "required": [
+        "startMonthId",
+        "endMonthId",
+      ],
+      "type": "object",
+    },
+    "name": "get_transactions",
+  },
+  {
+    "description": "Patrimonio de un año al cierre de su último mes, el mismo de la pantalla: activos por cuenta (caja e inversiones), pasivos, patrimonio neto y la evolución mensual. Cada mes a la cotización de su cierre; las inversiones a valor de mercado solo para el mes en curso, al costo para el resto. fxMissing: hay inversiones o deudas sin cotización fuera de los totales; cashAtBookValue: algún saldo sin cotización va a su valor de carga.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "year": {
+          "description": "año calendario, ej. 2026",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer",
+        },
+      },
+      "required": [
+        "year",
+      ],
+      "type": "object",
+    },
+    "name": "get_net_worth",
+  },
+  {
+    "description": "Lotes de inversión: instrumento, ticker, clase, cantidad, costo (en la moneda del lote), fecha de compra y cuenta.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "get_investments",
+  },
+  {
+    "description": "Ventas de inversiones con su resultado realizado (en moneda base; null sin cotización).",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "get_investment_sales",
+  },
+  {
+    "description": "Proyección del saldo total desde hoy hasta el cierre de los próximos meses, la misma del dashboard: lo ya cargado, las fechas de las recurrentes, el presupuesto y la mediana de los meses cerrados. Cada punto trae de qué fuentes salió.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "monthsAhead": {
+          "default": 6,
+          "maximum": 24,
+          "minimum": 1,
+          "type": "integer",
+        },
+      },
+      "required": [
+        "monthsAhead",
+      ],
+      "type": "object",
+    },
+    "name": "get_forecast",
+  },
+  {
+    "description": "Metas de ahorro con su progreso.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "get_savings_goals",
+  },
+  {
+    "description": "Fechas de las recurrentes de un mes, con las ya registradas marcadas (is_registered).",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "month": {
+          "maximum": 12,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "year": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer",
+        },
+      },
+      "required": [
+        "year",
+        "month",
+      ],
+      "type": "object",
+    },
+    "name": "get_pending_recurring",
+  },
+  {
+    "description": "Convierte un monto entre monedas a la cotización de una fecha (hoy si no se indica), con la fecha de la cotización usada. Solo para montos que no vienen ya en moneda base.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "type": "number",
+        },
+        "date": {
+          "description": "yyyy-MM-dd; hoy si se omite",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string",
+        },
+        "from": {
+          "description": "código de moneda, ej. EUR",
+          "type": "string",
+        },
+        "to": {
+          "description": "código de moneda, ej. USD",
+          "type": "string",
+        },
+      },
+      "required": [
+        "amount",
+        "from",
+        "to",
+      ],
+      "type": "object",
+    },
+    "name": "convert_currency",
+  },
+]
+`;

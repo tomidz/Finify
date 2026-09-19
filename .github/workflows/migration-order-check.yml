@@ -3,10 +3,23 @@ name: Migration order
 # Runs on every PR (no `paths:` filter) so this required check always
 # reports a status — branch protection treats path-filtered workflows as
 # permanently pending, blocking merges on PRs that don't touch migrations.
-# The job itself short-circuits when no new migrations are present.
+#
+# Guarantees:
+#   - merged migrations are append-only (no edits, deletes or renames);
+#   - new migrations are numbered strictly above main's latest;
+#   - no two migration files share a number (also checked on main);
+#   - destructive DDL in a new migration carries an explicit
+#     `-- destructive-ok: <reason>` comment.
+# Every git call fails the job on error: a check that cannot compute its
+# inputs must not pass.
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -19,46 +32,96 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: Checkout PR
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Compare migration timestamps against main
+      - name: No duplicate migration numbers
         run: |
           set -euo pipefail
-
-          # Highest timestamp on main, defaulting to 0 if there are no migrations.
-          # -r is load-bearing: without it ls-tree prints the directory entry
-          # itself ("supabase/migrations"), the grep matches nothing and
-          # base_max is always 0 — the check silently passed everything.
-          base_max=$(git ls-tree -r --name-only origin/${{ github.base_ref }} -- supabase/migrations \
+          files=$(git ls-files 'supabase/migrations/*.sql')
+          dupes=$(printf '%s\n' "$files" \
             | xargs -rn1 basename \
-            | grep -E '^[0-9]+_' \
+            | { grep -E '^[0-9]+_' || true; } \
+            | cut -d_ -f1 \
+            | sort \
+            | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "::error::Duplicate migration numbers: $dupes"
+            exit 1
+          fi
+          echo "No duplicate migration numbers."
+
+      # Escape hatch for the one legitimate case: a merged migration that FAILED
+      # to apply in production (never recorded in schema_migrations) and must be
+      # fixed in place. Requires the `migration-override` label on the PR.
+      - name: Merged migrations are append-only
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'migration-override')
+        run: |
+          set -euo pipefail
+          base="origin/${{ github.base_ref }}"
+          changed=$(git diff --name-only --diff-filter=MDRCT "$base...HEAD" -- supabase/migrations)
+          if [ -n "$changed" ]; then
+            while IFS= read -r file; do
+              echo "::error file=$file::Merged migrations are immutable. Add a new migration instead of editing, deleting or renaming this one."
+            done <<< "$changed"
+            exit 1
+          fi
+          echo "No merged migration was modified."
+
+      - name: New migrations are numbered above main
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          base="origin/${{ github.base_ref }}"
+
+          # -r is load-bearing: without it ls-tree prints the directory entry
+          # itself and the max is always 0.
+          base_files=$(git ls-tree -r --name-only "$base" -- supabase/migrations)
+          base_max=$(printf '%s\n' "$base_files" \
+            | xargs -rn1 basename \
+            | { grep -E '^[0-9]+_' || true; } \
             | cut -d_ -f1 \
             | sort -n \
-            | tail -n 1 \
-            || true)
+            | tail -n 1)
           base_max=${base_max:-0}
 
-          # New migration files introduced by this PR.
-          mapfile -t new_files < <(git diff --name-only --diff-filter=A origin/${{ github.base_ref }}...HEAD -- supabase/migrations \
-            | grep -E '^supabase/migrations/[0-9]+_' \
-            || true)
+          added=$(git diff --name-only --diff-filter=A "$base...HEAD" -- supabase/migrations \
+            | { grep -E '^supabase/migrations/[0-9]+_' || true; })
 
-          if [ ${#new_files[@]} -eq 0 ]; then
+          if [ -z "$added" ]; then
             echo "No new migrations in this PR."
             exit 0
           fi
 
-          echo "Latest counter/timestamp on main: $base_max"
-
-          for file in "${new_files[@]}"; do
+          echo "Latest migration number on main: $base_max"
+          while IFS= read -r file; do
             ts=$(basename "$file" | cut -d_ -f1)
-            if [ "$ts" -le "$base_max" ]; then
-              echo "::error file=$file::Migration counter $ts is not strictly greater than main's latest $base_max. Two PRs likely raced — rename the file with a fresher counter."
+            if [ "$((10#$ts))" -le "$((10#$base_max))" ]; then
+              echo "::error file=$file::Migration number $ts is not strictly greater than main's latest $base_max. Rename the file with the next free number."
               exit 1
             fi
             echo "OK: $file ($ts > $base_max)"
-            base_max="$ts"
-          done
+          done <<< "$added"
+
+      - name: Destructive DDL requires an explicit reason
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          base="origin/${{ github.base_ref }}"
+          added=$(git diff --name-only --diff-filter=A "$base...HEAD" -- supabase/migrations \
+            | { grep -E '\.sql$' || true; })
+          status=0
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            # Only statements count: rollback notes in `--` comments name DROPs.
+            statements=$(sed 's/--.*$//' "$file")
+            if grep -Eiq '(drop[[:space:]]+(table|column|type|schema|view)|rename[[:space:]]+(to|column)|truncate[[:space:]]|alter[[:space:]]+column[^;]*[[:space:]]type[[:space:]]|set[[:space:]]+not[[:space:]]+null)' <<< "$statements" \
+              && ! grep -Eq -- '-- destructive-ok: .+' "$file"; then
+              echo "::error file=$file::Destructive DDL found. Production has real data: split into additive steps, or add '-- destructive-ok: <reason>' after confirming it is safe."
+              status=1
+            fi
+          done <<< "$added"
+          exit "$status"

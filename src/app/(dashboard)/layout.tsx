@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { cookies } from "next/headers";
 import { requireUser } from "@/lib/supabase/auth";
 import { AppSidebar } from "@/components/app-sidebar";
+import { CommandPalette } from "@/components/command-palette";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
   SidebarInset,
@@ -28,6 +29,7 @@ async function DashboardLayoutContent({
         <header className="sticky top-0 z-40 flex h-16 shrink-0 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60">
           <SidebarTrigger className="-ml-1" />
           <div className="ml-auto flex items-center gap-2">
+            <CommandPalette />
             <ThemeToggle />
           </div>
         </header>

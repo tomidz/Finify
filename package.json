@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:types:generate": "bash scripts/db-types.sh",
-    "db:types:check": "bash scripts/db-types-check.sh"
+    "db:types:check": "bash scripts/db-types-check.sh",
+    "db:test": "supabase test db"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.16",
@@ -57,6 +58,7 @@
     "@tailwindcss/typography": "^0.5.20",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.6",
+    "fast-check": "^4.10.1",
     "postcss": "^8.5.6",
     "shadcn": "^3.8.5",
     "tailwindcss": "^4.2.1",

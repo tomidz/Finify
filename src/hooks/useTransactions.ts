@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  keepPreviousData,
   useQuery,
   useMutation,
   useQueryClient,
@@ -10,7 +11,6 @@ import {
 import {
   getTransactions,
   getTransactionsPage,
-  getTransactionsForRange,
   getBaseCurrency,
   getUsageCounts,
   createTransaction,
@@ -19,45 +19,40 @@ import {
   deleteTransaction,
   restoreTransaction,
 } from "@/actions/transactions";
+import { getPeriodSummary } from "@/actions/period-summary";
 import type { CreateTransactionInput, CreateTransferInput, UpdateTransactionInput } from "@/lib/validations/transaction.schema";
 import type { TransactionFeedFilters } from "@/types/transactions";
+import { invalidateLedger } from "@/lib/query-keys";
 import { toast } from "sonner";
+import { errorMessage, unwrapResult } from "@/lib/action-result";
 
 export const TRANSACTION_KEYS = {
   all: ["transactions"] as const,
   list: (monthId: string) => ["transactions", "month", monthId] as const,
+  summary: (startMonthId: string, endMonthId: string) =>
+    ["transactions", "summary", startMonthId, endMonthId] as const,
   feed: (monthId: string, filters: TransactionFeedFilters) =>
     ["transactions", "month", monthId, "feed", filters] as const,
-  range: (start: string, end: string) =>
-    ["transactions", "range", start, end] as const,
   usageCounts: ["transactions", "usage-counts"] as const,
   baseCurrency: ["preferences", "base-currency"] as const,
 };
 
-async function invalidateFinancialQueries(queryClient: ReturnType<typeof useQueryClient>) {
-  await Promise.all([
-    queryClient.invalidateQueries({ queryKey: TRANSACTION_KEYS.all }),
-    queryClient.invalidateQueries({ queryKey: ["months"] }),
-    queryClient.invalidateQueries({ queryKey: ["opening-balances"] }),
-    queryClient.invalidateQueries({ queryKey: ["budget", "summary"] }),
-    queryClient.invalidateQueries({ queryKey: ["budget", "summary-range"] }),
-    queryClient.invalidateQueries({ queryKey: ["net-worth"] }),
-    queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
-    queryClient.invalidateQueries({ queryKey: ["forecast"] }),
-    // Per-account balance/history queries — the balance-adjustment dialog
-    // computes deltas from these; stale values produce wrong corrections.
-    queryClient.invalidateQueries({ queryKey: ["account"] }),
-  ]);
+
+/** Opening, income, expenses, other movements and closing of a month range. */
+export function usePeriodSummary(startMonthId: string | null, endMonthId: string | null) {
+  return useQuery({
+    queryKey: TRANSACTION_KEYS.summary(startMonthId ?? "", endMonthId ?? ""),
+    enabled: !!startMonthId && !!endMonthId,
+    queryFn: async () => unwrapResult(await getPeriodSummary(startMonthId!, endMonthId!)),
+    placeholderData: keepPreviousData,
+    staleTime: 30_000,
+  });
 }
 
 export function useBaseCurrency() {
   return useQuery({
     queryKey: TRANSACTION_KEYS.baseCurrency,
-    queryFn: async () => {
-      const result = await getBaseCurrency();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getBaseCurrency()),
     staleTime: Infinity,
     gcTime: Infinity,
   });
@@ -66,11 +61,7 @@ export function useBaseCurrency() {
 export function useSuspenseBaseCurrency() {
   return useSuspenseQuery({
     queryKey: TRANSACTION_KEYS.baseCurrency,
-    queryFn: async () => {
-      const result = await getBaseCurrency();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getBaseCurrency()),
     staleTime: Infinity,
     gcTime: Infinity,
   });
@@ -79,11 +70,7 @@ export function useSuspenseBaseCurrency() {
 export function useUsageCounts() {
   return useQuery({
     queryKey: TRANSACTION_KEYS.usageCounts,
-    queryFn: async () => {
-      const result = await getUsageCounts();
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    queryFn: async () => unwrapResult(await getUsageCounts()),
     staleTime: 5 * 60_000,
     gcTime: 15 * 60_000,
   });
@@ -95,9 +82,7 @@ export function useTransactions(monthId: string | null) {
     enabled: !!monthId,
     queryFn: async () => {
       if (!monthId) return [];
-      const result = await getTransactions(monthId);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
+      return unwrapResult(await getTransactions(monthId));
     },
     staleTime: 30_000,
     gcTime: 10 * 60_000,
@@ -118,35 +103,16 @@ export function useInfiniteTransactions(
       if (!monthId) {
         return { items: [], nextOffset: null };
       }
-      const result = await getTransactionsPage({
-        monthId,
-        limit,
-        offset: pageParam,
-        ...filters,
-      });
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
+      return unwrapResult(
+        await getTransactionsPage({
+          monthId,
+          limit,
+          offset: pageParam,
+          ...filters,
+        }),
+      );
     },
     getNextPageParam: (lastPage) => lastPage.nextOffset,
-    staleTime: 30_000,
-    gcTime: 10 * 60_000,
-    refetchOnWindowFocus: false,
-  });
-}
-
-export function useTransactionsForRange(
-  startMonthId: string | null,
-  endMonthId: string | null
-) {
-  return useQuery({
-    queryKey: TRANSACTION_KEYS.range(startMonthId ?? "", endMonthId ?? ""),
-    enabled: !!startMonthId && !!endMonthId,
-    queryFn: async () => {
-      if (!startMonthId || !endMonthId) return [];
-      const result = await getTransactionsForRange(startMonthId, endMonthId);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
     staleTime: 30_000,
     gcTime: 10 * 60_000,
     refetchOnWindowFocus: false,
@@ -156,22 +122,21 @@ export function useTransactionsForRange(
 export function useCreateTransaction() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: CreateTransactionInput) => {
-      const result = await createTransaction(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: CreateTransactionInput) =>
+      unwrapResult(await createTransaction(input)),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: TRANSACTION_KEYS.all });
     },
     onError: (error: Error) => {
-      toast.error(error.message);
+      toast.error(errorMessage(error));
     },
     onSuccess: () => {
       toast.success("Transacción creada correctamente");
     },
-    onSettled: async () => {
-      await invalidateFinancialQueries(queryClient);
+    // Not awaited: the dialog closes as soon as the write lands and the
+    // figures refresh behind it.
+    onSettled: () => {
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -179,22 +144,20 @@ export function useCreateTransaction() {
 export function useCreateTransfer() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: CreateTransferInput) => {
-      const result = await createTransfer(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: CreateTransferInput) => unwrapResult(await createTransfer(input)),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: TRANSACTION_KEYS.all });
     },
     onError: (error: Error) => {
-      toast.error(error.message);
+      toast.error(errorMessage(error));
     },
     onSuccess: () => {
       toast.success("Transferencia creada correctamente");
     },
-    onSettled: async () => {
-      await invalidateFinancialQueries(queryClient);
+    // Not awaited: the dialog closes as soon as the write lands and the
+    // figures refresh behind it.
+    onSettled: () => {
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -202,49 +165,62 @@ export function useCreateTransfer() {
 export function useUpdateTransaction() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: UpdateTransactionInput) => {
-      const result = await updateTransaction(input);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (input: UpdateTransactionInput) =>
+      unwrapResult(await updateTransaction(input)),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: TRANSACTION_KEYS.all });
     },
     onError: (error: Error) => {
-      toast.error(error.message);
+      toast.error(errorMessage(error));
     },
     onSuccess: () => {
       toast.success("Transacción actualizada correctamente");
     },
-    onSettled: async () => {
-      await invalidateFinancialQueries(queryClient);
+    // Not awaited: the dialog closes as soon as the write lands and the
+    // figures refresh behind it.
+    onSettled: () => {
+      invalidateLedger(queryClient);
     },
   });
+}
+
+function isFeedData(value: unknown): value is { pages: { items: unknown[] }[] } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "pages" in value &&
+    Array.isArray(value.pages) &&
+    value.pages.every(
+      (page: unknown) => typeof page === "object" && page !== null && "items" in page && Array.isArray(page.items),
+    )
+  );
 }
 
 export function useDeleteTransaction() {
   const queryClient = useQueryClient();
   const restore = useRestoreTransaction();
   return useMutation({
-    mutationFn: async (id: string) => {
-      const result = await deleteTransaction(id);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (id: string) => unwrapResult(await deleteTransaction(id)),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: TRANSACTION_KEYS.all });
       const snapshots = queryClient.getQueriesData({
         queryKey: TRANSACTION_KEYS.all,
       });
 
+      const keep = (tx: unknown) =>
+        typeof tx === "object" && tx !== null && "id" in tx ? tx.id !== id : true;
       for (const [key, value] of snapshots) {
-        if (!Array.isArray(value)) continue;
-        queryClient.setQueryData(
-          key,
-          value.filter((tx) =>
-            typeof tx === "object" && tx !== null && "id" in tx ? tx.id !== id : true,
-          ),
-        );
+        if (Array.isArray(value)) {
+          queryClient.setQueryData(key, value.filter(keep));
+          continue;
+        }
+        // The feed's pages ({ pages: [{ items }] }).
+        if (isFeedData(value)) {
+          queryClient.setQueryData(key, {
+            ...value,
+            pages: value.pages.map((page) => ({ ...page, items: page.items.filter(keep) })),
+          });
+        }
       }
 
       return { snapshots };
@@ -253,7 +229,7 @@ export function useDeleteTransaction() {
       for (const [key, value] of context?.snapshots ?? []) {
         queryClient.setQueryData(key, value);
       }
-      toast.error(error.message);
+      toast.error(errorMessage(error));
     },
     onSuccess: (_, deletedId) => {
       toast.success("Transacción eliminada", {
@@ -264,8 +240,10 @@ export function useDeleteTransaction() {
         duration: 8000,
       });
     },
-    onSettled: async () => {
-      await invalidateFinancialQueries(queryClient);
+    // Not awaited: the dialog closes as soon as the write lands and the
+    // figures refresh behind it.
+    onSettled: () => {
+      invalidateLedger(queryClient);
     },
   });
 }
@@ -273,22 +251,20 @@ export function useDeleteTransaction() {
 export function useRestoreTransaction() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      const result = await restoreTransaction(id);
-      if ("error" in result) throw new Error(result.error);
-      return result.data;
-    },
+    mutationFn: async (id: string) => unwrapResult(await restoreTransaction(id)),
     onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: TRANSACTION_KEYS.all });
     },
     onError: (error: Error) => {
-      toast.error(error.message);
+      toast.error(errorMessage(error));
     },
     onSuccess: () => {
       toast.success("Transacción restaurada");
     },
-    onSettled: async () => {
-      await invalidateFinancialQueries(queryClient);
+    // Not awaited: the dialog closes as soon as the write lands and the
+    // figures refresh behind it.
+    onSettled: () => {
+      invalidateLedger(queryClient);
     },
   });
 }

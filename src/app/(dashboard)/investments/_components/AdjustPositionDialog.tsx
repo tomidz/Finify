@@ -28,11 +28,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Callout } from "@/components/callout";
+import { MoneyInput } from "@/components/money-input";
+import { Spinner } from "@/components/ui/spinner";
 import { useAdjustInvestmentPosition } from "@/hooks/useInvestments";
-import { formatAmount } from "@/lib/format";
-import { formatNumberInput, parseNumberInput } from "@/lib/utils";
-import { AlertCircle } from "lucide-react";
+import { parseMoney } from "@/lib/format";
 import type { HoldingPosition } from "@/types/investments";
+import {
+  QUANTITY_DECIMALS,
+  exceedsQuantity,
+  formatExactQuantity,
+  formatUnitPrice,
+  STORED_AMOUNT_DECIMALS,
+} from "./investment-format";
 
 type FormValues = {
   direction: "increase" | "decrease";
@@ -55,6 +63,8 @@ export function AdjustPositionDialog({
 }: AdjustPositionDialogProps) {
   const adjustMutation = useAdjustInvestmentPosition();
   const isPending = adjustMutation.isPending;
+  // Stored with 4 decimals in every currency (a fee of US$ 0,3517 is kept).
+  const moneyDecimals = STORED_AMOUNT_DECIMALS;
 
   const form = useForm<FormValues>({
     defaultValues: {
@@ -82,29 +92,29 @@ export function AdjustPositionDialog({
 
   const preview = useMemo(() => {
     if (!holding) return null;
-    const qty = parseNumberInput(watchedQty);
+    const qty = parseMoney(watchedQty);
     if (!qty || qty <= 0) return null;
+    if (watchedDirection === "decrease" && exceedsQuantity(qty, holding.total_quantity)) return null;
     const delta = watchedDirection === "increase" ? qty : -qty;
-    const newQuantity = holding.total_quantity + delta;
-    if (newQuantity < 0) return null;
-    return { newQuantity };
+    // Reducing it all can leave the float drift of the sum below 0.
+    return { newQuantity: Math.max(0, holding.total_quantity + delta) };
   }, [holding, watchedDirection, watchedQty]);
 
   const onSubmit = async (values: FormValues) => {
     if (!holding) return;
-    const quantity = parseNumberInput(values.quantity);
-    const costBasis = parseNumberInput(values.cost_basis) ?? 0;
+    const quantity = parseMoney(values.quantity);
+    const costBasis = parseMoney(values.cost_basis) ?? 0;
 
-    if (!quantity || quantity <= 0) {
+    if (quantity == null || quantity <= 0) {
       form.setError("quantity", { message: "Cantidad inválida" });
       return;
     }
     if (
       values.direction === "decrease" &&
-      quantity > holding.total_quantity
+      exceedsQuantity(quantity, holding.total_quantity)
     ) {
       form.setError("quantity", {
-        message: `Máximo disponible: ${formatAmount(holding.total_quantity)}`,
+        message: `Máximo disponible: ${formatExactQuantity(holding.total_quantity)}`,
       });
       return;
     }
@@ -143,9 +153,8 @@ export function AdjustPositionDialog({
         <DialogHeader>
           <DialogTitle>Ajustar {holding.asset_name}</DialogTitle>
           <DialogDescription>
-            Posición actual: {formatAmount(holding.total_quantity)} unidades en{" "}
-            {holding.account_name} • Costo prom: {sym}{" "}
-            {formatAmount(holding.avg_cost_per_unit)}
+            {formatExactQuantity(holding.total_quantity)} en {holding.account_name} · Costo
+            prom. {sym} {formatUnitPrice(holding.avg_cost_per_unit)}
           </DialogDescription>
         </DialogHeader>
 
@@ -155,7 +164,7 @@ export function AdjustPositionDialog({
             className="space-y-4"
             noValidate
           >
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <FormField
                 control={form.control}
                 name="direction"
@@ -189,18 +198,11 @@ export function AdjustPositionDialog({
                   <FormItem>
                     <FormLabel>Cantidad</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
+                      <MoneyInput
+                        decimals={QUANTITY_DECIMALS}
                         placeholder="0"
                         disabled={isPending}
-                        value={field.value}
-                        onChange={(e) =>
-                          form.setValue(
-                            "quantity",
-                            formatNumberInput(e.target.value, 7),
-                          )
-                        }
+                        {...field}
                       />
                     </FormControl>
                     <FormMessage />
@@ -209,7 +211,7 @@ export function AdjustPositionDialog({
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               {watchedDirection === "increase" && (
                 <FormField
                   control={form.control}
@@ -218,18 +220,11 @@ export function AdjustPositionDialog({
                     <FormItem>
                       <FormLabel>Costo base (opcional)</FormLabel>
                       <FormControl>
-                        <Input
-                          type="text"
-                          inputMode="decimal"
-                          placeholder="0,00"
+                        <MoneyInput
+                          currency={sym}
+                          decimals={moneyDecimals}
                           disabled={isPending}
-                          value={field.value}
-                          onChange={(e) =>
-                            form.setValue(
-                              "cost_basis",
-                              formatNumberInput(e.target.value, 4),
-                            )
-                          }
+                          {...field}
                         />
                       </FormControl>
                       <FormMessage />
@@ -253,24 +248,20 @@ export function AdjustPositionDialog({
               />
             </div>
 
-            <div className="flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
-              <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              <span>
-                El ajuste no mueve cash: solo corrige la cantidad de la
-                posición (intereses en especie, comisiones, reconciliación con
-                el exchange).
-              </span>
-            </div>
+            <Callout>
+              No mueve efectivo: solo corrige la cantidad (intereses en especie,
+              comisiones, conciliación con el exchange).
+            </Callout>
 
             {preview && (
-              <div className="rounded-md border bg-muted/30 p-3 text-sm space-y-1">
+              <div className="flex flex-col gap-1 rounded-md border bg-muted/30 p-3 text-xs tabular-nums">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Cantidad actual</span>
-                  <span>{formatAmount(holding.total_quantity)}</span>
+                  <span>{formatExactQuantity(holding.total_quantity)}</span>
                 </div>
-                <div className="flex justify-between font-medium border-t pt-1 mt-1">
-                  <span>Cantidad luego del ajuste</span>
-                  <span>{formatAmount(preview.newQuantity)}</span>
+                <div className="mt-1 flex justify-between border-t pt-1 font-medium">
+                  <span>Luego del ajuste</span>
+                  <span>{formatExactQuantity(preview.newQuantity)}</span>
                 </div>
               </div>
             )}
@@ -303,7 +294,8 @@ export function AdjustPositionDialog({
                 Cancelar
               </Button>
               <Button type="submit" disabled={isPending}>
-                {isPending ? "Ajustando..." : "Ajustar posición"}
+                {!isPending ? null : <Spinner />}
+                Ajustar posición
               </Button>
             </DialogFooter>
           </form>

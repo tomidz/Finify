@@ -18,7 +18,8 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import type { Account } from "@/types/accounts";
+import { ACCOUNT_TYPE_LABELS, type Account } from "@/types/accounts";
+import { filterByKeywords } from "@/components/command-filter";
 
 interface AccountComboboxProps {
   accounts: Account[];
@@ -28,6 +29,10 @@ interface AccountComboboxProps {
   disabled?: boolean;
   /** Optional balance per account id (in the account's own currency). */
   balanceByAccount?: Record<string, number>;
+  /** From FormControl: the trigger takes the field's id and error state. */
+  id?: string;
+  "aria-invalid"?: boolean;
+  "aria-describedby"?: string;
 }
 
 export function AccountCombobox({
@@ -37,6 +42,7 @@ export function AccountCombobox({
   placeholder = "Seleccionar cuenta",
   disabled = false,
   balanceByAccount,
+  ...field
 }: AccountComboboxProps) {
   const [open, setOpen] = useState(false);
 
@@ -45,8 +51,20 @@ export function AccountCombobox({
     selectedAccount && balanceByAccount
       ? balanceByAccount[selectedAccount.id]
       : undefined;
+  // Accounts may share name and currency with a different type (0031).
+  const hasNamesake = (account: Account) =>
+    accounts.some(
+      (other) =>
+        other.id !== account.id &&
+        other.name === account.name &&
+        other.currency === account.currency,
+    );
+  const accountLabel = (account: Account) =>
+    `${account.name} (${account.currency})${
+      hasNamesake(account) ? ` · ${ACCOUNT_TYPE_LABELS[account.account_type]}` : ""
+    }`;
   const displayLabel = selectedAccount
-    ? `${selectedAccount.name} (${selectedAccount.currency})${
+    ? `${accountLabel(selectedAccount)}${
         selectedBalance != null ? ` · ${formatAmount(selectedBalance)}` : ""
       }`
     : placeholder;
@@ -60,6 +78,7 @@ export function AccountCombobox({
           aria-expanded={open}
           className="w-full justify-between font-normal"
           disabled={disabled}
+          {...field}
         >
           <span className="truncate">{displayLabel}</span>
           <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
@@ -70,7 +89,7 @@ export function AccountCombobox({
         align="start"
         portal={false}
       >
-        <Command>
+        <Command filter={filterByKeywords}>
           <CommandInput placeholder="Buscar cuenta..." />
           <CommandList>
             <CommandEmpty>No se encontraron cuentas.</CommandEmpty>
@@ -80,7 +99,12 @@ export function AccountCombobox({
                 return (
                   <CommandItem
                     key={account.id}
-                    value={`${account.name} (${account.currency})`}
+                    value={account.id}
+                    keywords={[
+                      account.name,
+                      account.currency,
+                      ACCOUNT_TYPE_LABELS[account.account_type],
+                    ]}
                     onSelect={() => {
                       onValueChange(account.id);
                       setOpen(false);
@@ -94,6 +118,9 @@ export function AccountCombobox({
                     />
                     <span className="flex-1 truncate">
                       {account.name} ({account.currency})
+                      <span className="text-muted-foreground ml-1 text-xs">
+                        {ACCOUNT_TYPE_LABELS[account.account_type]}
+                      </span>
                     </span>
                     {balance != null && (
                       <span className="text-muted-foreground ml-2 whitespace-nowrap text-xs tabular-nums">

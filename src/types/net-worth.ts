@@ -77,6 +77,12 @@ export interface NwYearSummary {
 export interface AccountNetWorthSummary {
   year: number;
   month: number;
+  /**
+   * The date balances are valued at: the month's last day, or today while it
+   * runs. Null without accounts.
+   */
+  close_date: string | null;
+  /** Leaves out positions without a rate; cash without one counts at its stored base. */
   total: number;
   accounts: {
     id: string;
@@ -84,15 +90,31 @@ export interface AccountNetWorthSummary {
     account_type: string;
     currency: string;
     currency_symbol: string;
+    /** Inactive accounts are listed while they hold a balance or a position. */
+    is_active: boolean;
     balance: number;
+    /**
+     * At the close-date rate; without one (a currency no provider quotes),
+     * the base amounts stored with its movements, and balance_fx_missing.
+     */
     balance_base: number;
+    /** The base amounts stored when the balance's movements were recorded. */
+    balance_book_base: number;
+    balance_fx_missing: boolean;
+    /** The date of the rate a foreign balance was valued at. */
+    balance_fx_rate_date: string | null;
     investment_value: number;
-    investment_value_base: number;
+    /** Null when a lot or sale of the account has no rate to the base currency. */
+    investment_value_base: number | null;
+    /** The oldest rate the investments were valued at. */
+    investment_fx_rate_date: string | null;
   }[];
 }
 
 export interface LiabilitiesSummary {
   year: number;
+  /** Null without debts. */
+  close_date: string | null;
   total: number;
   items: {
     item_id: string;
@@ -100,15 +122,23 @@ export interface LiabilitiesSummary {
     currency: string;
     currency_symbol: string;
     amount: number;
+    /** Null when the debt's currency has no rate to the base currency. */
     amount_base: number | null;
+    fx_rate_date: string | null;
   }[];
 }
 
 export interface NetWorthEvolutionPoint {
   month: number;
+  /** The date the month is valued at: its last day, or today while it runs. */
+  closeDate: string;
   assets: number;
   liabilities: number;
   netWorth: number;
+  /** The month leaves out positions or debts without a rate to the base currency. */
+  fxMissing: boolean;
+  /** The month counts a cash balance without a rate at its stored base amounts. */
+  cashFxMissing: boolean;
 }
 
 /* ------------------------------------------------------------------ */

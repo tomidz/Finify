@@ -1,0 +1,24 @@
+const BASE = "http://finify.invalid";
+
+/**
+ * Returns `raw` only if it is a same-origin path; otherwise `fallback`.
+ *
+ * Browsers normalize `\` to `/`, so `/\evil.com` becomes the protocol-relative
+ * `//evil.com`: rejecting only a literal `//` prefix is not enough. Resolving
+ * against a fixed base and comparing origins catches every other form.
+ */
+export function safeRedirectPath(
+  raw: string | null | undefined,
+  fallback = "/",
+): string {
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return fallback;
+  if (raw.includes("\\") || /[\u0000-\u001f\u007f]/.test(raw)) return fallback;
+
+  try {
+    const url = new URL(raw, BASE);
+    if (url.origin !== BASE) return fallback;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return fallback;
+  }
+}

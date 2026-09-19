@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
+import { logError } from "@/lib/log";
 import { clearAuthCookies } from "@/lib/supabase/cookies";
 import { createClient } from "@/lib/supabase/server";
 
@@ -12,8 +13,9 @@ export async function GET(request: Request) {
   // más abajo, así que el logout nunca queda a medias.
   try {
     await supabase.auth.signOut();
-  } catch {
+  } catch (e) {
     // Ignorado a propósito: el borrado de cookies es lo que corta la sesión.
+    logError("logout", e);
   }
 
   const target = new URL("/auth/login", url.origin);

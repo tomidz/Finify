@@ -6,29 +6,32 @@ import {
   CreateTransferSchema,
   UpdateTransactionSchema,
 } from "@/lib/validations/transaction.schema";
-import { getOrFetchFxRate } from "@/actions/fx";
+import { getOrFetchFxRate } from "@/lib/server/fx";
+import {
+  normalizeSignedAmount,
+  type SignedTransactionType,
+} from "@/lib/ledger/sign";
+import {
+  buildTransferLines,
+  transferRatesNeeded,
+  type LedgerLine,
+} from "@/lib/ledger/transfer";
 import type {
-  Transaction,
   TransactionFeedFilters,
   TransactionFeedPage,
   TransactionWithRelations,
-  TransactionAmountWithRelations,
 } from "@/types/transactions";
-import {
-  createMonth,
-  getMonthsInRange,
-  pickEarliestMonthId,
-  recalculateOpeningBalances,
-} from "@/actions/months";
+import { getServerContext, loadBaseCurrency } from "@/lib/server/context";
+import { loadMonthsInRange } from "@/lib/server/months";
+import { loadTransactionsForMonths } from "@/lib/server/transactions";
+import { ledgerRpcError } from "@/lib/server/ledger-rpc";
+import { dbError } from "@/lib/server/db-errors";
+import { logError } from "@/lib/log";
+import type { ActionResult } from "@/lib/action-result";
 
-type ActionResult<T> = { data: T } | { error: string };
+type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
-type TransactionAmountInput = {
-  account_id: string;
-  amount: number;
-  exchange_rate: number;
-  base_amount: number;
-};
+type TransactionAmountInput = LedgerLine;
 
 type TransactionFeedInput = {
   monthId: string;
@@ -74,7 +77,7 @@ function mapTransactionRows(
   }));
 }
 
-async function buildTransferLines({
+async function resolveTransferLines({
   date,
   sourceAccount,
   destAccount,
@@ -93,106 +96,82 @@ async function buildTransferLines({
 }): Promise<ActionResult<TransactionAmountInput[]>> {
   const baseCurrencyResult = await getBaseCurrency();
   if ("error" in baseCurrencyResult) return baseCurrencyResult;
-
   const baseCurrency = baseCurrencyResult.data;
-  // Source debit (gross) = transfer amount + fee, in source currency.
-  // Destination credit = converted transfer amount, in dest currency.
-  const transferAbsolute = Math.abs(sourceAmount);
-  const feeAbsolute = Math.max(0, fee);
-  const sourceDebit = transferAbsolute + feeAbsolute;
-  const destinationAbsolute = Math.abs(destinationAmount);
 
-  // base_amount is per-leg in user's base currency.
-  let sourceBase: number;
-  let destBase: number;
-
-  if (sourceAccount.currency === baseCurrency) {
-    sourceBase = sourceDebit;
-  } else {
-    const fxResult = await getOrFetchFxRate({
-      date,
-      from: sourceAccount.currency,
-      to: baseCurrency,
-    });
+  const needed = transferRatesNeeded({
+    source: sourceAccount,
+    destination: destAccount,
+    baseCurrency,
+  });
+  const rates: { source?: number; destination?: number } = {};
+  if (needed.source) {
+    const fxResult = await getOrFetchFxRate({ date, from: sourceAccount.currency, to: baseCurrency });
     if ("error" in fxResult) return fxResult;
-    sourceBase = sourceDebit * fxResult.data;
+    rates.source = fxResult.data;
   }
-
-  if (destAccount.currency === baseCurrency) {
-    destBase = destinationAbsolute;
-  } else if (destAccount.currency === sourceAccount.currency) {
-    // Same currency on both sides: dest in base = transferAbsolute converted using same rate as source
-    destBase = (sourceBase * transferAbsolute) / sourceDebit;
-  } else {
-    const fxResult = await getOrFetchFxRate({
-      date,
-      from: destAccount.currency,
-      to: baseCurrency,
-    });
+  if (needed.destination) {
+    const fxResult = await getOrFetchFxRate({ date, from: destAccount.currency, to: baseCurrency });
     if ("error" in fxResult) return fxResult;
-    destBase = destinationAbsolute * fxResult.data;
+    rates.destination = fxResult.data;
   }
 
   return {
-    data: [
-      {
-        account_id: sourceAccount.id,
-        amount: -sourceDebit,
-        exchange_rate: exchangeRate,
-        base_amount: -Math.abs(sourceBase),
-      },
-      {
-        account_id: destAccount.id,
-        amount: destinationAbsolute,
-        exchange_rate: exchangeRate,
-        base_amount: Math.abs(destBase),
-      },
-    ],
+    data: buildTransferLines({
+      source: sourceAccount,
+      destination: destAccount,
+      baseCurrency,
+      sourceAmount,
+      destinationAmount,
+      exchangeRate,
+      fee,
+      rates,
+    }),
   };
 }
 
-function normalizeSignedAmount(
-  transactionType: "income" | "expense" | "correction",
-  value: number
-): number {
-  if (transactionType === "income") return Math.abs(value);
-  if (transactionType === "expense") return -Math.abs(value);
-  return value;
-}
+type LedgerHeader = {
+  transaction_type: string;
+  date: string;
+  description: string;
+  category_id: string | null;
+  notes: string | null;
+  fee: number;
+};
 
-async function resolveMonthIdFromDate(
-  date: string
-): Promise<ActionResult<string>> {
-  const parsedDate = new Date(`${date}T00:00:00`);
-  if (Number.isNaN(parsedDate.getTime())) {
-    return { error: "Fecha inválida" };
+/**
+ * Writes the header, the legs, the month and the opening balances in one
+ * database transaction (0045). Creates without `id`; replaces the header and
+ * legs of transaction `id` with it.
+ */
+async function saveLedgerTransaction(
+  supabase: SupabaseServerClient,
+  header: LedgerHeader,
+  legs: TransactionAmountInput[],
+  id?: string,
+): Promise<ActionResult<{ id: string }>> {
+  const { data, error } = await supabase.rpc("save_ledger_transaction", {
+    p_header: header,
+    p_legs: legs,
+    p_id: id,
+  });
+  if (error) {
+    return ledgerRpcError(
+      "save_ledger_transaction",
+      error,
+      "No se pudo guardar la transacción",
+    );
   }
-
-  const year = parsedDate.getFullYear();
-  const month = parsedDate.getMonth() + 1;
-  const monthResult = await createMonth(year, month);
-  if ("error" in monthResult) return { error: monthResult.error };
-  return { data: monthResult.data.id };
+  return { data: { id: data } };
 }
 
 // --- GET BASE CURRENCY ---
 export async function getBaseCurrency(): Promise<ActionResult<string>> {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return { error: "No autenticado" };
-
-    const { data } = await supabase
-      .from("user_preferences")
-      .select("base_currency")
-      .eq("user_id", user.id)
-      .single();
-
-    return { data: data?.base_currency ?? "USD" };
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
+    return await loadBaseCurrency(ctx);
   } catch (e) {
-    console.error("getBaseCurrency:", e);
+    logError("getBaseCurrency", e);
     return { error: "Error al obtener la moneda base" };
   }
 }
@@ -212,7 +191,7 @@ export async function getUsageCounts(): Promise<
     const categoryCounts: Record<string, number> = {};
 
     const { data, error } = await supabase.rpc("usage_counts");
-    if (error) return { error: error.message };
+    if (error) return dbError("getUsageCounts", error, "Error al obtener conteos de uso");
 
     for (const row of (data ?? []) as Array<{
       entity_type: string;
@@ -230,7 +209,8 @@ export async function getUsageCounts(): Promise<
     }
 
     return { data: { accountCounts, categoryCounts } };
-  } catch {
+  } catch (e) {
+    logError("getUsageCounts", e);
     return { error: "Error al obtener conteos de uso" };
   }
 }
@@ -240,112 +220,13 @@ export async function getTransactions(
   monthId: string
 ): Promise<ActionResult<TransactionWithRelations[]>> {
   try {
-    const baseCurrencyResult = await getBaseCurrency();
-    if ("error" in baseCurrencyResult) return baseCurrencyResult;
-    const baseCurrency = baseCurrencyResult.data;
-
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return { error: "No autenticado" };
-
-    const { data, error } = await supabase
-      .from("transactions")
-      .select(
-        `
-        *,
-        budget_categories ( name, category_type ),
-        transaction_amounts (
-          id,
-          transaction_id,
-          account_id,
-          amount,
-          original_currency,
-          exchange_rate,
-          base_amount,
-          created_at,
-          accounts ( name, currency ),
-          currencies!original_currency ( symbol )
-        )
-      `
-      )
-      .eq("user_id", user.id)
-      .eq("month_id", monthId)
-      .is("deleted_at", null)
-      .order("date", { ascending: false })
-      .order("created_at", { ascending: false });
-
-    if (error) return { error: error.message };
-
-    const fxCache = new Map<string, number>();
-
-    const getRate = async (date: string, from: string): Promise<number> => {
-      if (from === baseCurrency) return 1;
-      const key = `${date}:${from}:${baseCurrency}`;
-      const cached = fxCache.get(key);
-      if (cached != null) return cached;
-      const result = await getOrFetchFxRate({ date, from, to: baseCurrency });
-      if ("error" in result) {
-        throw new Error(result.error);
-      }
-      fxCache.set(key, result.data);
-      return result.data;
-    };
-
-    const mapped: TransactionWithRelations[] = [];
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for (const row of (data ?? []) as any[]) {
-      const txDate = row.date as string;
-      const amounts: TransactionAmountWithRelations[] = [];
-
-      for (const line of row.transaction_amounts ?? []) {
-        const amount = Number(line.amount);
-        const originalCurrency = line.original_currency as string;
-        let currentBaseAmount: number | undefined;
-        if (txDate && originalCurrency && amount) {
-          const rate = await getRate(txDate, originalCurrency);
-          currentBaseAmount = amount * rate;
-        }
-
-        amounts.push({
-          id: line.id,
-          transaction_id: line.transaction_id,
-          account_id: line.account_id,
-          amount,
-          original_currency: originalCurrency,
-          exchange_rate: Number(line.exchange_rate),
-          base_amount: Number(line.base_amount),
-          created_at: line.created_at,
-          account_name: line.accounts?.name ?? "",
-          account_currency_symbol:
-            line.currencies?.symbol ?? line.original_currency,
-          current_base_amount: currentBaseAmount,
-        });
-      }
-
-      mapped.push({
-        id: row.id,
-        user_id: row.user_id,
-        month_id: row.month_id,
-        category_id: row.category_id,
-        transaction_type: row.transaction_type,
-        date: row.date,
-        description: row.description,
-        notes: row.notes,
-        fee: Number(row.fee ?? 0),
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-        category_name: row.budget_categories?.name ?? null,
-        category_type: row.budget_categories?.category_type ?? null,
-        amounts,
-      });
-    }
-
-    return { data: mapped };
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
+    const baseCurrency = await loadBaseCurrency(ctx);
+    if ("error" in baseCurrency) return baseCurrency;
+    return await loadTransactionsForMonths(ctx, [monthId], baseCurrency.data);
   } catch (e) {
-    console.error("getTransactions:", e);
+    logError("getTransactions", e);
     return { error: "Error al obtener las transacciones" };
   }
 }
@@ -374,7 +255,7 @@ export async function getTransactionsPage(
       p_category_type: input.category_type ?? undefined,
     });
 
-    if (error) return { error: error.message };
+    if (error) return dbError("getTransactionsPage", error, "Error al obtener las transacciones");
 
     const items = mapTransactionRows((data ?? []) as Array<Record<string, unknown>>);
 
@@ -385,7 +266,7 @@ export async function getTransactionsPage(
       },
     };
   } catch (e) {
-    console.error("getTransactionsPage:", e);
+    logError("getTransactionsPage", e);
     return { error: "Error al obtener las transacciones" };
   }
 }
@@ -394,120 +275,22 @@ export async function getTransactionsForRange(
   startMonthId: string,
   endMonthId: string
 ): Promise<ActionResult<TransactionWithRelations[]>> {
-  const monthsResult = await getMonthsInRange(startMonthId, endMonthId);
-  if ("error" in monthsResult) return monthsResult;
-  const monthIds = monthsResult.data.map((m) => m.id);
-  if (monthIds.length === 0) return { data: [] };
-
   try {
-    const baseCurrencyResult = await getBaseCurrency();
-    if ("error" in baseCurrencyResult) return baseCurrencyResult;
-    const baseCurrency = baseCurrencyResult.data;
+    const ctx = await getServerContext();
+    if (!ctx) return { error: "No autenticado" };
 
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return { error: "No autenticado" };
+    const monthsResult = await loadMonthsInRange(ctx, startMonthId, endMonthId);
+    if ("error" in monthsResult) return monthsResult;
 
-    const { data, error } = await supabase
-      .from("transactions")
-      .select(
-        `
-        *,
-        budget_categories ( name, category_type ),
-        transaction_amounts (
-          id,
-          transaction_id,
-          account_id,
-          amount,
-          original_currency,
-          exchange_rate,
-          base_amount,
-          created_at,
-          accounts ( name, currency ),
-          currencies!original_currency ( symbol )
-        )
-      `
-      )
-      .eq("user_id", user.id)
-      .in("month_id", monthIds)
-      .is("deleted_at", null)
-      .order("date", { ascending: false })
-      .order("created_at", { ascending: false });
-
-    if (error) return { error: error.message };
-
-    const fxCache = new Map<string, number>();
-
-    const getRate = async (date: string, from: string): Promise<number> => {
-      if (from === baseCurrency) return 1;
-      const key = `${date}:${from}:${baseCurrency}`;
-      const cached = fxCache.get(key);
-      if (cached != null) return cached;
-      const result = await getOrFetchFxRate({ date, from, to: baseCurrency });
-      if ("error" in result) {
-        throw new Error(result.error);
-      }
-      fxCache.set(key, result.data);
-      return result.data;
-    };
-
-    const mapped: TransactionWithRelations[] = [];
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for (const row of (data ?? []) as any[]) {
-      const cat = row.budget_categories;
-      const category = Array.isArray(cat) ? cat[0] : cat;
-      const txDate = row.date as string;
-      const amounts: TransactionAmountWithRelations[] = [];
-
-      for (const line of row.transaction_amounts ?? []) {
-        const amount = Number(line.amount);
-        const originalCurrency = line.original_currency as string;
-        let currentBaseAmount: number | undefined;
-        if (txDate && originalCurrency && amount) {
-          const rate = await getRate(txDate, originalCurrency);
-          currentBaseAmount = amount * rate;
-        }
-
-        amounts.push({
-          id: line.id,
-          transaction_id: line.transaction_id,
-          account_id: line.account_id,
-          amount,
-          original_currency: originalCurrency,
-          exchange_rate: Number(line.exchange_rate),
-          base_amount: Number(line.base_amount),
-          created_at: line.created_at,
-          account_name: line.accounts?.name ?? "",
-          account_currency_symbol:
-            line.currencies?.symbol ?? line.original_currency,
-          current_base_amount: currentBaseAmount,
-        });
-      }
-
-      mapped.push({
-        id: row.id,
-        user_id: row.user_id,
-        month_id: row.month_id,
-        category_id: row.category_id,
-        transaction_type: row.transaction_type,
-        date: row.date,
-        description: row.description,
-        notes: row.notes,
-        fee: Number(row.fee ?? 0),
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-        category_name: category?.name ?? null,
-        category_type: category?.category_type ?? null,
-        amounts,
-      });
-    }
-
-    return { data: mapped };
+    const baseCurrency = await loadBaseCurrency(ctx);
+    if ("error" in baseCurrency) return baseCurrency;
+    return await loadTransactionsForMonths(
+      ctx,
+      monthsResult.data.map((m) => m.id),
+      baseCurrency.data,
+    );
   } catch (e) {
-    console.error("getTransactionsForRange:", e);
+    logError("getTransactionsForRange", e);
     return { error: "Error al obtener las transacciones" };
   }
 }
@@ -515,7 +298,7 @@ export async function getTransactionsForRange(
 // --- CREATE TRANSACTION ---
 export async function createTransaction(
   input: unknown
-): Promise<ActionResult<Transaction>> {
+): Promise<ActionResult<{ id: string }>> {
   try {
     const parsed = CreateTransactionSchema.safeParse(input);
     if (!parsed.success) {
@@ -529,96 +312,28 @@ export async function createTransaction(
       data: { user },
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
-    const resolvedMonth = await resolveMonthIdFromDate(parsed.data.date);
-    if ("error" in resolvedMonth) return { error: resolvedMonth.error };
 
-    const amountLines = parsed.data.amounts;
-    const accountIds = [...new Set(amountLines.map((line) => line.account_id))];
-    const { data: accounts, error: accountError } = await supabase
-      .from("accounts")
-      .select("id, currency")
-      .in("id", accountIds)
-      .eq("user_id", user.id)
-      .returns<{ id: string; currency: string }[]>();
+    // The schema only lets income, expense and correction through.
+    const transactionType = parsed.data.transaction_type as SignedTransactionType;
 
-    if (accountError) return { error: accountError.message };
-    if (!accounts || accounts.length !== accountIds.length) {
-      return { error: "Cuenta no encontrada" };
-    }
-
-    if (parsed.data.transaction_type === "transfer") {
-      return { error: "Usá createTransfer para transferencias" };
-    }
-    const transactionType = parsed.data.transaction_type as
-      | "income"
-      | "expense"
-      | "correction";
-
-    const { data: transaction, error: txError } = await supabase
-      .from("transactions")
-      .insert({
-        user_id: user.id,
-        month_id: resolvedMonth.data,
-        category_id: parsed.data.category_id,
-        transaction_type: parsed.data.transaction_type,
+    return await saveLedgerTransaction(
+      supabase,
+      {
+        transaction_type: transactionType,
         date: parsed.data.date,
         description: parsed.data.description,
+        category_id: parsed.data.category_id,
         notes: parsed.data.notes,
-      })
-      .select()
-      .single();
-
-    if (txError) {
-      if (txError.code === "23503") {
-        return { error: "Cuenta o categoría no encontrada" };
-      }
-      return { error: txError.message };
-    }
-
-    const accountById = new Map(accounts.map((acc) => [acc.id, acc.currency]));
-
-    const rows = amountLines.map((line) => {
-      const signedAmount = normalizeSignedAmount(
-        transactionType,
-        line.amount
-      );
-      const signedBaseAmount = normalizeSignedAmount(
-        transactionType,
-        line.base_amount
-      );
-
-      return {
-        transaction_id: transaction.id,
-        account_id: line.account_id,
-        amount: signedAmount,
-        original_currency: accountById.get(line.account_id) ?? "USD",
-        exchange_rate: line.exchange_rate,
-        base_amount: signedBaseAmount,
-      };
-    });
-
-    const { error: lineError } = await supabase
-      .from("transaction_amounts")
-      .insert(rows);
-
-    if (lineError) {
-      try {
-        await supabase.from("transactions").delete().eq("id", transaction.id);
-      } catch (cleanupErr) {
-        console.error("Cleanup failed after transaction line insert error:", cleanupErr);
-      }
-      if (lineError.code === "23503") {
-        return { error: "Cuenta no encontrada" };
-      }
-      return { error: lineError.message };
-    }
-
-    // Recalculate opening balances for subsequent months
-    await recalculateOpeningBalances(resolvedMonth.data);
-
-    return { data: transaction as Transaction };
+        fee: 0,
+      },
+      parsed.data.amounts.map((line) => ({
+        ...line,
+        amount: normalizeSignedAmount(transactionType, line.amount),
+        base_amount: normalizeSignedAmount(transactionType, line.base_amount),
+      })),
+    );
   } catch (e) {
-    console.error("createTransaction:", e);
+    logError("createTransaction", e);
     return { error: "Error al crear la transacción" };
   }
 }
@@ -626,7 +341,7 @@ export async function createTransaction(
 // --- CREATE TRANSFER (two linked rows) ---
 export async function createTransfer(
   input: unknown
-): Promise<ActionResult<Transaction>> {
+): Promise<ActionResult<{ id: string }>> {
   try {
     const parsed = CreateTransferSchema.safeParse(input);
     if (!parsed.success) {
@@ -640,32 +355,29 @@ export async function createTransfer(
       data: { user },
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
-    const resolvedMonth = await resolveMonthIdFromDate(parsed.data.date);
-    if ("error" in resolvedMonth) return { error: resolvedMonth.error };
 
     // Lookup both accounts and currencies (maybeSingle avoids throwing on 0 rows)
-    const { data: sourceAccount } = await supabase
-      .from("accounts")
-      .select("id, currency")
-      .eq("id", parsed.data.source_account_id)
-      .eq("user_id", user.id)
-      .maybeSingle();
+    const accountById = (id: string) =>
+      supabase
+        .from("accounts")
+        .select("id, currency")
+        .eq("id", id)
+        .eq("user_id", user.id)
+        .maybeSingle();
+    const [source, destination] = await Promise.all([
+      accountById(parsed.data.source_account_id),
+      accountById(parsed.data.destination_account_id),
+    ]);
+    const lookupError = source.error ?? destination.error;
+    if (lookupError) return dbError("createTransfer", lookupError, "No se pudieron leer las cuentas");
+    const sourceAccount = source.data;
+    const destAccount = destination.data;
 
     if (!sourceAccount) return { error: "Cuenta origen no encontrada" };
 
-    const { data: destAccount } = await supabase
-      .from("accounts")
-      .select("id, currency")
-      .eq("id", parsed.data.destination_account_id)
-      .eq("user_id", user.id)
-      .maybeSingle();
-
     if (!destAccount) return { error: "Cuenta destino no encontrada" };
 
-    // Build the legs BEFORE inserting the header: an FX failure here used to
-    // leave an orphan 0-leg transfer visible in the feed but invisible to
-    // balances (happened in production with future-dated transfers).
-    const transferLinesResult = await buildTransferLines({
+    const transferLinesResult = await resolveTransferLines({
       date: parsed.data.date,
       sourceAccount,
       destAccount,
@@ -676,56 +388,20 @@ export async function createTransfer(
     });
     if ("error" in transferLinesResult) return transferLinesResult;
 
-    const transferLines = transferLinesResult.data;
-
-    const { data: transaction, error: txError } = await supabase
-      .from("transactions")
-      .insert({
-        user_id: user.id,
-        month_id: resolvedMonth.data,
-        category_id: null,
-        transaction_type: "transfer" as const,
+    return await saveLedgerTransaction(
+      supabase,
+      {
+        transaction_type: "transfer",
         date: parsed.data.date,
         description: parsed.data.description,
+        category_id: null,
         notes: parsed.data.notes,
         fee: parsed.data.fee ?? 0,
-      })
-      .select()
-      .single();
-
-    if (txError) return { error: txError.message };
-
-    const rows = transferLines.map((line) => ({
-      transaction_id: transaction.id,
-      account_id: line.account_id,
-      amount: line.amount,
-      original_currency:
-        line.account_id === sourceAccount.id
-          ? sourceAccount.currency
-          : destAccount.currency,
-      exchange_rate: line.exchange_rate,
-      base_amount: line.base_amount,
-    }));
-
-    const { error: lineError } = await supabase
-      .from("transaction_amounts")
-      .insert(rows);
-
-    if (lineError) {
-      try {
-        await supabase.from("transactions").delete().eq("id", transaction.id);
-      } catch (cleanupErr) {
-        console.error("Cleanup failed after transfer line insert error:", cleanupErr);
-      }
-      return { error: lineError.message };
-    }
-
-    // Recalculate opening balances for subsequent months
-    await recalculateOpeningBalances(resolvedMonth.data);
-
-    return { data: transaction as Transaction };
+      },
+      transferLinesResult.data,
+    );
   } catch (e) {
-    console.error("createTransfer:", e);
+    logError("createTransfer", e);
     return { error: "Error al crear la transferencia" };
   }
 }
@@ -800,7 +476,7 @@ function buildLegacyAmountLines(
 // --- UPDATE TRANSACTION ---
 export async function updateTransaction(
   input: unknown
-): Promise<ActionResult<Transaction>> {
+): Promise<ActionResult<{ id: string }>> {
   try {
     const parsed = UpdateTransactionSchema.safeParse(input);
     if (!parsed.success) {
@@ -827,54 +503,50 @@ export async function updateTransaction(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    const { data: existing } = await supabase
-      .from("transactions")
-      .select(
-        "id, transaction_type, month_id, date, fee, category_id, description, notes, source_investment_id, source_investment_sale_id",
-      )
-      .eq("id", id)
-      .eq("user_id", user.id)
-      .is("deleted_at", null)
-      .single();
+    const [{ data: existing, error: existingError }, { data: currentLines, error: linesError }] =
+      await Promise.all([
+        supabase
+          .from("transactions")
+          .select("id, transaction_type, date, fee, category_id, description, notes")
+          .eq("id", id)
+          .eq("user_id", user.id)
+          .is("deleted_at", null)
+          .maybeSingle(),
+        supabase
+          .from("transaction_amounts")
+          .select("account_id, amount, exchange_rate, base_amount")
+          .eq("transaction_id", id),
+      ]);
 
+    const readError = existingError ?? linesError;
+    if (readError) return dbError("updateTransaction", readError, "No se pudo leer la transacción");
     if (!existing) return { error: "Transacción no encontrada" };
-    if (transaction_type && transaction_type !== existing.transaction_type) {
-      return { error: "No se puede cambiar el tipo de transacción" };
-    }
-    if (existing.source_investment_id || existing.source_investment_sale_id) {
-      return {
-        error:
-          "Esta corrección está vinculada a una inversión y solo puede editarse modificando la inversión asociada.",
-      };
-    }
 
-    let nextMonthId: string | undefined;
-    if (updates.date) {
-      const resolvedMonth = await resolveMonthIdFromDate(updates.date);
-      if ("error" in resolvedMonth) return { error: resolvedMonth.error };
-      nextMonthId = resolvedMonth.data;
-    }
-
-    const payload = {
-      ...updates,
-      ...(nextMonthId ? { month_id: nextMonthId } : {}),
+    // The function replaces the whole transaction: omitted fields keep their
+    // stored value, and so do the legs when no amount is sent.
+    const storedLines: TransactionAmountInput[] = (currentLines ?? []).map((line) => ({
+      account_id: line.account_id,
+      amount: Number(line.amount),
+      exchange_rate: Number(line.exchange_rate),
+      base_amount: Number(line.base_amount),
+    }));
+    const header: LedgerHeader = {
+      transaction_type: transaction_type ?? existing.transaction_type,
+      date: updates.date ?? existing.date,
+      description: updates.description ?? existing.description,
+      category_id:
+        updates.category_id === undefined ? existing.category_id : updates.category_id,
+      notes: updates.notes === undefined ? existing.notes : updates.notes,
+      fee: updates.fee ?? Number(existing.fee ?? 0),
     };
-
-    // Read + validate + build everything BEFORE any write, so an FX or
-    // validation failure can't leave the header updated with stale legs.
-    // currentLines doubles as the restore snapshot if the leg swap fails.
-    const { data: currentLines } = await supabase
-      .from("transaction_amounts")
-      .select("account_id, amount, exchange_rate, base_amount, original_currency")
-      .eq("transaction_id", id);
 
     let amountLines = amounts ?? null;
 
     if (existing.transaction_type === "transfer") {
       const sourceLine = amountLines?.find((line) => line.amount < 0) ??
-        currentLines?.find((line) => line.amount < 0);
+        storedLines.find((line) => line.amount < 0);
       const destinationLine = amountLines?.find((line) => line.amount > 0) ??
-        currentLines?.find((line) => line.amount > 0);
+        storedLines.find((line) => line.amount > 0);
 
       const sourceAccountId = source_account_id ?? sourceLine?.account_id;
       const destinationAccountId =
@@ -884,21 +556,20 @@ export async function updateTransaction(
         return { error: "Cuenta origen o destino no encontrada" };
       }
 
-      const { data: transferAccounts } = await supabase
+      const { data: transferAccounts, error: accountsError } = await supabase
         .from("accounts")
         .select("id, currency")
         .in("id", [sourceAccountId, destinationAccountId])
         .eq("user_id", user.id)
         .returns<{ id: string; currency: string }[]>();
-
-      if (!transferAccounts || transferAccounts.length !== 2) {
-        return { error: "Cuenta no encontrada" };
+      if (accountsError) {
+        return dbError("updateTransaction", accountsError, "No se pudieron leer las cuentas");
       }
 
-      const sourceAccount = transferAccounts.find(
+      const sourceAccount = transferAccounts?.find(
         (account) => account.id === sourceAccountId,
       );
-      const destAccount = transferAccounts.find(
+      const destAccount = transferAccounts?.find(
         (account) => account.id === destinationAccountId,
       );
 
@@ -906,15 +577,14 @@ export async function updateTransaction(
         return { error: "Cuenta no encontrada" };
       }
 
-      const nextFee = updates.fee ?? Number(existing.fee ?? 0);
       // sourceLine.amount already includes existing fee; subtract it to recover the net transfer amount
       const existingFee = Number(existing.fee ?? 0);
       const inferredSourceNet = Math.max(
         0,
         Math.abs(sourceLine?.amount ?? 0) - existingFee,
       );
-      const transferLinesResult = await buildTransferLines({
-        date: updates.date ?? existing.date,
+      const transferLinesResult = await resolveTransferLines({
+        date: header.date,
         sourceAccount,
         destAccount,
         sourceAmount: amount ?? inferredSourceNet,
@@ -922,7 +592,7 @@ export async function updateTransaction(
           base_amount ?? Math.abs(destinationLine?.amount ?? 0),
         exchangeRate:
           exchange_rate ?? sourceLine?.exchange_rate ?? destinationLine?.exchange_rate ?? 1,
-        fee: nextFee,
+        fee: header.fee,
       });
       if ("error" in transferLinesResult) return transferLinesResult;
       amountLines = transferLinesResult.data;
@@ -936,124 +606,37 @@ export async function updateTransaction(
           source_account_id,
           destination_account_id,
         },
-        currentLines ?? []
+        storedLines
       );
     }
 
-    let rows: {
-      transaction_id: string;
-      account_id: string;
-      amount: number;
-      original_currency: string;
-      exchange_rate: number;
-      base_amount: number;
-    }[] | null = null;
-
-    if (amountLines) {
-      const accountIds = [...new Set(amountLines.map((line) => line.account_id))];
-      const { data: accounts } = await supabase
-        .from("accounts")
-        .select("id, currency")
-        .in("id", accountIds)
-        .eq("user_id", user.id)
-        .returns<{ id: string; currency: string }[]>();
-
-      if (!accounts || accounts.length !== accountIds.length) {
-        return { error: "Cuenta no encontrada" };
-      }
-
-      const accountById = new Map(accounts.map((acc) => [acc.id, acc.currency]));
-
-      rows = amountLines.map((line) => ({
-        transaction_id: id,
-        account_id: line.account_id,
-        amount: line.amount,
-        original_currency: accountById.get(line.account_id) ?? "USD",
-        exchange_rate: line.exchange_rate,
-        base_amount: line.base_amount,
-      }));
-    }
-
-    // --- Writes start here. Header first; if the leg swap fails afterwards,
-    // restore the snapshot legs and revert the header so no half-updated
-    // transaction survives.
-    const { data: updatedTransaction, error: txError } = await supabase
-      .from("transactions")
-      .update(payload)
-      .eq("id", id)
-      .eq("user_id", user.id)
-      .select()
-      .single();
-
-    if (txError) return { error: txError.message };
-
-    if (rows) {
-      const revertHeader = async () => {
-        const { error: revertError } = await supabase
-          .from("transactions")
-          .update({
-            date: existing.date,
-            month_id: existing.month_id,
-            category_id: existing.category_id,
-            description: existing.description,
-            notes: existing.notes,
-            fee: existing.fee,
-          })
-          .eq("id", id)
-          .eq("user_id", user.id);
-        if (revertError) {
-          console.error("updateTransaction: header revert failed:", revertError);
-        }
-      };
-
-      const { error: deleteLinesError } = await supabase
-        .from("transaction_amounts")
-        .delete()
-        .eq("transaction_id", id);
-
-      if (deleteLinesError) {
-        await revertHeader();
-        return { error: deleteLinesError.message };
-      }
-
-      const { error: insertLinesError } = await supabase
-        .from("transaction_amounts")
-        .insert(rows);
-
-      if (insertLinesError) {
-        if (currentLines && currentLines.length > 0) {
-          const { error: restoreError } = await supabase
-            .from("transaction_amounts")
-            .insert(
-              currentLines.map((line) => ({ ...line, transaction_id: id })),
-            );
-          if (restoreError) {
-            console.error(
-              "updateTransaction: leg restore failed — transaction left without legs:",
-              restoreError,
-            );
-          }
-        }
-        await revertHeader();
-        return { error: insertLinesError.message };
-      }
-    }
-
-    // Recalculate opening balances starting from the earlier of (old month, new month).
-    // The recalc cascades to all later months, so we only need to anchor at the earliest
-    // affected month — otherwise we'd compute the new month from stale state and clobber it.
-    const earliestAffectedMonthId = await pickEarliestMonthId(
-      [existing.month_id, nextMonthId].filter(Boolean) as string[],
-    );
-    if (earliestAffectedMonthId) {
-      await recalculateOpeningBalances(earliestAffectedMonthId);
-    }
-
-    return { data: updatedTransaction as Transaction };
+    return await saveLedgerTransaction(supabase, header, amountLines ?? storedLines, id);
   } catch (e) {
-    console.error("updateTransaction:", e);
+    logError("updateTransaction", e);
     return { error: "Error al actualizar la transacción" };
   }
+}
+
+async function setTransactionDeleted(
+  supabase: SupabaseServerClient,
+  id: string,
+  deleted: boolean,
+): Promise<ActionResult<null>> {
+  const { error } = await supabase.rpc("set_ledger_transaction_deleted", {
+    p_id: id,
+    p_deleted: deleted,
+  });
+  if (error?.code === "23505") {
+    return { error: "Esa ocurrencia de la recurrente ya tiene otra transacción." };
+  }
+  if (error) {
+    return ledgerRpcError(
+      "set_ledger_transaction_deleted",
+      error,
+      deleted ? "Error al eliminar la transacción" : "Error al restaurar la transacción",
+    );
+  }
+  return { data: null };
 }
 
 // --- DELETE TRANSACTION (soft-delete) ---
@@ -1067,61 +650,9 @@ export async function deleteTransaction(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    const { data: tx } = await supabase
-      .from("transactions")
-      .select("month_id, source_investment_id, source_investment_sale_id")
-      .eq("id", id)
-      .eq("user_id", user.id)
-      .is("deleted_at", null)
-      .maybeSingle();
-
-    if (!tx) return { error: "Transacción no encontrada" };
-
-    if (tx.source_investment_id) {
-      return {
-        error:
-          "Esta corrección fue generada por una compra de inversión. Eliminá la inversión para revertirla.",
-      };
-    }
-    if (tx.source_investment_sale_id) {
-      return {
-        error:
-          "Esta corrección fue generada por una venta de inversión. Eliminá la venta para revertirla.",
-      };
-    }
-
-    // A debt payment lives in three places (transaction, activity, snapshot).
-    // Deleting only the transaction restored the cash but left the debt
-    // reduced and a payment in the history with no money behind it.
-    const { data: linkedActivity } = await supabase
-      .from("debt_activities")
-      .select("id")
-      .eq("transaction_id", id)
-      .limit(1)
-      .maybeSingle();
-    if (linkedActivity) {
-      return {
-        error:
-          "Esta transacción es un pago de deuda. Gestionalo desde la página de Deudas para mantener el saldo consistente.",
-      };
-    }
-
-    const { error } = await supabase
-      .from("transactions")
-      .update({ deleted_at: new Date().toISOString() })
-      .eq("id", id)
-      .eq("user_id", user.id);
-
-    if (error) return { error: error.message };
-
-    // Recalculate opening balances for subsequent months
-    if (tx.month_id) {
-      await recalculateOpeningBalances(tx.month_id);
-    }
-
-    return { data: null };
+    return await setTransactionDeleted(supabase, id, true);
   } catch (e) {
-    console.error("deleteTransaction:", e);
+    logError("deleteTransaction", e);
     return { error: "Error al eliminar la transacción" };
   }
 }
@@ -1137,33 +668,9 @@ export async function restoreTransaction(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    const { data: tx } = await supabase
-      .from("transactions")
-      .select("month_id")
-      .eq("id", id)
-      .eq("user_id", user.id)
-      .not("deleted_at", "is", null)
-      .maybeSingle();
-
-    if (!tx) return { error: "Transacción no encontrada" };
-
-    const { error } = await supabase
-      .from("transactions")
-      .update({ deleted_at: null })
-      .eq("id", id)
-      .eq("user_id", user.id)
-      .not("deleted_at", "is", null);
-
-    if (error) return { error: error.message };
-
-    // Recalculate opening balances for subsequent months
-    if (tx.month_id) {
-      await recalculateOpeningBalances(tx.month_id);
-    }
-
-    return { data: null };
+    return await setTransactionDeleted(supabase, id, false);
   } catch (e) {
-    console.error("restoreTransaction:", e);
+    logError("restoreTransaction", e);
     return { error: "Error al restaurar la transacción" };
   }
 }

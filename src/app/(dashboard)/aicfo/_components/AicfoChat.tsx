@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
+import { toast } from "sonner";
 import { DefaultChatTransport } from "ai";
 import type { InferAgentUIMessage } from "ai";
 import {
   AlertTriangle,
   History,
-  Loader2,
   Plus,
   Send,
   Sparkles,
@@ -15,7 +15,7 @@ import {
   Wrench,
   Zap,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import {
@@ -26,6 +26,8 @@ import {
   type AiSessionSummary,
 } from "@/actions/ai-chat";
 import type { AicfoAgent } from "@/lib/ai/aicfo-agent";
+import { UNEXPECTED_FAILURE, errorMessage } from "@/lib/action-result";
+import { AICFO_STREAM_FAILURE } from "@/lib/ai/model";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -37,26 +39,41 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
+import { useConfirm } from "@/hooks/use-confirm";
 import { cn } from "@/lib/utils";
+
+// Model output never loads remote images: a markdown image is a GET to any
+// URL, which can leak whatever the model was steered into putting in it.
+const MARKDOWN_COMPONENTS: Components = {
+  img: ({ alt }) => (alt ? <span>{alt}</span> : null),
+};
 
 type AicfoUIMessage = InferAgentUIMessage<AicfoAgent>;
 
 const TOOL_LABELS: Record<string, string> = {
   get_months: "Leyendo meses",
-  get_user_preferences: "Leyendo preferencias",
   get_accounts: "Leyendo cuentas",
   get_account_balance: "Consultando saldo",
+  get_period_summary: "Resumiendo el período",
   get_budget_summary: "Analizando presupuesto",
   get_transactions: "Leyendo transacciones",
-  get_net_worth_evolution: "Analizando patrimonio",
-  get_liabilities: "Leyendo deudas",
+  get_net_worth: "Analizando patrimonio",
   get_investments: "Leyendo inversiones",
   get_investment_sales: "Leyendo ventas",
-  get_investment_values: "Valuando portafolio",
   get_forecast: "Proyectando",
   get_savings_goals: "Leyendo metas de ahorro",
   get_pending_recurring: "Revisando recurrentes",
+  convert_currency: "Convirtiendo monedas",
+  // Tools of earlier versions, still named in saved conversations.
+  get_user_preferences: "Leyendo preferencias",
+  get_net_worth_evolution: "Analizando patrimonio",
+  get_liabilities: "Leyendo deudas",
+  get_investment_values: "Valuando portafolio",
 };
+
+/** The server accepts up to this many characters per message. */
+const MAX_MESSAGE_LENGTH = 4000;
 
 const SUGGESTIONS = [
   "¿Cómo vengo con el presupuesto de este mes?",
@@ -81,7 +98,6 @@ type ParsedChatError = {
 // The transport surfaces the raw response body as error.message, so unwrap the
 // JSON payload instead of showing it verbatim.
 function parseChatError(error: Error): ParsedChatError {
-  const fallback = "Algo salió mal. Probá de nuevo.";
   try {
     const parsed = JSON.parse(error.message) as {
       error?: string;
@@ -89,12 +105,13 @@ function parseChatError(error: Error): ParsedChatError {
       usage?: ApiErrorUsage;
     };
     return {
-      message: parsed.error || fallback,
+      message: parsed.error || UNEXPECTED_FAILURE,
       code: parsed.code,
       usage: parsed.usage,
     };
   } catch {
-    return { message: error.message || fallback };
+    // Not a response body: the stream's own failure, or the transport's.
+    return { message: error.message === AICFO_STREAM_FAILURE ? AICFO_STREAM_FAILURE : errorMessage(error) };
   }
 }
 
@@ -108,17 +125,27 @@ function toolLabel(partType: string): string | null {
 
 export function AicfoChat({
   initialSessions,
+  initialSessionsError,
 }: {
   initialSessions: AiSessionSummary[];
+  /** Why the history could not be read on the server, if it could not. */
+  initialSessionsError: string | null;
 }) {
+  const confirm = useConfirm();
   const [sessions, setSessions] = useState(initialSessions);
+  const [sessionsError, setSessionsError] = useState(initialSessionsError);
   const [sessionId, setSessionId] = useState(() => crypto.randomUUID());
   const [initialMessages, setInitialMessages] = useState<AicfoUIMessage[]>([]);
   const [loadingSession, setLoadingSession] = useState(false);
 
   const refreshSessions = useCallback(async () => {
     const result = await getAiSessions();
-    if ("data" in result) setSessions(result.data);
+    if ("error" in result) {
+      setSessionsError(result.error);
+      return;
+    }
+    setSessions(result.data);
+    setSessionsError(null);
   }, []);
 
   const newChat = useCallback(() => {
@@ -130,7 +157,8 @@ export function AicfoChat({
     setLoadingSession(true);
     try {
       const result = await getAiSessionMessages(id);
-      if ("data" in result) {
+      if ("error" in result) toast.error(result.error);
+      else {
         setInitialMessages(
           result.data.map((row) => ({
             id: row.id,
@@ -147,14 +175,24 @@ export function AicfoChat({
 
   const removeSession = useCallback(
     async (id: string) => {
-      await deleteAiSession(id);
+      const confirmed = await confirm({
+        title: "¿Borrar la conversación?",
+        description: "Se borran sus mensajes; el uso de IA ya registrado se mantiene.",
+        destructive: true,
+      });
+      if (!confirmed) return;
+      const result = await deleteAiSession(id);
+      if ("error" in result) {
+        toast.error(result.error);
+        return;
+      }
       await refreshSessions();
       if (id === sessionId) {
         setSessionId(crypto.randomUUID());
         setInitialMessages([]);
       }
     },
-    [refreshSessions, sessionId],
+    [confirm, refreshSessions, sessionId],
   );
 
   const hasCurrentSession = sessions.some((s) => s.id === sessionId);
@@ -166,7 +204,7 @@ export function AicfoChat({
           <DropdownMenuTrigger asChild>
             <Button variant="outline" size="sm" disabled={loadingSession}>
               {loadingSession ? (
-                <Loader2 className="size-4 animate-spin" />
+                <Spinner className="size-4" />
               ) : (
                 <History className="size-4" />
               )}
@@ -176,11 +214,15 @@ export function AicfoChat({
           <DropdownMenuContent align="start" className="w-72">
             <DropdownMenuLabel>Conversaciones</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            {sessions.length === 0 && (
+            {sessionsError ? (
+              <DropdownMenuItem onSelect={() => void refreshSessions()}>
+                <span className="text-muted-foreground">No se pudo cargar. Reintentar</span>
+              </DropdownMenuItem>
+            ) : sessions.length === 0 ? (
               <DropdownMenuItem disabled>
                 Todavía no hay conversaciones
               </DropdownMenuItem>
-            )}
+            ) : null}
             {sessions.map((session) => (
               <DropdownMenuItem
                 key={session.id}
@@ -243,7 +285,13 @@ function ChatPanel({
     useChat<AicfoUIMessage>({
       id,
       messages: initialMessages,
-      transport: new DefaultChatTransport({ api: "/api/aicfo" }),
+      // Only the new message: the server reads the history from the database.
+      transport: new DefaultChatTransport({
+        api: "/api/aicfo",
+        prepareSendMessagesRequest: ({ id, messages, trigger, messageId }) => ({
+          body: { id, message: messages.at(-1), trigger, messageId },
+        }),
+      }),
       onFinish: () => void onTurnFinished(),
     });
   const [input, setInput] = useState("");
@@ -275,6 +323,8 @@ function ChatPanel({
       }
       clearError();
       await regenerate();
+    } catch (e) {
+      setExtendError(errorMessage(e));
     } finally {
       setExtending(false);
     }
@@ -333,7 +383,10 @@ function ChatPanel({
                       key={index}
                       className="prose prose-sm dark:prose-invert max-w-none [&_table]:my-2 [&_table]:w-full [&_td]:px-2 [&_td]:py-1 [&_th]:px-2 [&_th]:py-1"
                     >
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={MARKDOWN_COMPONENTS}
+                      >
                         {part.text}
                       </ReactMarkdown>
                     </div>
@@ -359,7 +412,7 @@ function ChatPanel({
 
         {status === "submitted" && (
           <div className="text-muted-foreground flex items-center gap-2 text-sm">
-            <Loader2 className="size-4 animate-spin" />
+            <Spinner className="size-4" />
             Pensando…
           </div>
         )}
@@ -392,11 +445,12 @@ function ChatPanel({
           onChange={(event) => setInput(event.target.value)}
           placeholder="Preguntale algo a tu CFO…"
           disabled={busy}
+          maxLength={MAX_MESSAGE_LENGTH}
           autoFocus
         />
         <Button type="submit" size="icon" disabled={busy || !input.trim()}>
           {busy ? (
-            <Loader2 className="size-4 animate-spin" />
+            <Spinner className="size-4" />
           ) : (
             <Send className="size-4" />
           )}
@@ -427,7 +481,7 @@ function ChatError({
   return (
     <div className="bg-muted/50 space-y-3 rounded-lg border p-3 text-sm">
       <div className="flex items-start gap-2">
-        <AlertTriangle className="text-amber-500 mt-0.5 size-4 shrink-0" />
+        <AlertTriangle className="text-muted-foreground mt-0.5 size-4 shrink-0" />
         <div className="space-y-1">
           <p className="font-medium">{message}</p>
           {isQuota && usage && (
@@ -449,7 +503,7 @@ function ChatError({
         {canExtend && (
           <Button size="sm" disabled={extending} onClick={() => void onExtend()}>
             {extending ? (
-              <Loader2 className="size-4 animate-spin" />
+              <Spinner className="size-4" />
             ) : (
               <Zap className="size-4" />
             )}

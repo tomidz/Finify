@@ -1,3 +1,5 @@
+import { fetchJson, providerFailure, type ProviderFailure, type ProviderResult } from "@/lib/providers/fetch-json";
+
 const CODE_TO_COINGECKO_ID: Record<string, string> = {
   AAVE: "aave",
   ADA: "cardano",
@@ -39,6 +41,7 @@ const CODE_TO_COINGECKO_ID: Record<string, string> = {
   XRP: "ripple",
 };
 
+// Only answers are remembered: a failed search says nothing about the code.
 const resolvedTickerCache = new Map<string, string | null>();
 
 export type CryptoPriceMap = Record<string, number>;
@@ -55,45 +58,28 @@ function getCoinGeckoHeaders() {
   return apiKey ? { "x-cg-demo-api-key": apiKey } : undefined;
 }
 
-async function fetchJson<T>(url: string): Promise<T | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
-
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: getCoinGeckoHeaders(),
-    });
-
-    if (!response.ok) return null;
-    return (await response.json()) as T;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function resolveCoinGeckoId(code: string): Promise<string | null> {
+async function resolveCoinGeckoId(code: string): Promise<ProviderResult<string>> {
   const normalizedCode = code.trim().toUpperCase();
-  if (!normalizedCode) return null;
+  if (!normalizedCode) return { ok: false, reason: "not_found" };
 
   const staticMatch = CODE_TO_COINGECKO_ID[normalizedCode];
-  if (staticMatch) return staticMatch;
+  if (staticMatch) return { ok: true, data: staticMatch };
 
   if (resolvedTickerCache.has(normalizedCode)) {
-    return resolvedTickerCache.get(normalizedCode) ?? null;
+    const cached = resolvedTickerCache.get(normalizedCode);
+    return cached ? { ok: true, data: cached } : { ok: false, reason: "not_found" };
   }
 
   const searchUrl = new URL(`${getCoinGeckoBaseUrl()}/search`);
   searchUrl.searchParams.set("query", normalizedCode);
 
-  const data = await fetchJson<{
+  const result = await fetchJson<{
     coins?: Array<{ id: string; symbol: string; market_cap_rank?: number | null }>;
-  }>(searchUrl.toString());
+  } | null>("coingecko.search", searchUrl.toString(), { headers: getCoinGeckoHeaders() });
+  if (!result.ok) return result;
 
   const match =
-    data?.coins
+    result.data?.coins
       ?.filter((coin) => coin.symbol.toUpperCase() === normalizedCode)
       .sort(
         (a, b) =>
@@ -102,18 +88,28 @@ async function resolveCoinGeckoId(code: string): Promise<string | null> {
       )[0]?.id ?? null;
 
   resolvedTickerCache.set(normalizedCode, match);
-  return match;
+  return match ? { ok: true, data: match } : providerFailure("coingecko.search", "not_found");
 }
 
+/** Prices by code in `vsCurrency` (see fetchCryptoPricesWithReasons). */
 export async function fetchCryptoPrices(
   currencyCodes: string[],
   vsCurrency: string,
 ): Promise<CryptoPriceMap> {
+  return (await fetchCryptoPricesWithReasons(currencyCodes, vsCurrency)).prices;
+}
+
+/** Prices by code in `vsCurrency`, and why each code left out has none. */
+export async function fetchCryptoPricesWithReasons(
+  currencyCodes: string[],
+  vsCurrency: string,
+): Promise<{ prices: CryptoPriceMap; failed: Record<string, ProviderFailure> }> {
   const uniqueCodes = Array.from(
     new Set(currencyCodes.map((code) => code.trim().toUpperCase()).filter(Boolean)),
   );
+  const failed: Record<string, ProviderFailure> = {};
 
-  if (!vsCurrency || uniqueCodes.length === 0) return {};
+  if (!vsCurrency || uniqueCodes.length === 0) return { prices: {}, failed };
 
   const vs = vsCurrency.trim().toLowerCase();
 
@@ -124,35 +120,50 @@ export async function fetchCryptoPrices(
     })),
   );
 
-  const ids = Array.from(
-    new Set(resolvedEntries.map((entry) => entry.id).filter(Boolean) as string[]),
-  );
+  const found: { code: string; id: string }[] = [];
+  for (const entry of resolvedEntries) {
+    if (entry.id.ok) found.push({ code: entry.code, id: entry.id.data });
+    else failed[entry.code] = entry.id.reason;
+  }
 
-  if (ids.length === 0) return {};
+  const ids = Array.from(new Set(found.map((entry) => entry.id)));
+
+  if (ids.length === 0) return { prices: {}, failed };
 
   const url = new URL(`${getCoinGeckoBaseUrl()}/simple/price`);
   url.searchParams.set("ids", ids.join(","));
   url.searchParams.set("vs_currencies", vs);
 
-  const data = await fetchJson<Record<string, Record<string, number | undefined>>>(
+  const quoted = await fetchJson<Record<string, Record<string, number | undefined> | null> | null>(
+    "coingecko.price",
     url.toString(),
+    { headers: getCoinGeckoHeaders() },
   );
 
-  if (!data) return {};
+  if (!quoted.ok) {
+    for (const entry of found) failed[entry.code] = quoted.reason;
+    return { prices: {}, failed };
+  }
 
   const result: CryptoPriceMap = {};
-  for (const entry of resolvedEntries) {
-    if (!entry.id) continue;
-    const price = data[entry.id]?.[vs];
+  for (const entry of found) {
+    const price = quoted.data?.[entry.id]?.[vs];
     if (typeof price === "number") {
       result[entry.code] = price;
+    } else {
+      providerFailure("coingecko.price", "not_found");
+      failed[entry.code] = "not_found";
     }
   }
 
   if (vs === "usd") {
-    if (result.USDT == null && uniqueCodes.includes("USDT")) result.USDT = 1;
-    if (result.USDC == null && uniqueCodes.includes("USDC")) result.USDC = 1;
+    for (const stablecoin of ["USDT", "USDC"]) {
+      if (result[stablecoin] == null && uniqueCodes.includes(stablecoin)) {
+        result[stablecoin] = 1;
+        delete failed[stablecoin];
+      }
+    }
   }
 
-  return result;
+  return { prices: result, failed };
 }

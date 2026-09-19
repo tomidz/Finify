@@ -1,4 +1,11 @@
-import { fetchArsPerUsd } from "@/lib/dolarapi";
+import { fetchArsPerUsd, fetchArsPerUsdOn } from "@/lib/dolarapi";
+import { today } from "@/lib/dates";
+import { fetchJson, providerFailure } from "@/lib/providers/fetch-json";
+
+const FRANKFURTER = "https://api.frankfurter.dev/v1";
+
+const pairQuery = (from: string, to: string) =>
+  `base=${encodeURIComponent(from)}&symbols=${encodeURIComponent(to)}`;
 
 /**
  * Fetch an exchange rate. Frankfurter (ECB, fiat) covers most pairs; ARS is
@@ -6,7 +13,7 @@ import { fetchArsPerUsd } from "@/lib/dolarapi";
  *
  * Returns the rate to convert 1 unit of `from` into `to`.
  * When `date` is provided (yyyy-MM-dd) it fetches the historical rate for that
- * day (the ARS leg is current-only — dolarapi has no history).
+ * day; without it, the latest.
  * Returns null if the request fails or the pair is unsupported.
  */
 export async function fetchExchangeRate(
@@ -21,30 +28,44 @@ export async function fetchExchangeRate(
   return fetchFrankfurter(from, to, date);
 }
 
+/**
+ * The daily rates of `from` in `to` between two dates (yyyy-MM-dd), by date,
+ * or null if the request fails. Only business days have a rate, and the series
+ * starts at the last one on or before `start`.
+ */
+export async function fetchFrankfurterSeries(
+  from: string,
+  to: string,
+  start: string,
+  end: string,
+): Promise<Map<string, number> | null> {
+  const result = await fetchJson<{ rates?: Record<string, Record<string, number> | null> } | null>(
+    "frankfurter.series",
+    `${FRANKFURTER}/${start}..${end}?${pairQuery(from, to)}`,
+    { timeoutMs: 15_000 },
+  );
+  if (!result.ok) return null;
+  const series = new Map<string, number>();
+  for (const [date, rates] of Object.entries(result.data?.rates ?? {})) {
+    const rate = rates?.[to];
+    if (rate != null && rate > 0) series.set(date, rate);
+  }
+  return series;
+}
+
 async function fetchFrankfurter(
   from: string,
   to: string,
   date?: string
 ): Promise<number | null> {
-  try {
-    const endpoint = date ?? "latest";
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    try {
-      const res = await fetch(
-        `https://api.frankfurter.dev/v1/${endpoint}?base=${encodeURIComponent(from)}&symbols=${encodeURIComponent(to)}`,
-        { signal: controller.signal }
-      );
-      if (!res.ok) return null;
-
-      const data: { rates: Record<string, number> } = await res.json();
-      return data.rates[to] ?? null;
-    } finally {
-      clearTimeout(timeout);
-    }
-  } catch {
-    return null;
-  }
+  const result = await fetchJson<{ rates?: Record<string, number> } | null>(
+    "frankfurter.rate",
+    `${FRANKFURTER}/${date ?? "latest"}?${pairQuery(from, to)}`,
+  );
+  if (!result.ok) return null;
+  const rate = result.data?.rates?.[to] ?? null;
+  if (rate == null) providerFailure("frankfurter.rate", "not_found");
+  return rate;
 }
 
 /**
@@ -56,7 +77,8 @@ async function fetchArsRate(
   to: string,
   date?: string
 ): Promise<number | null> {
-  const arsPerUsd = await fetchArsPerUsd();
+  // The history only has past days; today and later take today's quote.
+  const arsPerUsd = date && date < today() ? await fetchArsPerUsdOn(date) : await fetchArsPerUsd();
   if (!arsPerUsd) return null;
 
   if (from === "ARS" && to === "USD") return 1 / arsPerUsd;

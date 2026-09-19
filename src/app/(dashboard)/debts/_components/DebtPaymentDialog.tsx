@@ -1,8 +1,7 @@
 "use client";
 
-import { format } from "date-fns";
 import { useEffect, useMemo } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import {
   Dialog,
   DialogContent,
@@ -13,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/money-input";
 import {
   Form,
   FormField,
@@ -23,12 +23,14 @@ import {
 } from "@/components/ui/form";
 import { AccountCombobox } from "@/components/account-combobox";
 import { CategoryCombobox } from "@/components/category-combobox";
-import { useAccounts } from "@/hooks/useAccounts";
+import { useAccounts, useCurrencies } from "@/hooks/useAccounts";
 import { useBudgetCategories } from "@/hooks/useBudget";
 import { useRecordDebtPayment } from "@/hooks/useNetWorth";
 import { useBaseCurrency } from "@/hooks/useTransactions";
-import { formatMoneyInput, parseMoneyInput, formatAmount } from "@/lib/format";
+import { formatAmount, parseMoney } from "@/lib/format";
+import { today } from "@/lib/dates";
 import { fetchExchangeRate } from "@/lib/frankfurter";
+import { uiScale } from "@/lib/ui-scale";
 import type { NwItemWithRelations } from "@/types/net-worth";
 
 interface DebtPaymentDialogProps {
@@ -52,7 +54,7 @@ export function DebtPaymentDialog({
 }: DebtPaymentDialogProps) {
   const form = useForm<PaymentFormValues>({
     defaultValues: {
-      date: format(new Date(), "yyyy-MM-dd"),
+      date: today(),
       amount: "",
       account_id: "",
       category_id: "",
@@ -61,6 +63,7 @@ export function DebtPaymentDialog({
   });
 
   const { data: accounts } = useAccounts();
+  const { data: currencies } = useCurrencies();
   const { data: categories } = useBudgetCategories();
   const { data: baseCurrency } = useBaseCurrency();
   const recordPayment = useRecordDebtPayment();
@@ -80,10 +83,18 @@ export function DebtPaymentDialog({
     [accounts]
   );
 
+  // The amount leaves the chosen account, in that account's currency.
+  const accountId = useWatch({ control: form.control, name: "account_id" });
+  const accountCurrency = useMemo(() => {
+    const code = sortedAccounts.find((a) => a.id === accountId)?.currency;
+    return currencies?.find((c) => c.code === code);
+  }, [accountId, currencies, sortedAccounts]);
+  const debtDecimals = currencies?.find((c) => c.code === debt?.currency)?.decimals ?? 2;
+
   useEffect(() => {
     if (!open) return;
     form.reset({
-      date: format(new Date(), "yyyy-MM-dd"),
+      date: today(),
       amount: "",
       account_id: "",
       category_id: debtCategories.length === 1 ? debtCategories[0].id : "",
@@ -94,8 +105,8 @@ export function DebtPaymentDialog({
   const onSubmit = async (values: PaymentFormValues) => {
     if (!debt) return;
 
-    const amount = parseMoneyInput(values.amount);
-    if (!amount || amount <= 0) {
+    const amount = parseMoney(values.amount);
+    if (amount == null || amount <= 0) {
       form.setError("amount", { message: "Ingresá un monto válido" });
       return;
     }
@@ -142,7 +153,7 @@ export function DebtPaymentDialog({
                 {" "}
                 Saldo actual:{" "}
                 <span className="font-semibold">
-                  {debt.currency_symbol} {formatAmount(debt.currentAmount)}
+                  {debt.currency_symbol} {formatAmount(debt.currentAmount, debtDecimals)}
                 </span>
               </>
             )}
@@ -166,6 +177,7 @@ export function DebtPaymentDialog({
                       <Input
                         type="date"
                         disabled={recordPayment.isPending}
+                        className={uiScale.field}
                         {...field}
                       />
                     </FormControl>
@@ -181,18 +193,13 @@ export function DebtPaymentDialog({
                   <FormItem>
                     <FormLabel>Monto</FormLabel>
                     <FormControl>
-                      <Input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="0,00"
+                      <MoneyInput
+                        {...field}
+                        currency={accountCurrency?.symbol}
+                        // Leaves the account as typed; the server converts the debt's side.
+                        decimals={accountCurrency?.decimals ?? 2}
                         disabled={recordPayment.isPending}
-                        value={field.value}
-                        onChange={(e) =>
-                          form.setValue(
-                            "amount",
-                            formatMoneyInput(e.target.value)
-                          )
-                        }
+                        className={uiScale.field}
                       />
                     </FormControl>
                     <FormMessage />
@@ -249,6 +256,7 @@ export function DebtPaymentDialog({
                     <Input
                       placeholder="Descripción del pago"
                       disabled={recordPayment.isPending}
+                      className={uiScale.field}
                       {...field}
                     />
                   </FormControl>
@@ -258,7 +266,7 @@ export function DebtPaymentDialog({
             />
 
             <DialogFooter>
-              <Button type="submit" disabled={recordPayment.isPending}>
+              <Button type="submit" size="sm" className={uiScale.button} disabled={recordPayment.isPending}>
                 {recordPayment.isPending
                   ? "Registrando..."
                   : "Registrar pago"}
