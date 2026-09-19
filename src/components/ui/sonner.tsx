@@ -24,14 +24,18 @@ const Toaster = ({ ...props }: ToasterProps) => {
         error: <OctagonXIcon className="size-4" />,
         loading: <Loader2Icon className="size-4 animate-spin" />,
       }}
-      // Monochrome, like a tooltip: every toast reads the same, and a
-      // success is not told from an error by colour alone.
+      // One surface for every toast: a success is not told from an error by
+      // colour alone. The close button sits on the right, where it is looked
+      // for; sonner puts it on the left unless these are overridden.
       style={
         {
-          "--normal-bg": "var(--foreground)",
-          "--normal-text": "var(--background)",
-          "--normal-border": "var(--foreground)",
+          "--normal-bg": "var(--popover)",
+          "--normal-text": "var(--popover-foreground)",
+          "--normal-border": "var(--border)",
           "--border-radius": "var(--radius)",
+          "--toast-close-button-start": "unset",
+          "--toast-close-button-end": "0",
+          "--toast-close-button-transform": "translate(35%, -35%)",
         } as React.CSSProperties
       }
       {...props}
