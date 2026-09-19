@@ -80,15 +80,6 @@ export function InvestmentsTable({ onCreate }: { onCreate: () => void }) {
     );
   }, [accountNetWorth]);
 
-  const totalCashUninvested = useMemo(
-    () =>
-      investmentAccounts.reduce(
-        (sum, account) => sum + (account.balance_base ?? 0),
-        0,
-      ),
-    [investmentAccounts],
-  );
-
   const currencySymbol = useMemo(() => {
     if (!baseCurrency) return "$";
     const found = currencies?.find((c) => c.code === baseCurrency);
@@ -250,6 +241,22 @@ export function InvestmentsTable({ onCreate }: { onCreate: () => void }) {
     setAdjustHolding(holding);
     setAdjustDialogOpen(true);
   }, []);
+
+  // Everything on the screen is about the accounts in view: filtering by one
+  // account takes its cash and its row with it, instead of leaving the other
+  // brokers' cash in a total that no longer names them.
+  const visibleAccounts = useMemo(
+    () =>
+      accountFilter === null
+        ? investmentAccounts
+        : investmentAccounts.filter((account) => account.id === accountFilter),
+    [accountFilter, investmentAccounts],
+  );
+
+  const totalCashUninvested = useMemo(
+    () => visibleAccounts.reduce((sum, account) => sum + (account.balance_base ?? 0), 0),
+    [visibleAccounts],
+  );
 
   const filteredHoldings = useMemo(
     () =>
@@ -518,7 +525,7 @@ export function InvestmentsTable({ onCreate }: { onCreate: () => void }) {
         </RenderErrorBoundary>
       )}
 
-      <RenderErrorBoundary name="investment-accounts-breakdown" resetKeys={[investmentAccounts, valuationByAccount]}>
+      <RenderErrorBoundary name="investment-accounts-breakdown" resetKeys={[visibleAccounts, valuationByAccount]}>
         {netWorthError && !accountNetWorth ? (
           <StateCard
             variant="error"
@@ -529,7 +536,7 @@ export function InvestmentsTable({ onCreate }: { onCreate: () => void }) {
           />
         ) : (
           <AccountsBreakdown
-            accounts={investmentAccounts}
+            accounts={visibleAccounts}
             valuationByAccount={valuationByAccount}
             currencySymbol={currencySymbol}
             pricesFailed={pricesFailed}
