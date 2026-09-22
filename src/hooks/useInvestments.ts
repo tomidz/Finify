@@ -17,6 +17,7 @@ import {
   deleteInvestmentSale,
   fetchCurrentPrices,
   lookupInvestmentInstrument,
+  payWithInvestment,
   sellInvestment,
   setManualPrice,
   swapInvestment,
@@ -27,6 +28,7 @@ import type {
   CreateInvestmentInput,
   ManualPriceInput,
   SwapInvestmentInput,
+  PayWithInvestmentInput,
   SellInvestmentInput,
   TransferInvestmentPositionInput,
   UpdateInvestmentInput,
@@ -261,6 +263,22 @@ export function useSellInvestment() {
     },
     onSuccess: () => {
       toast.success("Venta registrada");
+    },
+    onSettled: () => {
+      invalidateInvestmentWrite(queryClient);
+    },
+  });
+}
+
+export function usePayWithInvestment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PayWithInvestmentInput) => unwrapResult(await payWithInvestment(input)),
+    onError: (err: Error) => {
+      toast.error(errorMessage(err));
+    },
+    onSuccess: () => {
+      toast.success("Pago registrado");
     },
     onSettled: () => {
       invalidateInvestmentWrite(queryClient);

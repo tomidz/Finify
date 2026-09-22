@@ -147,6 +147,34 @@ export const SwapInvestmentSchema = z
     path: ["received", "currency"],
   });
 
+/**
+ * A purchase paid with a holding: the card of an exchange that debits
+ * stablecoins. Only for a holding whose unit is the account's own currency,
+ * so a unit is worth exactly one, and what the exchange kept between the
+ * units handed over and the price of the purchase is the fee.
+ */
+export const PayWithInvestmentSchema = z
+  .object({
+    account_id: z.string().uuid("Cuenta inválida"),
+    asset_name: z.string().min(1, "El activo es obligatorio").max(200),
+    ticker: z.string().max(20).nullable().optional(),
+    isin: z.string().max(20).nullable().optional(),
+    asset_type: z.enum(ASSET_TYPES),
+    currency: z.string().min(1, "La moneda es obligatoria"),
+    /** Units handed over, spread included. */
+    quantity: z.number().positive("La cantidad debe ser mayor a 0"),
+    /** What the purchase cost, in the account's currency. */
+    amount: z.number().positive("El monto debe ser mayor a 0"),
+    category_id: z.string().uuid("Elegí una categoría"),
+    description: z.string().min(1, "La descripción es obligatoria").max(200),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida"),
+    notes: z.string().max(500).nullable().optional(),
+  })
+  .refine((data) => data.amount <= data.quantity, {
+    message: "El monto no puede superar lo que entregás",
+    path: ["amount"],
+  });
+
 export type CreateInvestmentInput = z.infer<typeof CreateInvestmentSchema>;
 export type SwapInvestmentInput = z.input<typeof SwapInvestmentSchema>;
 export type ManualPriceInput = z.input<typeof ManualPriceSchema>;
@@ -155,6 +183,7 @@ export type TransferInvestmentPositionInput = z.infer<
   typeof TransferInvestmentPositionSchema
 >;
 export type SellInvestmentInput = z.infer<typeof SellInvestmentSchema>;
+export type PayWithInvestmentInput = z.input<typeof PayWithInvestmentSchema>;
 export type AdjustInvestmentPositionInput = z.infer<
   typeof AdjustInvestmentPositionSchema
 >;
