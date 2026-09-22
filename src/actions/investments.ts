@@ -13,6 +13,7 @@ import {
   AdjustInvestmentPositionSchema,
   CreateInvestmentSchema,
   ManualPriceSchema,
+  PayWithInvestmentSchema,
   SellInvestmentSchema,
   SwapInvestmentSchema,
   TransferInvestmentPositionSchema,
@@ -684,6 +685,100 @@ export async function sellInvestment(
   } catch (e) {
     logError("sellInvestment", e);
     return { error: "Error al registrar venta" };
+  }
+}
+
+/**
+ * A purchase paid with a holding: the holding is sold for what the purchase
+ * cost and the expense spends it, in one database transaction. The units
+ * handed over beyond the price of the purchase are the exchange's spread, and
+ * they are the sale's fee.
+ */
+export async function payWithInvestment(
+  input: unknown,
+): Promise<ActionResult<null>> {
+  try {
+    const parsed = PayWithInvestmentSchema.safeParse(input);
+    if (!parsed.success) {
+      return { error: parsed.error.issues[0]?.message ?? "Datos inválidos" };
+    }
+
+    const userId = await getUserId();
+    if (!userId) return { error: "No autenticado" };
+
+    const supabase = await createClient();
+    const { data: account, error: accError } = await supabase
+      .from("accounts")
+      .select("id, account_type, currency")
+      .eq("id", parsed.data.account_id)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (accError) return dbError("payWithInvestment", accError, "No se pudo leer la cuenta");
+    if (!account) return { error: "Cuenta no encontrada" };
+
+    if (!CASH_ACCOUNT_TYPES.has(account.account_type)) {
+      return { error: "Solo una cuenta de inversión puede pagar con una tenencia" };
+    }
+    // The credit of the sale and the expense are both in the account's
+    // currency: a holding in another one would pay in the wrong money.
+    if (account.currency !== parsed.data.currency) {
+      return {
+        error: `La cuenta está en ${account.currency} y la tenencia en ${parsed.data.currency}. Vendé y registrá el gasto por separado.`,
+      };
+    }
+
+    const { quantity, amount, date } = parsed.data;
+    // At the column's own precision: rounded shorter, the credit
+    // (quantity - fees) would miss the expense by a fraction and leave it in
+    // the account for good.
+    const fees = Number((quantity - amount).toFixed(8));
+
+    const rate = await cashRateToBase(supabase, userId, account.currency, date);
+    if ("error" in rate) return rate;
+    const baseAmount = Number((amount * rate.data).toFixed(4));
+
+    const { error } = await supabase.rpc("pay_with_investment", {
+      p_sale: {
+        account_id: parsed.data.account_id,
+        asset_name: parsed.data.asset_name,
+        ticker: parsed.data.ticker ?? null,
+        isin: parsed.data.isin ?? null,
+        asset_type: parsed.data.asset_type,
+        quantity_sold: quantity,
+        price_per_unit: 1,
+        total_proceeds: quantity,
+        fees,
+        tax: 0,
+        currency: parsed.data.currency,
+        sale_date: date,
+        notes: parsed.data.notes ?? null,
+      },
+      p_cash_rate: rate.data,
+      p_header: {
+        transaction_type: "expense",
+        date,
+        description: parsed.data.description,
+        category_id: parsed.data.category_id,
+        notes: parsed.data.notes ?? null,
+        fee: 0,
+      },
+      p_legs: [
+        {
+          account_id: parsed.data.account_id,
+          amount: -amount,
+          base_amount: -baseAmount,
+          exchange_rate: rate.data,
+        },
+      ],
+    });
+    if (error) {
+      return ledgerRpcError("pay_with_investment", error, "No se pudo registrar el pago");
+    }
+
+    return { data: null };
+  } catch (e) {
+    logError("payWithInvestment", e);
+    return { error: "No se pudo registrar el pago" };
   }
 }
 

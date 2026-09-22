@@ -1506,6 +1506,15 @@ export type Database = {
           opening_base_amount: number
         }[]
       }
+      pay_with_investment: {
+        Args: {
+          p_cash_rate?: number
+          p_header?: Json
+          p_legs?: Json
+          p_sale: Json
+        }
+        Returns: Json
+      }
       rebuild_opening_balances: {
         Args: { p_from_month_id?: string }
         Returns: undefined

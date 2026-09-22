@@ -5,6 +5,7 @@ import {
   ArrowLeftRight,
   ChevronDown,
   ChevronRight,
+  CreditCard,
   Pencil,
   Repeat,
   SlidersHorizontal,
@@ -36,6 +37,8 @@ export const HoldingRows = React.memo(function HoldingRows({
   onAdjust,
   onSetPrice,
   onSwap,
+  onPay,
+  canPay,
   onEdit,
   onDelete,
 }: {
@@ -49,6 +52,9 @@ export const HoldingRows = React.memo(function HoldingRows({
   onAdjust: (holding: HoldingPosition) => void;
   onSetPrice: (holding: HoldingPosition) => void;
   onSwap: (holding: HoldingPosition) => void;
+  onPay: (holding: HoldingPosition) => void;
+  /** Only a holding whose unit is the account's own currency can pay. */
+  canPay: boolean;
   onEdit: (investment: InvestmentWithAccount) => void;
   onDelete: (investment: InvestmentWithAccount) => void;
 }) {
@@ -61,6 +67,7 @@ export const HoldingRows = React.memo(function HoldingRows({
 
   const actions: RowAction[] = [
     { label: "Vender", icon: TrendingDown, onSelect: () => onSell(holding) },
+    { label: "Pagar una compra", icon: CreditCard, onSelect: () => onPay(holding), hidden: !canPay },
     { label: "Intercambiar", icon: Repeat, onSelect: () => onSwap(holding) },
     { label: "Ajustar", icon: SlidersHorizontal, onSelect: () => onAdjust(holding) },
     { label: "Precio manual", icon: Tag, onSelect: () => onSetPrice(holding), hidden: cashLike },

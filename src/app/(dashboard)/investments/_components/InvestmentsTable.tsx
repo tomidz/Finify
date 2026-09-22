@@ -52,6 +52,7 @@ import { SellInvestmentDialog } from "./SellInvestmentDialog";
 import { TransferPositionDialog } from "./TransferPositionDialog";
 import { AdjustPositionDialog } from "./AdjustPositionDialog";
 import { ManualPriceDialog } from "./ManualPriceDialog";
+import { PayWithHoldingDialog } from "./PayWithHoldingDialog";
 import { SwapInvestmentDialog } from "./SwapInvestmentDialog";
 
 export function InvestmentsTable({ onCreate }: { onCreate: () => void }) {
@@ -196,6 +197,7 @@ export function InvestmentsTable({ onCreate }: { onCreate: () => void }) {
   const [adjustDialogOpen, setAdjustDialogOpen] = useState(false);
   const [pricingHolding, setPricingHolding] = useState<HoldingPosition | null>(null);
   const [swapHolding, setSwapHolding] = useState<HoldingPosition | null>(null);
+  const [payingHolding, setPayingHolding] = useState<HoldingPosition | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [assetTypeFilter, setAssetTypeFilter] = useState<string | null>(null);
   const [accountFilter, setAccountFilter] = useState<string | null>(null);
@@ -427,6 +429,11 @@ export function InvestmentsTable({ onCreate }: { onCreate: () => void }) {
       ? totalCashUninvested + summaryTotals.cashHeld
       : null;
 
+  // Paying a purchase sells the holding for what it cost and spends the
+  // credit: it only works when a unit is worth one of the account's own
+  // currency, which is what the credit and the expense are both in.
+  const accountCurrencies = new Map(investmentAccounts.map((account) => [account.id, account.currency]));
+
   const renderHolding = (holding: HoldingPosition) => {
     const key = holdingGroupKey(holding);
     return (
@@ -441,6 +448,11 @@ export function InvestmentsTable({ onCreate }: { onCreate: () => void }) {
         onAdjust={openAdjust}
         onSetPrice={setPricingHolding}
         onSwap={setSwapHolding}
+        onPay={setPayingHolding}
+        canPay={
+          isCashLike(holding.asset_type) &&
+          accountCurrencies.get(holding.account_id) === holding.currency
+        }
         onEdit={setEditingInvestment}
         onDelete={handleDelete}
       />
@@ -673,6 +685,11 @@ export function InvestmentsTable({ onCreate }: { onCreate: () => void }) {
       <SwapInvestmentDialog
         holding={swapHolding}
         onOpenChange={(open) => !open && setSwapHolding(null)}
+      />
+
+      <PayWithHoldingDialog
+        holding={payingHolding}
+        onOpenChange={(open) => !open && setPayingHolding(null)}
       />
 
       <ManualPriceDialog
