@@ -122,6 +122,30 @@ export function sanitizeMoneyInput(
 }
 
 /**
+ * Rewrite pasted text in es-AR before it reaches `sanitizeMoneyInput`, which
+ * drops every ".": a "75.674437" copied from an exchange would become
+ * 75.674.437. With both marks the last one is the decimal; a lone "." is the
+ * decimal unless it groups thousands ("1.234"); several commas group ("1,234,567").
+ */
+export function normalizePastedAmount(text: string): string {
+  const t = text.trim();
+  const lastDot = t.lastIndexOf(".");
+  const lastComma = t.lastIndexOf(",");
+  if (lastDot !== -1 && lastComma !== -1) {
+    return lastDot > lastComma
+      ? t.replace(/,/g, "").replace(".", ",")
+      : t.replace(/\./g, "");
+  }
+  if (lastDot !== -1) {
+    const digits = t.replace(/[^\d.]/g, "");
+    const groups = /^[1-9]\d{0,2}(?:\.\d{3})+$/.test(digits);
+    return groups || t.indexOf(".") !== lastDot ? t : t.replace(".", ",");
+  }
+  if (lastComma !== -1 && t.indexOf(",") !== lastComma) return t.replace(/,/g, "");
+  return t;
+}
+
+/**
  * Where the caret goes after `sanitizeMoneyInput(raw)`: past as many kept
  * characters (digits, comma, minus) as were before `caret` in `raw`, so
  * regrouping the thousands does not throw it to the end.

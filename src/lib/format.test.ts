@@ -6,6 +6,7 @@ import {
   parseMoney,
   sanitizeMoneyInput,
   moneyInputCaret,
+  normalizePastedAmount,
   toMoneyInput,
 } from "./format";
 
@@ -177,6 +178,28 @@ describe("sanitizeMoneyInput", () => {
         expect(parseMoney(toMoneyInput(parsed, opts.decimals)) === parsed).toBe(true);
       }),
     );
+  });
+});
+
+describe("normalizePastedAmount", () => {
+  it("reads a lone dot as the decimal mark unless it groups thousands", () => {
+    expect(sanitizeMoneyInput(normalizePastedAmount("75.674437"), { decimals: 8 })).toBe("75,674437");
+    expect(normalizePastedAmount("0.500")).toBe("0,500");
+    expect(normalizePastedAmount("1234.5")).toBe("1234,5");
+    expect(normalizePastedAmount("1.234")).toBe("1.234");
+    expect(normalizePastedAmount("1.234.567")).toBe("1.234.567");
+  });
+
+  it("takes the last mark as the decimal when both appear", () => {
+    expect(normalizePastedAmount("1,234.56")).toBe("1234,56");
+    expect(normalizePastedAmount("1.234,56")).toBe("1234,56");
+    expect(normalizePastedAmount("US$ 1,234.5")).toBe("US$ 1234,5");
+  });
+
+  it("keeps es-AR text and reads several commas as grouping", () => {
+    expect(normalizePastedAmount("12,5")).toBe("12,5");
+    expect(normalizePastedAmount("1,234,567")).toBe("1234567");
+    expect(normalizePastedAmount(" 42 ")).toBe("42");
   });
 });
 

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { moneyInputCaret, sanitizeMoneyInput } from "@/lib/format";
+import { moneyInputCaret, normalizePastedAmount, sanitizeMoneyInput } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
   InputGroup,
@@ -42,18 +42,18 @@ export function MoneyInput({
   className,
   inputClassName,
   placeholder,
+  onKeyDown,
+  onPaste,
   ...props
 }: MoneyInputProps) {
-  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const input = event.currentTarget;
-    const raw = input.value;
+  const apply = (input: HTMLInputElement, raw: string, rawCaret: number) => {
     // A prefilled value can carry more decimals than are typed (a stored
     // balance with 8): editing it keeps them instead of cutting them off.
     const comma = value.indexOf(",");
     const kept = comma === -1 ? 0 : value.length - comma - 1;
     const options = { decimals: Math.max(decimals, kept), allowNegative };
     const next = sanitizeMoneyInput(raw, options);
-    const caret = moneyInputCaret(raw, input.selectionStart ?? raw.length, options);
+    const caret = moneyInputCaret(raw, rawCaret, options);
     onValueChange?.(next);
     onChange?.(next);
     // React writes `next` (or restores the old text when nothing changed)
@@ -63,6 +63,41 @@ export function MoneyInput({
         input.setSelectionRange(caret, caret);
       }
     });
+  };
+
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    apply(input, input.value, input.selectionStart ?? input.value.length);
+  };
+
+  const insert = (input: HTMLInputElement, text: string) => {
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    const raw = input.value.slice(0, start) + text + input.value.slice(end);
+    apply(input, raw, start + text.length);
+  };
+
+  // Thousands are grouped as you type, so a typed "." is never needed for
+  // them: it is the decimal mark of a numeric keypad or an en-US habit.
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    onKeyDown?.(event);
+    if (event.defaultPrevented || event.key !== "." || event.ctrlKey || event.metaKey || event.altKey) return;
+    const input = event.currentTarget;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    const remaining = input.value.slice(0, start) + input.value.slice(end);
+    if (decimals <= 0 || remaining.includes(",")) return;
+    event.preventDefault();
+    insert(input, ",");
+  };
+
+  const handlePaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
+    onPaste?.(event);
+    if (event.defaultPrevented) return;
+    const text = event.clipboardData.getData("text");
+    if (!text) return;
+    event.preventDefault();
+    insert(event.currentTarget, normalizePastedAmount(text));
   };
 
   return (
@@ -79,6 +114,8 @@ export function MoneyInput({
         placeholder={placeholder ?? (decimals > 0 ? "0,00" : "0")}
         value={value}
         onChange={handleChange}
+        onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
         className={cn("tabular-nums", inputClassName)}
         {...props}
       />
