@@ -1,14 +1,10 @@
 import { Suspense } from "react";
 import { cookies } from "next/headers";
 import { requireUser } from "@/lib/supabase/auth";
+import { AppHeader } from "@/components/app-header";
 import { AppSidebar } from "@/components/app-sidebar";
-import { CommandPalette } from "@/components/command-palette";
-import { ThemeToggle } from "@/components/theme-toggle";
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@/components/ui/sidebar";
+import { PageCrumbsProvider } from "@/components/page-crumbs";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
 async function DashboardLayoutContent({
   children,
@@ -20,21 +16,21 @@ async function DashboardLayoutContent({
 
   const cookieStore = await cookies();
   const sidebarCookie = cookieStore.get("sidebar_state")?.value;
-  const defaultOpen = sidebarCookie === "true";
+  const defaultOpen = sidebarCookie !== "false";
 
   return (
-    <SidebarProvider defaultOpen={defaultOpen}>
+    <SidebarProvider defaultOpen={defaultOpen} className="h-svh min-h-0 overflow-hidden">
       <AppSidebar userEmail={userEmail} />
-      <SidebarInset>
-        <header className="sticky top-0 z-40 flex h-16 shrink-0 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-          <SidebarTrigger className="-ml-1" />
-          <div className="ml-auto flex items-center gap-2">
-            <CommandPalette />
-            <ThemeToggle />
-          </div>
-        </header>
-        <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8">{children}</main>
-      </SidebarInset>
+      {/* A collapsed sidebar leaves no gutter of its own, so this wrapper gives
+          the canvas card its left margin. */}
+      <div className="flex min-w-0 flex-1 md:peer-data-[state=collapsed]:ml-2">
+        <SidebarInset>
+          <PageCrumbsProvider>
+            <AppHeader />
+            <div className="flex flex-1 flex-col gap-4 p-4">{children}</div>
+          </PageCrumbsProvider>
+        </SidebarInset>
+      </div>
     </SidebarProvider>
   );
 }
