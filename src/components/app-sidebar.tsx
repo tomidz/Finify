@@ -3,8 +3,19 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { LogOut, Wallet } from "lucide-react";
+import { ChevronsUpDown, LogOut, Moon, Settings, Sun, Wallet } from "lucide-react";
+import { useTheme } from "next-themes";
 
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Sidebar,
   SidebarContent,
@@ -16,8 +27,10 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from "@/components/ui/sidebar";
-import { NAV_SECTIONS, type NavItem } from "@/lib/nav";
+import { NAV_SECTIONS, navItemForPath, type NavItem } from "@/lib/nav";
+import { cn } from "@/lib/utils";
 
 /**
  * The sidebar is on every page, and default prefetching fetched every dynamic
@@ -41,113 +54,172 @@ function HoverPrefetchLink({
   );
 }
 
-function isItemActive(pathname: string, href: string): boolean {
-  if (href === "/") return pathname === "/";
-  return pathname === href || pathname.startsWith(`${href}/`);
-}
+const PRIMARY_BUTTON =
+  "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground active:bg-primary/90 active:text-primary-foreground data-[active=true]:bg-primary/90 data-[active=true]:text-primary-foreground";
 
-function NavSection({
-  label,
-  items,
-  pathname,
-}: {
-  label: string;
-  items: readonly NavItem[];
-  pathname: string;
-}) {
+const PRIMARY_ITEMS = NAV_SECTIONS.flatMap((section) => section.items.filter((item) => item.primary));
+
+function NavLinks({ items }: { items: readonly NavItem[] }) {
+  const activeHref = navItemForPath(usePathname())?.href;
+  const { setOpenMobile } = useSidebar();
   return (
-    <SidebarGroup>
-      <SidebarGroupLabel>{label}</SidebarGroupLabel>
-      <SidebarGroupContent>
-        <SidebarMenu>
-          {items.map((item) => {
-            const Icon = item.icon;
-            const active = isItemActive(pathname, item.href);
-            return (
-              <SidebarMenuItem key={item.href}>
-                <SidebarMenuButton
-                  asChild
-                  isActive={active}
-                  tooltip={item.label}
-                >
-                  <HoverPrefetchLink href={item.href}>
-                    <Icon className="size-4" />
-                    <span>{item.label}</span>
-                  </HoverPrefetchLink>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            );
-          })}
-        </SidebarMenu>
-      </SidebarGroupContent>
-    </SidebarGroup>
-  );
-}
-
-export function AppSidebar({ userEmail }: { userEmail?: string }) {
-  const pathname = usePathname();
-
-  return (
-    <Sidebar collapsible="icon">
-      {/* Same height as the page header, so both bottom borders are one line. */}
-      <SidebarHeader className="h-16 shrink-0 justify-center border-b">
-        <SidebarMenu>
-          <SidebarMenuItem>
+    <SidebarMenu>
+      {items.map((item) => {
+        const Icon = item.icon;
+        const active = item.href === activeHref;
+        return (
+          <SidebarMenuItem key={item.href}>
             <SidebarMenuButton
               asChild
-              size="lg"
-              tooltip="Finify"
-              className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+              size="sm"
+              isActive={active}
+              className={cn("text-xs", item.primary && PRIMARY_BUTTON)}
             >
-              <HoverPrefetchLink href="/">
-                <div className="bg-primary text-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
-                  <Wallet className="size-4" />
-                </div>
-                <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-semibold">Finify</span>
-                  <span className="truncate text-xs text-muted-foreground">
-                    Finanzas personales
-                  </span>
-                </div>
+              <HoverPrefetchLink
+                href={item.href}
+                aria-current={active ? "page" : undefined}
+                onClick={() => setOpenMobile(false)}
+              >
+                <Icon />
+                <span className={active ? "font-bold" : undefined}>{item.label}</span>
               </HoverPrefetchLink>
             </SidebarMenuButton>
           </SidebarMenuItem>
-        </SidebarMenu>
+        );
+      })}
+    </SidebarMenu>
+  );
+}
+
+const THEMES = [
+  { value: "light", label: "Claro" },
+  { value: "dark", label: "Oscuro" },
+  { value: "system", label: "Sistema" },
+];
+
+// Mounted only while the menu is open, so the stored theme is never read
+// during server rendering or hydration.
+function ThemeOptions() {
+  const { theme, setTheme } = useTheme();
+  return (
+    <DropdownMenuRadioGroup value={theme} onValueChange={setTheme}>
+      {THEMES.map(({ value, label }) => (
+        <DropdownMenuRadioItem key={value} value={value} className="text-xs">
+          {label}
+        </DropdownMenuRadioItem>
+      ))}
+    </DropdownMenuRadioGroup>
+  );
+}
+
+function UserSummary({ email }: { email: string }) {
+  return (
+    <>
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-sidebar-accent text-xs font-medium uppercase">
+        {email.slice(0, 1) || "?"}
+      </span>
+      <span className="grid flex-1 text-left text-sm leading-tight">
+        <span className="truncate text-xs text-muted-foreground">{email}</span>
+      </span>
+    </>
+  );
+}
+
+function NavUser({ email }: { email: string }) {
+  const { isMobile, setOpenMobile } = useSidebar();
+  return (
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <SidebarMenuButton
+              size="lg"
+              className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+            >
+              <UserSummary email={email} />
+              <ChevronsUpDown className="ml-auto size-4" />
+            </SidebarMenuButton>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-lg"
+            side={isMobile ? "bottom" : "right"}
+            align="end"
+            sideOffset={4}
+          >
+            <DropdownMenuLabel className="flex items-center gap-2 font-normal">
+              <UserSummary email={email} />
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem asChild className="text-xs">
+              <Link href="/settings" onClick={() => setOpenMobile(false)}>
+                <Settings />
+                Configuración
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild className="text-xs">
+              <a href="/auth/logout">
+                <LogOut />
+                Cerrar sesión
+              </a>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </SidebarMenuItem>
+    </SidebarMenu>
+  );
+}
+
+export function AppSidebar({ userEmail }: { userEmail: string }) {
+  const { setOpenMobile } = useSidebar();
+  return (
+    <Sidebar variant="inset" collapsible="offcanvas">
+      <SidebarHeader>
+        <Link href="/" className="flex h-8 items-center gap-2 px-2" onClick={() => setOpenMobile(false)}>
+          <span className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
+            <Wallet className="size-3.5" />
+          </span>
+          <span className="text-sm font-semibold tracking-tight">Finify</span>
+        </Link>
       </SidebarHeader>
 
       <SidebarContent>
-        {NAV_SECTIONS.map((section) => (
-          <NavSection
-            key={section.label}
-            label={section.label}
-            items={section.items}
-            pathname={pathname}
-          />
-        ))}
+        <nav aria-label="Principal">
+          <SidebarGroup>
+            <NavLinks items={PRIMARY_ITEMS} />
+          </SidebarGroup>
+          {NAV_SECTIONS.map((section) => (
+            <SidebarGroup key={section.label}>
+              <SidebarGroupLabel>{section.label}</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <NavLinks items={section.items.filter((item) => !item.primary)} />
+              </SidebarGroupContent>
+            </SidebarGroup>
+          ))}
+        </nav>
+        <SidebarGroup className="mt-auto">
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <SidebarMenuButton size="sm" className="text-xs">
+                      <Sun className="dark:hidden" />
+                      <Moon className="hidden dark:block" />
+                      <span>Tema</span>
+                    </SidebarMenuButton>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent side="top" align="start">
+                    <ThemeOptions />
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="border-t">
-        {userEmail ? (
-          <div className="px-2 py-1 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
-            <span className="block truncate" title={userEmail}>
-              {userEmail}
-            </span>
-          </div>
-        ) : null}
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              asChild
-              tooltip="Cerrar sesión"
-              className="text-muted-foreground hover:text-foreground"
-            >
-              <a href="/auth/logout">
-                <LogOut className="size-4" />
-                <span>Cerrar sesión</span>
-              </a>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
+      <SidebarFooter>
+        <NavUser email={userEmail} />
       </SidebarFooter>
     </Sidebar>
   );
