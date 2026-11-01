@@ -1,10 +1,18 @@
-import * as React from "react";
-import Link from "next/link";
+"use client";
 
+import * as React from "react";
+
+import { type Crumb, PageCrumbs } from "@/components/page-crumbs";
 import { cn } from "@/lib/utils";
 
 export type PageHeaderCrumb = { label: string; href: string };
 
+/**
+ * A page's first row: what qualifies the page (badges, filters) on the left
+ * and its actions on the right, at the toolbar's scale. The top bar's
+ * breadcrumb names the page, so title and description are for screen readers
+ * only, and a header with nothing else to show takes no room.
+ */
 function PageHeader({
   className,
   children,
@@ -14,7 +22,8 @@ function PageHeader({
     <div
       data-slot="page-header"
       className={cn(
-        "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between",
+        "flex min-h-7 flex-wrap items-center gap-2",
+        "[&:not(:has([data-slot=page-header-actions],[data-slot=badge],[data-slot=skeleton]))]:sr-only",
         className,
       )}
       {...props}
@@ -31,52 +40,33 @@ function PageHeaderTitleGroup({
   return (
     <div
       data-slot="page-header-title-group"
-      className={cn("flex min-w-0 flex-col gap-1", className)}
+      className={cn("flex min-w-0 flex-wrap items-center gap-1.5", className)}
       {...props}
     />
   );
 }
 
 /**
- * The page's h1. `breadcrumb` lists the pages above it, rendered on the same
- * line as links: "Cuentas / Banco X".
+ * The page's h1, for screen readers. `breadcrumb` lists the pages above it;
+ * with it, the top bar shows "Cuentas › Banco X" instead of the section name.
  */
 function PageHeaderTitle({
   className,
   breadcrumb,
+  children,
   ...props
 }: React.ComponentProps<"h1"> & { breadcrumb?: readonly PageHeaderCrumb[] }) {
-  const title = (
-    <h1
-      data-slot="page-header-title"
-      className={cn(
-        "text-lg font-semibold tracking-tight text-foreground",
-        className,
-      )}
-      {...props}
-    />
-  );
-  if (!breadcrumb?.length) return title;
-
+  const crumbs: Crumb[] | null =
+    breadcrumb?.length && typeof children === "string"
+      ? [...breadcrumb, { label: children }]
+      : null;
   return (
-    <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
-      <nav aria-label="Ruta" className="flex items-baseline gap-x-1.5">
-        {breadcrumb.map((crumb) => (
-          <React.Fragment key={crumb.href}>
-            <Link
-              href={crumb.href}
-              className="text-lg font-semibold tracking-tight text-muted-foreground hover:text-foreground"
-            >
-              {crumb.label}
-            </Link>
-            <span aria-hidden className="text-lg text-muted-foreground/60">
-              /
-            </span>
-          </React.Fragment>
-        ))}
-      </nav>
-      {title}
-    </div>
+    <>
+      <h1 data-slot="page-header-title" className={cn("sr-only", className)} {...props}>
+        {children}
+      </h1>
+      {!crumbs ? null : <PageCrumbs crumbs={crumbs} />}
+    </>
   );
 }
 
@@ -87,7 +77,7 @@ function PageHeaderDescription({
   return (
     <p
       data-slot="page-header-description"
-      className={cn("text-sm text-muted-foreground", className)}
+      className={cn("sr-only", className)}
       {...props}
     />
   );
@@ -100,7 +90,7 @@ function PageHeaderActions({
   return (
     <div
       data-slot="page-header-actions"
-      className={cn("flex flex-wrap items-center gap-2", className)}
+      className={cn("ml-auto flex shrink-0 flex-wrap items-center gap-2", className)}
       {...props}
     />
   );
