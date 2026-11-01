@@ -130,7 +130,7 @@ export interface NetWorthEvolutionPoint {
   assets: number;
   liabilities: number;
   netWorth: number;
-  /** The month leaves out positions or debts without a rate to the base currency. */
+  /** The month leaves out debts without a rate to the base currency. */
   fxMissing: boolean;
   /** The month counts a cash balance without a rate at its stored base amounts. */
   cashFxMissing: boolean;

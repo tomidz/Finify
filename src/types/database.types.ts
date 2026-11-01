@@ -598,183 +598,6 @@ export type Database = {
           },
         ]
       }
-      instrument_prices: {
-        Row: {
-          fetched_at: string
-          price: number
-          price_key: string
-          source: string
-          user_id: string
-        }
-        Insert: {
-          fetched_at?: string
-          price: number
-          price_key: string
-          source: string
-          user_id: string
-        }
-        Update: {
-          fetched_at?: string
-          price?: number
-          price_key?: string
-          source?: string
-          user_id?: string
-        }
-        Relationships: []
-      }
-      investment_sales: {
-        Row: {
-          account_id: string
-          asset_name: string
-          asset_type: string
-          cost_basis: number
-          created_at: string
-          currency: string
-          fees: number
-          id: string
-          isin: string | null
-          notes: string | null
-          price_per_unit: number
-          quantity_sold: number
-          realized_pnl: number
-          sale_date: string
-          swap_lot_id: string | null
-          tax: number
-          ticker: string | null
-          total_proceeds: number
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          account_id: string
-          asset_name: string
-          asset_type: string
-          cost_basis: number
-          created_at?: string
-          currency: string
-          fees?: number
-          id?: string
-          isin?: string | null
-          notes?: string | null
-          price_per_unit: number
-          quantity_sold: number
-          realized_pnl: number
-          sale_date: string
-          swap_lot_id?: string | null
-          tax?: number
-          ticker?: string | null
-          total_proceeds: number
-          updated_at?: string
-          user_id: string
-        }
-        Update: {
-          account_id?: string
-          asset_name?: string
-          asset_type?: string
-          cost_basis?: number
-          created_at?: string
-          currency?: string
-          fees?: number
-          id?: string
-          isin?: string | null
-          notes?: string | null
-          price_per_unit?: number
-          quantity_sold?: number
-          realized_pnl?: number
-          sale_date?: string
-          swap_lot_id?: string | null
-          tax?: number
-          ticker?: string | null
-          total_proceeds?: number
-          updated_at?: string
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "investment_sales_account_id_fkey"
-            columns: ["account_id"]
-            isOneToOne: false
-            referencedRelation: "accounts"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "investment_sales_currency_fkey"
-            columns: ["currency"]
-            isOneToOne: false
-            referencedRelation: "currencies"
-            referencedColumns: ["code"]
-          },
-        ]
-      }
-      investments: {
-        Row: {
-          account_id: string
-          asset_name: string
-          asset_type: string
-          created_at: string
-          currency: string
-          id: string
-          isin: string | null
-          notes: string | null
-          price_per_unit: number
-          purchase_date: string
-          quantity: number
-          ticker: string | null
-          total_cost: number
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          account_id: string
-          asset_name: string
-          asset_type?: string
-          created_at?: string
-          currency: string
-          id?: string
-          isin?: string | null
-          notes?: string | null
-          price_per_unit: number
-          purchase_date: string
-          quantity: number
-          ticker?: string | null
-          total_cost: number
-          updated_at?: string
-          user_id: string
-        }
-        Update: {
-          account_id?: string
-          asset_name?: string
-          asset_type?: string
-          created_at?: string
-          currency?: string
-          id?: string
-          isin?: string | null
-          notes?: string | null
-          price_per_unit?: number
-          purchase_date?: string
-          quantity?: number
-          ticker?: string | null
-          total_cost?: number
-          updated_at?: string
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "investments_account_id_fkey"
-            columns: ["account_id"]
-            isOneToOne: false
-            referencedRelation: "accounts"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "investments_currency_fkey"
-            columns: ["currency"]
-            isOneToOne: false
-            referencedRelation: "currencies"
-            referencedColumns: ["code"]
-          },
-        ]
-      }
       months: {
         Row: {
           created_at: string
@@ -1213,8 +1036,6 @@ export type Database = {
           notes: string | null
           occurrence_date: string | null
           recurring_id: string | null
-          source_investment_id: string | null
-          source_investment_sale_id: string | null
           transaction_type: Database["public"]["Enums"]["transaction_type"]
           updated_at: string
           user_id: string
@@ -1232,8 +1053,6 @@ export type Database = {
           notes?: string | null
           occurrence_date?: string | null
           recurring_id?: string | null
-          source_investment_id?: string | null
-          source_investment_sale_id?: string | null
           transaction_type: Database["public"]["Enums"]["transaction_type"]
           updated_at?: string
           user_id: string
@@ -1251,8 +1070,6 @@ export type Database = {
           notes?: string | null
           occurrence_date?: string | null
           recurring_id?: string | null
-          source_investment_id?: string | null
-          source_investment_sale_id?: string | null
           transaction_type?: Database["public"]["Enums"]["transaction_type"]
           updated_at?: string
           user_id?: string
@@ -1284,20 +1101,6 @@ export type Database = {
             columns: ["recurring_id"]
             isOneToOne: false
             referencedRelation: "recurring_transactions"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "transactions_source_investment_id_fkey"
-            columns: ["source_investment_id"]
-            isOneToOne: false
-            referencedRelation: "investments"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "transactions_source_investment_sale_id_fkey"
-            columns: ["source_investment_sale_id"]
-            isOneToOne: false
-            referencedRelation: "investment_sales"
             referencedColumns: ["id"]
           },
         ]
@@ -1372,10 +1175,6 @@ export type Database = {
           close_date: string
           currency: string
           currency_symbol: string
-          investment_fx_missing: boolean
-          investment_fx_rate_date: string
-          investment_value: number
-          investment_value_base: number
           is_active: boolean
           month: number
           year: number
@@ -1416,15 +1215,6 @@ export type Database = {
           planned_amount: number
           variance: number
         }[]
-      }
-      create_investment: {
-        Args: { p_cash_rate?: number; p_lot: Json }
-        Returns: string
-      }
-      delete_investment: { Args: { p_id: string }; Returns: undefined }
-      delete_investment_sale: {
-        Args: { p_sale_id: string }
-        Returns: undefined
       }
       fx_max_age_days: {
         Args: { p_from: string; p_to: string }
@@ -1506,15 +1296,6 @@ export type Database = {
           opening_base_amount: number
         }[]
       }
-      pay_with_investment: {
-        Args: {
-          p_cash_rate?: number
-          p_header?: Json
-          p_legs?: Json
-          p_sale: Json
-        }
-        Returns: Json
-      }
       rebuild_opening_balances: {
         Args: { p_from_month_id?: string }
         Returns: undefined
@@ -1541,21 +1322,6 @@ export type Database = {
         }
         Returns: string
       }
-      record_investment_sale: {
-        Args: { p_cash_rate?: number; p_sale: Json }
-        Returns: string
-      }
-      reduce_investment_lots: {
-        Args: {
-          p_account_id: string
-          p_asset_name: string
-          p_asset_type: string
-          p_currency: string
-          p_quantity: number
-          p_ticker: string
-        }
-        Returns: number
-      }
       register_recurring_occurrence: {
         Args: { p_leg: Json; p_occurrence_date: string; p_recurring_id: string }
         Returns: string
@@ -1574,17 +1340,6 @@ export type Database = {
       }
       set_ledger_transaction_deleted: {
         Args: { p_deleted: boolean; p_id: string }
-        Returns: undefined
-      }
-      swap_investment_lots: { Args: { p_swap: Json }; Returns: string }
-      sync_investment_cash: {
-        Args: {
-          p_amount?: number
-          p_in_place?: boolean
-          p_investment_id: string
-          p_rate: number
-          p_sale_id: string
-        }
         Returns: undefined
       }
       transactions_feed: {
@@ -1614,29 +1369,6 @@ export type Database = {
           updated_at: string
           user_id: string
         }[]
-      }
-      transfer_investment_lots: {
-        Args: {
-          p_asset_name: string
-          p_asset_type: string
-          p_currency: string
-          p_destination_account_id: string
-          p_fee_quantity: number
-          p_notes: string
-          p_quantity: number
-          p_source_account_id: string
-          p_ticker: string
-          p_transfer_date: string
-        }
-        Returns: undefined
-      }
-      transfer_investment_position: {
-        Args: { p_fee_cash?: number; p_fee_rate?: number; p_move: Json }
-        Returns: undefined
-      }
-      update_investment: {
-        Args: { p_cash_rate?: number; p_changes: Json; p_id: string }
-        Returns: undefined
       }
       usage_counts: {
         Args: never

@@ -4,7 +4,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 
-select plan(15);
+select plan(14);
 
 -- User A with a small ledger, user B with nothing.
 insert into auth.users (id, email) values
@@ -24,9 +24,6 @@ insert into public.transactions (id, user_id, month_id, transaction_type, date, 
    'aaaaaaaa-0000-4000-8000-000000000002', 'expense', '2026-01-10', 'Supermercado');
 insert into public.transaction_amounts (transaction_id, account_id, amount, original_currency, exchange_rate, base_amount) values
   ('aaaaaaaa-0000-4000-8000-000000000004', 'aaaaaaaa-0000-4000-8000-000000000001', -10, 'USD', 1, -10);
-insert into public.investments (user_id, account_id, asset_name, ticker, asset_type, quantity, price_per_unit, total_cost, currency, purchase_date) values
-  ('11111111-1111-4111-8111-111111111111', 'aaaaaaaa-0000-4000-8000-000000000001',
-   'Apple', 'AAPL', 'stock', 2, 150, 300, 'USD', '2026-01-05');
 insert into public.ai_sessions (id, user_id, title) values
   ('aaaaaaaa-0000-4000-8000-000000000005', '11111111-1111-4111-8111-111111111111', 'Chat A');
 
@@ -77,7 +74,6 @@ select is_empty(
   'B cannot change A''s opening balances'
 );
 select is_empty($$ delete from public.transaction_amounts returning id $$, 'B cannot delete A''s legs');
-select is_empty($$ update public.investments set quantity = 1 returning id $$, 'B cannot change A''s lots');
 
 select throws_ok(
   $$ insert into public.accounts (user_id, name, account_type, currency)
