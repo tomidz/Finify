@@ -309,8 +309,12 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
     <main
       data-slot="sidebar-inset"
       className={cn(
-        "bg-background relative flex w-full flex-1 flex-col",
-        "md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
+        "bg-canvas relative flex w-full flex-1 flex-col",
+        // The app shell's floating canvas card: 8px gutters, rounded, hairline
+        // border, scrolling inside. The left gutter is the sidebar's own p-2
+        // when expanded and the layout wrapper's ml-2 when collapsed: that
+        // wrapper sits between Sidebar and inset, so peer selectors can't.
+        "min-h-0 min-w-0 overflow-y-auto scrollbar-none md:m-2 md:ml-0 md:rounded-xl md:border-[0.5px] md:border-canvas-border",
         className
       )}
       {...props}
