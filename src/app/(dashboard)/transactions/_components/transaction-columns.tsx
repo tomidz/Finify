@@ -139,16 +139,12 @@ export function transactionColumns({
               {
                 label: "Editar",
                 icon: Pencil,
-                // Created by a purchase or sale: edited from Inversiones.
-                hidden: row.original.transaction_type === "investment",
                 onSelect: () => onEdit(row.original),
               },
               {
                 label: "Eliminar…",
                 icon: Trash2,
                 destructive: true,
-                // The server refuses it: it goes with its purchase or sale.
-                hidden: row.original.transaction_type === "investment",
                 disabled: row.original.id === deletingId,
                 onSelect: () => onDelete(row.original),
               },

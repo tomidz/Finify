@@ -144,9 +144,6 @@ export async function loadAccountNetWorth(
       balance_book_base: number | string;
       balance_fx_missing: boolean;
       balance_fx_rate_date: string | null;
-      investment_value: number | string;
-      investment_value_base: number | string | null;
-      investment_fx_rate_date: string | null;
     }>;
     const accountResults = rows.map((row) => ({
       id: row.account_id,
@@ -160,17 +157,9 @@ export async function loadAccountNetWorth(
       balance_book_base: Number(row.balance_book_base ?? 0),
       balance_fx_missing: row.balance_fx_missing === true,
       balance_fx_rate_date: row.balance_fx_rate_date,
-      investment_value: Number(row.investment_value ?? 0),
-      investment_value_base:
-        row.investment_value_base != null ? Number(row.investment_value_base) : null,
-      investment_fx_rate_date: row.investment_fx_rate_date,
     }));
 
-    // Positions without a rate are left out rather than valued 1:1.
-    const total = accountResults.reduce(
-      (sum, account) => sum + account.balance_base + (account.investment_value_base ?? 0),
-      0,
-    );
+    const total = accountResults.reduce((sum, account) => sum + account.balance_base, 0);
 
     return {
       data: {

@@ -299,7 +299,7 @@ function BudgetMonthContent({
       .sort((a, b) => (TYPE_ORDER[a.type] ?? 99) - (TYPE_ORDER[b.type] ?? 99));
   }, [categoryRows]);
 
-  // Cash actually put into investments this month (purchases minus sales).
+  // Cash actually sent to investments this month (contributions minus withdrawals).
   const { data: monthTransactions, error: transactionsError } = useTransactions(selectedMonthId);
   const monthInvestmentTotal = useMemo(
     () => netInvestmentContributions(monthTransactions ?? []),
@@ -466,7 +466,7 @@ function BudgetMonthContent({
         <RenderErrorBoundary name="budget-groups" resetKeys={[rowsByType]} className="min-h-72">
           <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-3">
             {rowsByType.map((group) => {
-              // Investments execute from the investments module; every other
+              // Investments execute from the investment movements; every other
               // group (savings included) executes from its own categories.
               const isInvestments = group.type === "investments";
               const effectiveActual = isInvestments ? monthInvestmentTotal : group.actualTotal;

@@ -82,7 +82,7 @@ export interface AccountNetWorthSummary {
    * runs. Null without accounts.
    */
   close_date: string | null;
-  /** Leaves out positions without a rate; cash without one counts at its stored base. */
+  /** Cash without a rate counts at its stored base. */
   total: number;
   accounts: {
     id: string;
@@ -90,7 +90,7 @@ export interface AccountNetWorthSummary {
     account_type: string;
     currency: string;
     currency_symbol: string;
-    /** Inactive accounts are listed while they hold a balance or a position. */
+    /** Inactive accounts are listed while they hold a balance. */
     is_active: boolean;
     balance: number;
     /**
@@ -103,11 +103,6 @@ export interface AccountNetWorthSummary {
     balance_fx_missing: boolean;
     /** The date of the rate a foreign balance was valued at. */
     balance_fx_rate_date: string | null;
-    investment_value: number;
-    /** Null when a lot or sale of the account has no rate to the base currency. */
-    investment_value_base: number | null;
-    /** The oldest rate the investments were valued at. */
-    investment_fx_rate_date: string | null;
   }[];
 }
 

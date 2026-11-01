@@ -10,7 +10,6 @@ import {
   Settings,
   Sparkles,
   Target,
-  TrendingUp,
   type LucideIcon,
 } from "lucide-react";
 
@@ -41,7 +40,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     label: "Patrimonio",
     items: [
       { href: "/accounts", icon: Landmark, label: "Cuentas" },
-      { href: "/investments", icon: TrendingUp, label: "Inversiones" },
       { href: "/debts", icon: CreditCard, label: "Deudas" },
       { href: "/savings", icon: Target, label: "Metas de Ahorro" },
       { href: "/net-worth", icon: BarChart3, label: "Patrimonio" },

@@ -59,8 +59,6 @@ const TOOL_LABELS: Record<string, string> = {
   get_budget_summary: "Analizando presupuesto",
   get_transactions: "Leyendo transacciones",
   get_net_worth: "Analizando patrimonio",
-  get_investments: "Leyendo inversiones",
-  get_investment_sales: "Leyendo ventas",
   get_forecast: "Proyectando",
   get_savings_goals: "Leyendo metas de ahorro",
   get_pending_recurring: "Revisando recurrentes",
@@ -69,7 +67,6 @@ const TOOL_LABELS: Record<string, string> = {
   get_user_preferences: "Leyendo preferencias",
   get_net_worth_evolution: "Analizando patrimonio",
   get_liabilities: "Leyendo deudas",
-  get_investment_values: "Valuando portafolio",
 };
 
 /** The server accepts up to this many characters per message. */

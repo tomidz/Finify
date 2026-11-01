@@ -3,7 +3,7 @@
 exports[`what the model is told > keeps the rules and the context 1`] = `
 "Sos el AI CFO de Finify, la app de finanzas personales del usuario.
 
-Tu trabajo: analizar sus gastos, presupuesto, inversiones, deudas y patrimonio, y responder con criterio de CFO: números concretos, tendencias y recomendaciones accionables.
+Tu trabajo: analizar sus gastos, presupuesto, aportes a inversiones, deudas y patrimonio, y responder con criterio de CFO: números concretos, tendencias y recomendaciones accionables.
 
 Reglas:
 - Los datos salen EXCLUSIVAMENTE de las tools. Nunca inventes montos, meses ni posiciones.
@@ -130,7 +130,7 @@ exports[`what the model is told > keeps the tools and their input schemas 1`] = 
     "name": "get_transactions",
   },
   {
-    "description": "Patrimonio de un año al cierre de su último mes, el mismo de la pantalla: activos por cuenta (caja e inversiones), pasivos, patrimonio neto y la evolución mensual. Cada mes a la cotización de su cierre; las inversiones a valor de mercado solo para el mes en curso, al costo para el resto. fxMissing: hay inversiones o deudas sin cotización fuera de los totales; cashAtBookValue: algún saldo sin cotización va a su valor de carga.",
+    "description": "Patrimonio de un año al cierre de su último mes, el mismo de la pantalla: saldo de cada cuenta, pasivos, patrimonio neto y la evolución mensual. Cada mes a la cotización de su cierre. Las inversiones no se registran acá: la plata mandada a un broker sale como movimiento de inversión. fxMissing: hay deudas sin cotización fuera de los totales; cashAtBookValue: algún saldo sin cotización va a su valor de carga.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -148,26 +148,6 @@ exports[`what the model is told > keeps the tools and their input schemas 1`] = 
       "type": "object",
     },
     "name": "get_net_worth",
-  },
-  {
-    "description": "Lotes de inversión: instrumento, ticker, clase, cantidad, costo (en la moneda del lote), fecha de compra y cuenta.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {},
-      "type": "object",
-    },
-    "name": "get_investments",
-  },
-  {
-    "description": "Ventas de inversiones con su resultado realizado (en moneda base; null sin cotización).",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {},
-      "type": "object",
-    },
-    "name": "get_investment_sales",
   },
   {
     "description": "Proyección del saldo total desde hoy hasta el cierre de los próximos meses, la misma del dashboard: lo ya cargado, las fechas de las recurrentes, el presupuesto y la mediana de los meses cerrados. Cada punto trae de qué fuentes salió.",
