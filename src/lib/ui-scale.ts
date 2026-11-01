@@ -16,6 +16,8 @@ export const uiScale = {
   field: "h-7 text-base md:text-xs",
   /** An icon placed by hand beside the controls. */
   icon: "size-3.5",
+  /** A form's dense scale (dialogs, settings cards): labels and selects at text-xs, fields too from md. */
+  form: "[&_[data-slot=label]]:text-xs [&_[data-slot=select-trigger]]:text-xs md:[&_input]:text-xs md:[&_textarea]:text-xs",
   /** The 11px caption above a control or a group of them. */
   label: "text-[11px] font-medium text-muted-foreground",
 } as const;
