@@ -5,7 +5,6 @@ import { z } from "zod";
 
 import { getAccountCurrentBalance, getAccounts } from "@/actions/accounts";
 import { getBudgetSummaryVsActual } from "@/actions/budget";
-import { getInvestments, getInvestmentSales } from "@/actions/investments";
 import { getPendingRecurring } from "@/actions/recurring";
 import { getSavingsGoals } from "@/actions/savings-goals";
 import { getTransactionsForRange } from "@/actions/transactions";
@@ -18,7 +17,6 @@ import { toYearMonthCode } from "@/lib/months";
 import type { ServerContext } from "@/lib/server/context";
 import { loadForecast } from "@/lib/server/forecast";
 import { getFxQuote } from "@/lib/server/fx";
-import { loadInvestmentValuation } from "@/lib/server/investment-valuation";
 import {
   loadAccountNetWorth,
   loadLiabilitiesForYear,
@@ -176,7 +174,7 @@ export function createAicfoTools(ctx: AicfoContext) {
     }),
     get_net_worth: tool({
       description:
-        "Patrimonio de un año al cierre de su último mes, el mismo de la pantalla: activos por cuenta (caja e inversiones), pasivos, patrimonio neto y la evolución mensual. Cada mes a la cotización de su cierre; las inversiones a valor de mercado solo para el mes en curso, al costo para el resto. fxMissing: hay inversiones o deudas sin cotización fuera de los totales; cashAtBookValue: algún saldo sin cotización va a su valor de carga.",
+        "Patrimonio de un año al cierre de su último mes, el mismo de la pantalla: saldo de cada cuenta, pasivos, patrimonio neto y la evolución mensual. Cada mes a la cotización de su cierre. Las inversiones no se registran acá: la plata mandada a un broker sale como movimiento de inversión. fxMissing: hay deudas sin cotización fuera de los totales; cashAtBookValue: algún saldo sin cotización va a su valor de carga.",
       inputSchema: z.object({ year: z.number().int().describe("año calendario, ej. 2026") }),
       execute: async ({ year }) => {
         if (!ctx.months.some((m) => m.year === year)) return { error: `No hay meses cargados en ${year}.` };
@@ -189,22 +187,14 @@ export function createAicfoTools(ctx: AicfoContext) {
         if ("error" in accounts) return failed("el patrimonio", accounts.error);
         if ("error" in liabilities) return failed("los pasivos", liabilities.error);
         if ("error" in evolution) return failed("la evolución del patrimonio", evolution.error);
-        // Market value only exists for today.
-        const valuation =
-          accounts.data.close_date === today()
-            ? await loadInvestmentValuation(ctx.server, ctx.baseCurrency)
-            : null;
         const view = buildNetWorthView({
           accounts: accounts.data,
           liabilities: liabilities.data,
           evolution: evolution.data,
-          valuation: valuation && "data" in valuation ? valuation.data : null,
-          today: today(),
         });
         return {
           baseCurrency: ctx.baseCurrency,
           closeDate: accounts.data.close_date,
-          marketValued: view.marketValued,
           totalAssets: view.totalAssets,
           totalLiabilities: view.totalLiabilities,
           netWorth: view.netWorth,
@@ -218,8 +208,6 @@ export function createAicfoTools(ctx: AicfoContext) {
             active: account.is_active,
             balance: account.balance,
             balanceBase: account.balance_base,
-            investmentsBase: account.investment_value_base,
-            totalBase: account.total,
           })),
           liabilities: liabilities.data.items.map((item) => ({
             name: item.name,
@@ -230,16 +218,6 @@ export function createAicfoTools(ctx: AicfoContext) {
           evolution: view.evolution,
         };
       },
-    }),
-    get_investments: tool({
-      description: "Lotes de inversión: instrumento, ticker, clase, cantidad, costo (en la moneda del lote), fecha de compra y cuenta.",
-      inputSchema: z.object({}),
-      execute: async () => unwrap("las inversiones", await getInvestments()),
-    }),
-    get_investment_sales: tool({
-      description: "Ventas de inversiones con su resultado realizado (en moneda base; null sin cotización).",
-      inputSchema: z.object({}),
-      execute: async () => unwrap("las ventas de inversiones", await getInvestmentSales()),
     }),
     get_forecast: tool({
       description:

@@ -48,10 +48,6 @@ import {
   useDeleteTransaction,
 } from "@/hooks/useTransactions";
 import {
-  useInvestments,
-  useCurrentInvestmentValuesByAccount,
-} from "@/hooks/useInvestments";
-import {
   useMonths,
   useEnsureCurrentMonth,
   useCreateNextMonth,
@@ -253,21 +249,6 @@ export function TransactionsTable() {
     () => feedTransactions.map(toTableTransaction),
     [feedTransactions],
   );
-
-  const { data: allInvestments } = useInvestments();
-  const { data: currentInvestmentByAccount } =
-    useCurrentInvestmentValuesByAccount();
-
-  // Sum investment total_cost per account (in the account's currency).
-  const investmentByAccount = useMemo(() => {
-    const map = new Map<string, number>();
-    if (!allInvestments) return map;
-    for (const inv of allInvestments) {
-      const current = map.get(inv.account_id) ?? 0;
-      map.set(inv.account_id, current + inv.total_cost);
-    }
-    return map;
-  }, [allInvestments]);
 
   // Active accounts, plus an inactive one a link filtered by.
   const accountOptions = useMemo<FilterOption[]>(
@@ -485,12 +466,7 @@ export function TransactionsTable() {
       // While another month loads, the previous one's figures stay dimmed.
       <div className={cn("flex flex-col gap-6", periodIsPrevious && "opacity-60")}>
         <SummaryCards summary={period.summary} currencySymbol={baseCurrencySymbol} detailed />
-        <MonthAccountBalances
-          accountMonthlyBalances={period.accountBalances}
-          investmentByAccount={investmentByAccount}
-          currentInvestmentByAccount={currentInvestmentByAccount}
-          baseCurrencySymbol={baseCurrencySymbol}
-        />
+        <MonthAccountBalances accountMonthlyBalances={period.accountBalances} />
       </div>
     );
   };

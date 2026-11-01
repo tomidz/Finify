@@ -10,12 +10,8 @@ const tx = (transaction_type: string, baseAmounts: number[]) =>
   }) as unknown as TransactionWithRelations;
 
 describe("netInvestmentContributions", () => {
-  it("counts purchases minus sales, in base currency", () => {
+  it("counts contributions minus withdrawals, in base currency", () => {
     expect(netInvestmentContributions([tx("investment", [-1000]), tx("investment", [250])])).toBe(750);
-  });
-
-  it("adds nothing for a swap recorded as a sale and a purchase of the same value", () => {
-    expect(netInvestmentContributions([tx("investment", [30_000]), tx("investment", [-30_000])])).toBe(0);
   });
 
   it("ignores every other movement", () => {

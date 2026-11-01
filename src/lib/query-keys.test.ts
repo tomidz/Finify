@@ -30,8 +30,6 @@ describe("invalidateLedger", () => {
   const untouched: QueryKey[] = [
     ["currencies"],
     ["budget", "categories"],
-    ["investments", "prices", "USD", "BTC"],
-    ["investments", "valuation", 2026],
     ["recurring"],
     ["rules"],
   ];

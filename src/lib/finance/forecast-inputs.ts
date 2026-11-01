@@ -16,9 +16,9 @@ import type { CashflowInput } from "./project-cashflow";
  */
 
 /**
- * The investment categories and the investments module count as one line,
- * like the budget page: a purchase recorded from the module executes the plan
- * of any investment category.
+ * The investment categories and the investment movements count as one line,
+ * like the budget page: money sent to a broker executes the plan of any
+ * investment category.
  */
 export const INVESTMENTS_KEY = "group:investments";
 
@@ -32,9 +32,9 @@ export function categoryKeyOf(categoryTypes: ReadonlyMap<string, string>): Categ
 }
 
 /**
- * What a movement counts under, positive when received or spent. A module
- * investment counts only what it bought: a sale frees money, it does not undo
- * the month's purchases.
+ * What a movement counts under, positive when received or spent. An
+ * investment movement counts only what it sent out: money that comes back
+ * does not undo the month's contributions.
  */
 export function forecastFlow(
   tx: TransactionWithRelations,

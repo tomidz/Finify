@@ -313,7 +313,7 @@ export async function createTransaction(
     } = await supabase.auth.getUser();
     if (!user) return { error: "No autenticado" };
 
-    // The schema only lets income, expense and correction through.
+    // The schema only lets income, expense, correction and investment through.
     const transactionType = parsed.data.transaction_type as SignedTransactionType;
 
     return await saveLedgerTransaction(
@@ -461,12 +461,12 @@ function buildLegacyAmountLines(
     {
       account_id: existingLine.account_id,
       amount: normalizeSignedAmount(
-        existingType as "income" | "expense" | "correction",
+        existingType as SignedTransactionType,
         updates.amount
       ),
       exchange_rate: updates.exchange_rate,
       base_amount: normalizeSignedAmount(
-        existingType as "income" | "expense" | "correction",
+        existingType as SignedTransactionType,
         updates.base_amount
       ),
     },

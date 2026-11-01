@@ -20,12 +20,10 @@ vi.mock("@/actions/budget", () => ({
   getBudgetSummaryVsActual: (...args: unknown[]) => getBudgetSummaryVsActual(...args),
 }));
 vi.mock("@/actions/accounts", () => ({ getAccounts: vi.fn(), getAccountCurrentBalance: vi.fn() }));
-vi.mock("@/actions/investments", () => ({ getInvestments: vi.fn(), getInvestmentSales: vi.fn() }));
 vi.mock("@/actions/recurring", () => ({ getPendingRecurring: vi.fn() }));
 vi.mock("@/actions/savings-goals", () => ({ getSavingsGoals: vi.fn() }));
 vi.mock("@/lib/server/forecast", () => ({ loadForecast: vi.fn() }));
 vi.mock("@/lib/server/fx", () => ({ getFxQuote: vi.fn() }));
-vi.mock("@/lib/server/investment-valuation", () => ({ loadInvestmentValuation: vi.fn() }));
 vi.mock("@/lib/server/net-worth", () => ({
   loadAccountNetWorth: vi.fn(),
   loadLiabilitiesForYear: vi.fn(),

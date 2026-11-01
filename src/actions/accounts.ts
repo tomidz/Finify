@@ -47,8 +47,8 @@ async function resolveOpeningBase(
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 /**
- * Whether anything is already denominated in the account's currency: legs,
- * lots, sales or recurring templates. (A non-zero initial balance is on the
+ * Whether anything is already denominated in the account's currency: legs or
+ * recurring templates. (A non-zero initial balance is on the
  * account row itself.)
  */
 async function accountHasHistory(
@@ -58,8 +58,6 @@ async function accountHasHistory(
   const countOnly = { count: "exact", head: true } as const;
   const results = await Promise.all([
     supabase.from("transaction_amounts").select("id", countOnly).eq("account_id", accountId),
-    supabase.from("investments").select("id", countOnly).eq("account_id", accountId),
-    supabase.from("investment_sales").select("id", countOnly).eq("account_id", accountId),
     supabase.from("recurring_transactions").select("id", countOnly).eq("account_id", accountId),
   ]);
   const failed = results.find((result) => result.error);

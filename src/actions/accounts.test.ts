@@ -34,7 +34,7 @@ function ledger(options: { stored?: Stored; historyCount?: number }) {
       return { data: { id: ACCOUNT_ID, currency: stored.currency }, error: null };
     }
     if (query.table === "accounts") return { data: stored, error: null };
-    if (["transaction_amounts", "investments", "investment_sales", "recurring_transactions"].includes(query.table)) {
+    if (["transaction_amounts", "recurring_transactions"].includes(query.table)) {
       return { data: null, error: null, count: query.table === "transaction_amounts" ? (options.historyCount ?? 0) : 0 };
     }
     if (query.table === "user_preferences") return { data: { base_currency: "USD" }, error: null };

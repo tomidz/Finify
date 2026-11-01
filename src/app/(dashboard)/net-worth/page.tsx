@@ -26,9 +26,7 @@ import {
 } from "@/components/ui/select";
 import { useEnsureCurrentMonth } from "@/hooks/useMonths";
 import { useNetWorthData } from "@/hooks/useScreens";
-import { useInvestmentValuation } from "@/hooks/useInvestments";
 import { formatAmount, formatDayMonth } from "@/lib/format";
-import { today } from "@/lib/dates";
 import { buildNetWorthView } from "@/lib/finance/net-worth-view";
 import { monthLabel } from "@/lib/month-grid";
 import { uiScale } from "@/lib/ui-scale";
@@ -162,22 +160,9 @@ function NetWorthContent({
   baseCurrency: string;
 }) {
   const { accounts: assetsSummary, liabilities, evolution } = data;
-  const todayStr = today();
-  // Market values only exist for today: a past close keeps investments at
-  // cost, and until they arrive the current month does too.
-  const closesToday = assetsSummary.close_date === todayStr;
-  const { data: valuation } = useInvestmentValuation({ enabled: closesToday });
-
   const view = useMemo(
-    () =>
-      buildNetWorthView({
-        accounts: assetsSummary,
-        liabilities,
-        evolution,
-        valuation,
-        today: todayStr,
-      }),
-    [assetsSummary, liabilities, evolution, valuation, todayStr],
+    () => buildNetWorthView({ accounts: assetsSummary, liabilities, evolution }),
+    [assetsSummary, liabilities, evolution],
   );
   const { totalAssets, totalLiabilities, netWorth, groups } = view;
 
@@ -192,22 +177,18 @@ function NetWorthContent({
     .filter(Boolean)
     .join(" · ");
 
-  const atCost = !view.marketValued && view.accounts.some((account) => account.investment_value !== 0);
-  const pendingHint = !atCost ? undefined : "Inversiones a costo";
-
   return (
     <>
       <RenderErrorBoundary name="net-worth-summary" resetKeys={[view]} className="min-h-24">
         <div className="flex flex-col gap-1.5">
           <StatGrid columns={3}>
-            <StatCard label="Total activos" value={totalAssets} currency={currencySymbol} sub={pendingHint} />
+            <StatCard label="Total activos" value={totalAssets} currency={currencySymbol} />
             <StatCard label="Total pasivos" value={totalLiabilities} currency={currencySymbol} />
             <StatCard
               label="Patrimonio neto"
               value={netWorth}
               currency={currencySymbol}
               signTone
-              sub={pendingHint}
             />
           </StatGrid>
           {fxNote && <p className="text-muted-foreground text-[11px]">{fxNote}</p>}
@@ -228,35 +209,20 @@ function NetWorthContent({
                     <span className="font-semibold">{group.label}</span>
                     <NumericCell value={group.total} currency={currencySymbol} className="text-muted-foreground" />
                   </div>
-                  {group.accounts.map((acc) => {
-                    const inBase = (value: number | null) =>
-                      value !== null ? `${currencySymbol} ${formatAmount(value)}` : "sin cotización";
-                    const hasCash = Math.abs(acc.balance_base) > 0.01;
-                    const hasInvestments = acc.investment_value_base === null || acc.investment_value_base > 0;
-                    const showInvestmentBreakdown = hasCash && hasInvestments;
-                    const withoutRate = acc.balance_fx_missing || acc.investment_value_base === null;
-                    return (
-                      <div key={acc.id} className="flex items-center justify-between gap-3 border-b px-3 py-2 text-xs last:border-b-0">
-                        <div className="flex min-w-0 flex-col">
-                          <div className="flex min-w-0 items-baseline gap-1">
-                            <TruncatedText className="font-medium">{acc.name}</TruncatedText>
-                            {!acc.is_active && <span className="text-muted-foreground shrink-0 text-[11px]">(inactiva)</span>}
-                          </div>
-                          {showInvestmentBreakdown && (
-                            <span className="text-muted-foreground text-[11px]">
-                              cash: {inBase(acc.balance_base)} · inv: {inBase(acc.investment_value_base)}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex shrink-0 items-baseline gap-2">
-                          <NumericCell value={acc.total} currency={currencySymbol} className="font-medium" />
-                          {withoutRate && !showInvestmentBreakdown && (
-                            <span className="text-muted-foreground text-[11px]">sin cotización</span>
-                          )}
-                        </div>
+                  {group.accounts.map((acc) => (
+                    <div key={acc.id} className="flex items-center justify-between gap-3 border-b px-3 py-2 text-xs last:border-b-0">
+                      <div className="flex min-w-0 items-baseline gap-1">
+                        <TruncatedText className="font-medium">{acc.name}</TruncatedText>
+                        {!acc.is_active && <span className="text-muted-foreground shrink-0 text-[11px]">(inactiva)</span>}
                       </div>
-                    );
-                  })}
+                      <div className="flex shrink-0 items-baseline gap-2">
+                        <NumericCell value={acc.total} currency={currencySymbol} className="font-medium" />
+                        {acc.balance_fx_missing && (
+                          <span className="text-muted-foreground text-[11px]">sin cotización</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               ))
             )}

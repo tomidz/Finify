@@ -70,6 +70,7 @@ interface TransactionDialogProps {
 const DIALOG_TRANSACTION_TYPES: TransactionType[] = [
   "expense",
   "income",
+  "investment",
   "correction",
 ];
 
@@ -83,6 +84,8 @@ type TransactionFormValues = {
   exchange_rate: string;
   base_amount: string;
   target_balance: string;
+  // An investment movement either sends money out to a broker or brings it back.
+  direction: "out" | "in";
   notes: string;
 };
 
@@ -104,6 +107,7 @@ export function TransactionDialog({
       exchange_rate: "1",
       base_amount: "",
       target_balance: "",
+      direction: "out",
       notes: "",
     },
   });
@@ -209,7 +213,8 @@ export function TransactionDialog({
         Number((targetBalanceNum - recordedBalance).toFixed(amountDecimals))
       : null;
 
-  const showCategory = watchTransactionType !== "transfer" && !isCorrection;
+  const isInvestment = watchTransactionType === "investment";
+  const showCategory = watchTransactionType !== "transfer" && !isCorrection && !isInvestment;
 
   // Filter categories by transaction type
   const filteredCategories = useMemo(() => {
@@ -297,6 +302,7 @@ export function TransactionDialog({
         exchange_rate: toMoneyInput(line?.exchange_rate ?? 1, 8),
         base_amount: toMoneyInput(Math.abs(line?.base_amount ?? 0), 8),
         target_balance: "",
+        direction: (line?.amount ?? 0) > 0 ? "in" : "out",
         notes: transaction.notes ?? "",
       });
     } else {
@@ -310,6 +316,7 @@ export function TransactionDialog({
         exchange_rate: "1",
         base_amount: "",
         target_balance: "",
+        direction: "out",
         notes: "",
       });
     }
@@ -459,8 +466,10 @@ export function TransactionDialog({
         if (base == null) form.setError("base_amount", { message: "Ingresá el monto base" });
         return;
       }
-      amountNum = amount;
-      baseNum = base;
+      // An investment carries its direction in the sign.
+      const sign = values.transaction_type === "investment" && values.direction === "out" ? -1 : 1;
+      amountNum = sign * Math.abs(amount);
+      baseNum = sign * Math.abs(base);
       // A base amount typed without a rate implies the rate.
       const impliedRate =
         amountNum !== 0 && baseNum !== 0
@@ -546,6 +555,7 @@ export function TransactionDialog({
                 base_amount: -Math.abs(line.base_amount),
               };
             }
+            if (transaction.transaction_type === "investment") return line;
             if (transaction.transaction_type === "correction") {
               // The form loads |amount|, so a negative adjustment must keep
               // its original sign — a cosmetic edit used to flip −500 → +500.
@@ -605,7 +615,7 @@ export function TransactionDialog({
           <DialogDescription>
             {isEditing
               ? "Modificá los datos de la transacción."
-              : "Registrá un ingreso, gasto o corrección."}
+              : "Registrá un ingreso, gasto, inversión o corrección."}
           </DialogDescription>
         </DialogHeader>
 
@@ -698,7 +708,7 @@ export function TransactionDialog({
 
           {/* Row 3: Cuenta + Categoría */}
           <div
-            className={`grid gap-4 ${showCategory ? "grid-cols-2" : "grid-cols-1"}`}
+            className={`grid gap-4 ${showCategory || isInvestment ? "grid-cols-2" : "grid-cols-1"}`}
           >
             <FormField
               control={form.control}
@@ -742,6 +752,33 @@ export function TransactionDialog({
                         usageCounts={usageCounts?.categoryCounts}
                       />
                     </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
+            {isInvestment && (
+              <FormField
+                control={form.control}
+                name="direction"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormFieldLabel>Movimiento</FormFieldLabel>
+                    <Select
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      disabled={isPending || isEditing}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="out">Aporte (sale de la cuenta)</SelectItem>
+                        <SelectItem value="in">Retiro (vuelve a la cuenta)</SelectItem>
+                      </SelectContent>
+                    </Select>
                     <FormMessage />
                   </FormItem>
                 )}

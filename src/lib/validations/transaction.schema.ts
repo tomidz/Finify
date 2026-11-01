@@ -43,7 +43,7 @@ export const CreateTransactionSchema = z
     amounts: z
       .array(TransactionAmountLineSchema)
       .min(1, "Debe existir al menos una línea de monto")
-      .max(1, "Solo se permite una línea para ingreso/gasto/corrección"),
+      .max(1, "Solo se permite una línea para ingreso/gasto/corrección/inversión"),
     notes: z
       .string()
       .max(500, "Las notas no pueden superar 500 caracteres")
@@ -54,8 +54,8 @@ export const CreateTransactionSchema = z
   })
   .refine(
     (data) => {
-      // Las correcciones (ajustes de saldo) no requieren categoría.
-      if (data.transaction_type === "correction") return true;
+      // Las correcciones (ajustes de saldo) y las inversiones no requieren categoría.
+      if (data.transaction_type === "correction" || data.transaction_type === "investment") return true;
       if (data.transaction_type === "transfer") return false;
       return data.category_id != null;
     },
@@ -68,7 +68,8 @@ export const CreateTransactionSchema = z
     (data) =>
       data.transaction_type === "income" ||
       data.transaction_type === "expense" ||
-      data.transaction_type === "correction",
+      data.transaction_type === "correction" ||
+      data.transaction_type === "investment",
     {
       message:
         "Usá el formulario de transferencia para transacciones de tipo transferencia",
