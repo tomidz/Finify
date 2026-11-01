@@ -50,14 +50,14 @@ export function StatCard({
   const tone = !known ? "text-muted-foreground" : signTone ? amountTone(value, decimals) : null;
 
   return (
-    <Card data-slot="stat-card" className={cn("min-w-0 gap-1 px-4 py-3", className)}>
+    <Card data-slot="stat-card" className={cn("@container min-w-0 content-start gap-1.5 px-4 py-3", className)}>
       <div className="flex items-center justify-between gap-2">
         {!hint ? (
-          <span className="text-muted-foreground truncate text-xs">{label}</span>
+          <span className="text-muted-foreground truncate text-sm font-medium">{label}</span>
         ) : (
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="text-muted-foreground w-fit cursor-default truncate text-xs underline decoration-dotted underline-offset-2">
+              <span className="text-muted-foreground w-fit cursor-default truncate text-sm font-medium underline decoration-dotted underline-offset-2">
                 {label}
               </span>
             </TooltipTrigger>
@@ -69,7 +69,7 @@ export function StatCard({
       {loading ? (
         <Skeleton className="h-7 w-28 animate-none" />
       ) : (
-        <p className={cn("flex flex-wrap items-baseline gap-x-1.5 text-base leading-7 font-semibold tabular-nums sm:text-xl", tone)}>
+        <p className={cn("flex flex-wrap items-baseline gap-x-1.5 text-lg leading-7 font-semibold tracking-tight tabular-nums @[11rem]:text-xl @[15rem]:text-2xl", tone)}>
           {/* The symbol and the amount never split across lines. */}
           <span className="whitespace-nowrap">{!known ? "—" : `${currency ? `${currency}\u00a0` : ""}${format(value)}`}</span>
           {!known || suffix == null ? null : <span className="text-xs font-medium">{suffix}</span>}
@@ -78,7 +78,7 @@ export function StatCard({
       {sub == null ? null : loading ? (
         <Skeleton className="h-4 w-20 animate-none" />
       ) : (
-        <div className="text-muted-foreground flex flex-col text-[11px]">{sub}</div>
+        <div className="text-muted-foreground flex flex-col text-xs">{sub}</div>
       )}
     </Card>
   );
@@ -99,5 +99,5 @@ export interface StatGridProps extends React.ComponentProps<"div"> {
 
 /** Responsive grid for a row of StatCards. */
 export function StatGrid({ columns = 4, className, ...props }: StatGridProps) {
-  return <div data-slot="stat-grid" className={cn("grid gap-3", STAT_GRID_COLUMNS[columns], className)} {...props} />;
+  return <div data-slot="stat-grid" className={cn("grid gap-2", STAT_GRID_COLUMNS[columns], className)} {...props} />;
 }
