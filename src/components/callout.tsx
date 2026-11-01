@@ -24,7 +24,7 @@ export function Callout({
       data-variant={variant}
       role={variant === "warning" ? "alert" : "note"}
       className={cn(
-        "flex gap-2 rounded-md border px-3 py-2 text-xs",
+        "flex gap-2 rounded-lg border p-3 text-xs",
         variant === "warning" ? "border-foreground/40" : "bg-muted/40",
         className,
       )}

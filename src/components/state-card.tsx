@@ -64,14 +64,34 @@ export function StateCard(props: StateCardProps) {
 
   if (props.variant === "empty") {
     const Icon = props.icon;
+    if (props.size === "compact") {
+      return (
+        <div data-slot="state-card" data-variant="empty" className={cn(frame, props.className)}>
+          {!Icon ? null : <Icon aria-hidden className="mb-1 size-5 text-muted-foreground" />}
+          <p className="text-sm font-medium">{props.title}</p>
+          {!props.description ? null : (
+            <p className="max-w-sm text-xs text-muted-foreground">{props.description}</p>
+          )}
+          {!props.action ? null : <div className="mt-2">{props.action}</div>}
+        </div>
+      );
+    }
     return (
-      <div data-slot="state-card" data-variant="empty" className={cn(frame, props.className)}>
-        {!Icon ? null : <Icon aria-hidden className="mb-1 size-5 text-muted-foreground" />}
-        <p className="text-sm font-medium">{props.title}</p>
-        {!props.description ? null : (
-          <p className="max-w-sm text-xs text-muted-foreground">{props.description}</p>
-        )}
-        {!props.action ? null : <div className="mt-2">{props.action}</div>}
+      <div
+        data-slot="state-card"
+        data-variant="empty"
+        className={cn(FRAME, "flex flex-col items-center justify-center gap-6 p-6 text-center text-balance md:p-12", props.className)}
+      >
+        <div className="flex max-w-sm flex-col items-center gap-2">
+          {!Icon ? null : (
+            <div className="mb-2 flex size-10 items-center justify-center rounded-lg bg-muted text-foreground">
+              <Icon aria-hidden className="size-6" />
+            </div>
+          )}
+          <p className="text-lg font-medium tracking-tight">{props.title}</p>
+          {!props.description ? null : <p className="text-sm/relaxed text-muted-foreground">{props.description}</p>}
+        </div>
+        {!props.action ? null : <div className="flex max-w-sm flex-wrap justify-center gap-2">{props.action}</div>}
       </div>
     );
   }
