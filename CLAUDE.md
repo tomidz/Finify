@@ -141,8 +141,10 @@ configuran en los dashboards, no en el repo. `supabase/config.toml` solo describ
 - UI en español rioplatense, textos cortos. Comentarios solo cuando explican un porqué que el código
   no muestra.
 - Sin animaciones ni transiciones nuevas; todo tiene que funcionar en claro y oscuro.
-- Monocromo: color solo para el signo de un monto (`amountTone`), lo destructivo y la paleta de
-  gráficos (`src/components/charts/palette.ts`, variables `--chart-n`; nunca hex).
+- Paleta azul pastel (tokens en `globals.css`; nunca hex en componentes): superficies, bordes,
+  primario y foco en azul. Color de estado solo para el signo de un monto (`amountTone`), lo
+  destructivo, avisos y la paleta de gráficos (`src/components/charts/palette.ts`, variables
+  `--chart-n`). Todo texto pasa contraste AA en claro y oscuro.
 - Pantallas con el kit compartido, no a mano:
   - encabezado `PageHeader` + `PageButton`, secciones `Section`;
   - estados `StateCard` (cargando, vacío, error: un error nunca reemplaza datos que ya se ven) y
