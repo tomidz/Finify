@@ -6,10 +6,9 @@ const REQUIRED = {
   NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
 };
-// Without these a feature degrades: the AI CFO, stock prices, crypto prices.
+// Without these a feature degrades: the AI CFO, crypto prices.
 const OPTIONAL = {
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-  TWELVEDATA_API_KEY: process.env.TWELVEDATA_API_KEY,
   NEXT_PUBLIC_COINGECKO_API_KEY: process.env.NEXT_PUBLIC_COINGECKO_API_KEY,
 };
 
