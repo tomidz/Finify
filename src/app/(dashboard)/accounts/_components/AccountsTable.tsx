@@ -51,12 +51,12 @@ export function AccountsTable() {
   };
 
   const handleDelete = async (account: Account) => {
-    // FKs: transaction legs (kept by soft-deleted transactions), investments
-    // and sales block the delete; recurring templates cascade.
+    // FKs: transaction legs (kept by soft-deleted transactions) block the
+    // delete; recurring templates cascade.
     const confirmed = await confirm({
       title: `¿Borrar la cuenta "${account.name}"?`,
       description:
-        "Se borran también sus recurrentes y sus metas quedan sin cuenta; no se puede si tiene inversiones o movimientos, borrados incluidos.",
+        "Se borran también sus recurrentes y sus metas quedan sin cuenta; no se puede si tiene movimientos, borrados incluidos.",
       destructive: true,
     });
     if (!confirmed) return;

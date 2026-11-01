@@ -4,7 +4,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 
-select plan(17);
+select plan(16);
 
 insert into auth.users (id, email) values
   ('11111111-1111-4111-8111-111111111111', 'a@finify.test'),
@@ -12,7 +12,7 @@ insert into auth.users (id, email) values
 
 -- A: pesos loaded at 1000 per dollar and worth 1250 at the close of November,
 -- an inactive account with a balance, an inactive one emptied by a round trip,
--- and a broker with a lot in euros.
+-- and a broker without a balance.
 insert into public.accounts (id, user_id, name, account_type, currency, is_active) values
   ('aaaaaaaa-0000-4000-8000-000000000001', '11111111-1111-4111-8111-111111111111', 'Pesos', 'bank', 'ARS', true),
   ('aaaaaaaa-0000-4000-8000-000000000002', '11111111-1111-4111-8111-111111111111', 'Dólares', 'bank', 'USD', true),
@@ -52,8 +52,6 @@ insert into public.transaction_amounts (transaction_id, account_id, amount, orig
   ('aaaaaaaa-0000-4000-8000-000000000024', 'aaaaaaaa-0000-4000-8000-000000000001', -200000, 'ARS', 0.0008, -160),
   ('aaaaaaaa-0000-4000-8000-000000000025', 'aaaaaaaa-0000-4000-8000-000000000004', 10, 'USD', 1, 10),
   ('aaaaaaaa-0000-4000-8000-000000000026', 'aaaaaaaa-0000-4000-8000-000000000004', -10, 'USD', 1, -10);
-insert into public.investments (user_id, account_id, asset_name, ticker, asset_type, quantity, price_per_unit, total_cost, currency, purchase_date) values
-  ('11111111-1111-4111-8111-111111111111', 'aaaaaaaa-0000-4000-8000-000000000005', 'SAP', 'SAP', 'stock', 1, 200, 200, 'EUR', '2024-11-05');
 insert into public.nw_items (id, user_id, name, side, currency) values
   ('aaaaaaaa-0000-4000-8000-000000000041', '11111111-1111-4111-8111-111111111111', 'Préstamo', 'liability', 'EUR');
 -- The December snapshot is after the year's latest month.
@@ -105,13 +103,7 @@ select results_eq(
 );
 select is_empty(
   $$ select * from public.account_net_worth_year(2024) where account_name = 'Cerrada' $$,
-  'an inactive account without a balance or positions is left out'
-);
-select results_eq(
-  $$ select investment_value, investment_value_base, investment_fx_missing, investment_fx_rate_date
-     from public.account_net_worth_year(2024) where account_name = 'Broker' $$,
-  $$ values (200::numeric, 220::numeric, false, '2024-11-30'::date) $$,
-  'positions are valued at the same close-date rate'
+  'an inactive account without a balance is left out'
 );
 select results_eq(
   $$ select amount, amount_base, fx_missing, fx_rate_date, close_date from public.liabilities_year(2024) $$,
@@ -122,12 +114,12 @@ select results_eq(
   $$ select month, close_date, assets, liabilities, net_worth, fx_missing
      from public.net_worth_evolution_year(2024) $$,
   $$ values (10, '2024-10-31'::date, 1705::numeric, 52.5::numeric, 1652.5::numeric, false),
-            (11, '2024-11-30'::date, 1530::numeric, 33::numeric, 1497::numeric, false) $$,
+            (11, '2024-11-30'::date, 1310::numeric, 33::numeric, 1277::numeric, false) $$,
   'each past month is valued at the rate of its own close'
 );
 select is(
   (select net_worth from public.net_worth_evolution_year(2024) order by month desc limit 1),
-  (select sum(coalesce(balance_base, 0) + coalesce(investment_value_base, 0)) from public.account_net_worth_year(2024))
+  (select sum(balance_base) from public.account_net_worth_year(2024))
     - (select coalesce(sum(amount_base), 0) from public.liabilities_year(2024)),
   'the last month of a past year is the listed accounts'' total minus the debts'
 );
@@ -142,12 +134,12 @@ select results_eq(
 select results_eq(
   $$ select close_date, assets, liabilities, net_worth, fx_missing
      from public.net_worth_evolution_year(extract(year from public.app_today())::int) $$,
-  $$ values (public.app_today(), 1260::numeric, 1198.8::numeric, 61.2::numeric, false) $$,
+  $$ values (public.app_today(), 1020::numeric, 1198.8::numeric, -178.8::numeric, false) $$,
   'the evolution values the month in progress at today''s rate'
 );
 select is(
   (select net_worth from public.net_worth_evolution_year(extract(year from public.app_today())::int) order by month desc limit 1),
-  (select sum(coalesce(balance_base, 0) + coalesce(investment_value_base, 0))
+  (select sum(balance_base)
      from public.account_net_worth_year(extract(year from public.app_today())::int))
     - (select coalesce(sum(amount_base), 0) from public.liabilities_year(extract(year from public.app_today())::int)),
   'the month in progress is the listed accounts'' total minus the debts'
