@@ -11,7 +11,6 @@ import {
 } from "@/components/ui/table";
 import {
   PageHeader,
-  PageHeaderDescription,
   PageHeaderTitle,
   PageHeaderTitleGroup,
 } from "@/components/ui/page-header";
@@ -160,7 +159,7 @@ export function AccountDetail({ accountId }: { accountId: string }) {
             <Badge variant="outline">{account.currency}</Badge>
             {!account.is_active && <Badge variant="outline">Inactiva</Badge>}
           </div>
-          {account.notes && <PageHeaderDescription>{account.notes}</PageHeaderDescription>}
+          {account.notes && <p className="w-full text-xs text-muted-foreground">{account.notes}</p>}
         </PageHeaderTitleGroup>
       </PageHeader>
 

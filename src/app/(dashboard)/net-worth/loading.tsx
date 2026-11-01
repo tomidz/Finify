@@ -16,7 +16,6 @@ export default function NetWorthLoading() {
       <PageHeader>
         <PageHeaderTitleGroup>
           <PageHeaderTitle>Patrimonio neto</PageHeaderTitle>
-          <Skeleton className="h-5 w-40" />
         </PageHeaderTitleGroup>
         <PageHeaderActions>
           <Skeleton className="h-8 w-24" />
